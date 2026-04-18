@@ -1,0 +1,11 @@
+{
+  "tasks": [
+    {
+      "task_id": "sample_il_hedge",
+      "insured_notional_usdc": 10000.0,
+      "entry_sol_price_usd": 150.0,
+      "expiry_sol_price_usd": 300.0,
+      "ewma45_ann": 0.82
+    }
+  ]
+}

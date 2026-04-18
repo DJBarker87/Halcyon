@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# Rust build artifacts (root + any nested workspace/crate)
+target/
+/target
+
+# Node / JS
+**/node_modules/
+
+# Logs & scratch JSON at repo root
+*.log
+/*.json
+
+# Marketing — large rendered artifacts (keep src, remotion config, package.json)
+marketing-video/out/
+*.mp4
+*.mov
+*.webm

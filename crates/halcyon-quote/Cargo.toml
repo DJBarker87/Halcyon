@@ -1,0 +1,20 @@
+[package]
+name = "halcyon-quote"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal Halcyon runtime for IL hedge and SOL autocall products"
+
+[features]
+default = ["full"]
+full = [
+    "solmath-core/transcendental",
+    "solmath-core/barrier",
+    "solmath-core/complex",
+    "solmath-core/insurance",
+]
+
+[dependencies]
+solmath-core = { path = "../../solmath-core", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nalgebra = "0.33"

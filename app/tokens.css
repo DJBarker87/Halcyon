@@ -1,0 +1,189 @@
+/* ============================================================
+   HALCYON — Design tokens
+   Light-mode only. Warm paper, kingfisher blue, rust accent.
+   ============================================================ */
+:root {
+  /* ---------- Brand: Halcyon Blue (kingfisher back) ---------- */
+  --blue-50:  #EDF7FC;
+  --blue-100: #D4ECF7;
+  --blue-200: #A8D7EE;
+  --blue-300: #6FBCDF;
+  --blue-400: #3EA0CE;
+  --blue-500: #0E7BB8;  /* base */
+  --blue-600: #0A66A0;
+  --blue-700: #085485;
+  --blue-800: #083F66;
+  --blue-900: #062E4C;
+
+  /* ---------- Accent: Halcyon Rust (kingfisher breast) ---------- */
+  --rust-50:  #FBF1EA;
+  --rust-100: #F5DCC8;
+  --rust-200: #ECB794;
+  --rust-300: #E09160;
+  --rust-400: #D27236;
+  --rust-500: #C15514;  /* base */
+  --rust-600: #A6470F;
+  --rust-700: #883A0C;
+  --rust-800: #6A2D09;
+  --rust-900: #4C2006;
+
+  /* ---------- Neutral: Paper → Ink (warm) ---------- */
+  --paper:    #FAFAF7;  /* base body */
+  --n-50:     #F4F3EE;
+  --n-100:    #E8E6DE;
+  --n-200:    #D3D0C5;
+  --n-300:    #B0ACA0;
+  --n-400:    #8A8678;
+  --n-500:    #605D54;
+  --n-600:    #3F3D37;
+  --n-700:    #242832;
+  --n-800:    #141B25;
+  --ink:      #0A1420;  /* deep desaturated blue-black */
+
+  /* ---------- Semantic ---------- */
+  --success-50:  #ECF4EC;
+  --success-500: #3E7B3E;
+  --success-700: #2C5A2C;
+  --warning-50:  #FBF3DE;
+  --warning-500: #B5851B;
+  --warning-700: #7F5D11;
+  --error-50:    #F7E8E3;
+  --error-500:   #A8351F;
+  --error-700:   #7A2514;
+
+  /* ---------- Data-viz: categorical ---------- */
+  --d-c-1: #0E7BB8; /* blue */
+  --d-c-2: #C15514; /* rust */
+  --d-c-3: #4A8C5B; /* sage */
+  --d-c-4: #8A5AA1; /* plum */
+  --d-c-5: #B5851B; /* ochre */
+  --d-c-6: #3A6B8A; /* slate */
+
+  /* ---------- Data-viz: sequential (blue ramp for heatmaps) ---------- */
+  --d-s-1: #EDF7FC;
+  --d-s-2: #BDDFEE;
+  --d-s-3: #7DBCDB;
+  --d-s-4: #3E95C2;
+  --d-s-5: #0E7BB8;
+  --d-s-6: #062E4C;
+
+  /* ---------- Spacing (4px grid) ---------- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-12: 48px;
+  --sp-16: 64px;
+  --sp-24: 96px;
+  --sp-32: 128px;
+
+  /* ---------- Radii ---------- */
+  --r-sm: 2px;
+  --r-md: 6px;
+  --r-lg: 12px;
+
+  /* ---------- Borders ---------- */
+  --border-hair: 1px solid var(--n-100);
+  --border-line: 1px solid var(--n-200);
+  --border-ink:  1px solid var(--n-300);
+
+  /* ---------- Shadows (warm-tinted, sparing) ---------- */
+  --shadow-1: 0 1px 2px rgba(36, 40, 50, 0.04);
+  --shadow-2: 0 2px 8px rgba(36, 40, 50, 0.06), 0 1px 2px rgba(36, 40, 50, 0.04);
+  --shadow-3: 0 8px 24px rgba(36, 40, 50, 0.08), 0 2px 6px rgba(36, 40, 50, 0.05);
+  --shadow-4: 0 16px 48px rgba(36, 40, 50, 0.12), 0 4px 12px rgba(36, 40, 50, 0.06);
+
+  /* ---------- Type ---------- */
+  --f-serif: 'Instrument Serif', 'Iowan Old Style', Georgia, serif;
+  --f-sans:  'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  --f-mono:  'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* Type scale — base 16px, product app, 10 steps */
+  --t-13:   13px;  /* fine print, legal, dense table */
+  --t-14:   14px;  /* label, caption, secondary */
+  --t-16:   16px;  /* body */
+  --t-18:   18px;  /* lead body */
+  --t-20:   20px;  /* h4, stat value small */
+  --t-24:   24px;  /* h3, stat value */
+  --t-32:   32px;  /* h2, stat value large */
+  --t-44:   44px;  /* h1, hero number */
+  --t-64:   64px;  /* display */
+  --t-88:   88px;  /* display XL (landing moments only) */
+
+  /* ---------- Motion ---------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+}
+
+/* Density tweak */
+[data-density="compact"] {
+  --sp-6: 16px;
+  --sp-8: 20px;
+  --sp-12: 32px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--f-sans);
+  font-size: var(--t-16);
+  line-height: 1.5;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  font-feature-settings: "tnum" off;
+}
+
+/* Tabular numerals — everywhere we use .num or tabular elements */
+.num, .mono, input[type="number"], .stat-value, .table-cell-num, td.num, th.num {
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.mono {
+  font-family: var(--f-mono);
+  font-size: 0.92em;
+  letter-spacing: 0;
+}
+
+.serif {
+  font-family: var(--f-serif);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.serif-italic {
+  font-family: var(--f-serif);
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* Selection */
+::selection {
+  background: var(--blue-100);
+  color: var(--ink);
+}
+
+/* Focus rings — consistent, high contrast */
+:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+a { color: var(--blue-600); text-decoration: none; }
+a:hover { color: var(--blue-700); text-decoration: underline; text-underline-offset: 3px; }
+
+button { font-family: inherit; }

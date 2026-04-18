@@ -1,0 +1,57 @@
+{
+  "tasks": [
+    {
+      "task_id": "sample_sol_autocall",
+      "terms": {
+        "notional": 1.0,
+        "entry_level": 1.0,
+        "maturity_days": 16,
+        "observation_interval_days": 2,
+        "autocall_barrier": 1.025,
+        "coupon_barrier": 1.0,
+        "knock_in_barrier": 0.7,
+        "issuer_margin_bps": 50.0,
+        "quote_share_of_fair_coupon": 0.75,
+        "note_id": "CURRENT_V1"
+      },
+      "policy": {
+        "hedge_mode": "delta_daily",
+        "initial_hedge_fraction": 0.25,
+        "delta_clip": 0.75,
+        "rebalance_band": 0.1,
+        "min_trade_notional_pct": 0.01,
+        "max_trade_notional_pct": 1.0,
+        "slippage_bps": 10.0,
+        "slippage_coeff": 25.0,
+        "liquidity_proxy_usdc": 250000.0,
+        "slippage_stress_multiplier": 1.0,
+        "keeper_bounty_usdc": 0.1,
+        "cooldown_days": 0,
+        "max_rebalances_per_day": 8,
+        "force_observation_review": true,
+        "allow_intraperiod_checks": true,
+        "hedge_funding_mode": "separate_hedge_sleeve",
+        "coupon_vault_mode": "separate_coupon_vault"
+      },
+      "path": [
+        { "day": 0, "close": 1.0, "low": 1.0 },
+        { "day": 1, "close": 1.0, "low": 1.0 },
+        { "day": 2, "close": 1.03, "low": 1.03 },
+        { "day": 3, "close": 1.0, "low": 1.0 },
+        { "day": 4, "close": 1.0, "low": 1.0 },
+        { "day": 5, "close": 1.0, "low": 1.0 },
+        { "day": 6, "close": 1.0, "low": 1.0 },
+        { "day": 7, "close": 1.0, "low": 1.0 },
+        { "day": 8, "close": 1.0, "low": 1.0 },
+        { "day": 9, "close": 1.0, "low": 1.0 },
+        { "day": 10, "close": 1.0, "low": 1.0 },
+        { "day": 11, "close": 1.0, "low": 1.0 },
+        { "day": 12, "close": 1.0, "low": 1.0 },
+        { "day": 13, "close": 1.0, "low": 1.0 },
+        { "day": 14, "close": 1.0, "low": 1.0 },
+        { "day": 15, "close": 1.0, "low": 1.0 },
+        { "day": 16, "close": 1.0, "low": 1.0 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+[package]
+name = "halcyon-wasm"
+version = "0.1.0"
+edition = "2021"
+description = "WASM shim exposing solmath-core pricing primitives to the browser"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+solmath-core  = { path = "../../solmath-core",  default-features = false, features = ["bs", "transcendental", "barrier", "iv"] }
+halcyon-quote = { path = "../halcyon-quote",    default-features = false, features = ["full"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

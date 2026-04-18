@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Halcyon — Issuance Workbench</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="tokens.css?v=2">
+<link rel="stylesheet" href="app.css?v=9">
+<link rel="stylesheet" href="components.css?v=3">
+</head>
+<body>
+
+<script>
+window.__HALCYON_TWEAKS__ = /*EDITMODE-BEGIN*/{
+  "network": "mainnet-beta",
+  "walletState": "disconnected",
+  "showIssuanceGate": true,
+  "mockLpValue": 12400,
+  "mockHasUsdc": true,
+  "walletPubkey": ""
+}/*EDITMODE-END*/;
+</script>
+
+<div id="app"></div>
+
+<!-- React + Babel -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<!-- Support libraries -->
+<script src="kingfisher.js"></script>
+<script src="wasm_loader.js?v=3"></script>
+<script src="pricing.js?v=2"></script>
+<script src="oracles.js?v=3"></script>
+<script src="lp_detection.js?v=1"></script>
+
+<!-- Shared components -->
+<script type="text/babel" src="components.jsx?v=2"></script>
+<script type="text/babel" src="charts.jsx?v=2"></script>
+
+<!-- App -->
+<script type="text/babel" src="app_shell.jsx?v=4"></script>
+<script type="text/babel" src="page_equity.jsx?v=2"></script>
+<script type="text/babel" src="page_il.jsx?v=8"></script>
+<script type="text/babel" src="page_sol.jsx?v=4"></script>
+<script type="text/babel" src="page_vault.jsx"></script>
+<script type="text/babel" src="page_portfolio.jsx"></script>
+
+<script type="text/babel">
+const { useState, useEffect } = React;
+
+function App() {
+  const [route, setRoute] = useState(() =>
+    localStorage.getItem('halcyon.route') || 'equity');
+  useEffect(() => { localStorage.setItem('halcyon.route', route); }, [route]);
+
+  const [tweaksOpen, setTweaksOpen] = useState(false);
+  const [tweaks, setTweaks] = useState(window.__HALCYON_TWEAKS__ || {});
+
+  // Tweaks protocol
+  useEffect(() => {
+    const onMsg = e => {
+      if (e.data?.type === '__activate_edit_mode') setTweaksOpen(true);
+      if (e.data?.type === '__deactivate_edit_mode') setTweaksOpen(false);
+    };
+    window.addEventListener('message', onMsg);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+  // Accepts setTweak('key', value) OR setTweak({ key1: v1, key2: v2 }) for
+  // atomic multi-key updates (so two sequential single-key calls don't
+  // overwrite each other via a stale closure).
+  const setTweak = (k, v) => {
+    const edits = typeof k === 'object' && k !== null ? k : { [k]: v };
+    setTweaks(prev => ({ ...prev, ...edits }));
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits }, '*');
+  };
+
+  const Page = {
+    equity:    PageEquityAutocall,
+    il:        PageILProtection,
+    sol:       PageSolAutocall,
+    vault:     PageVault,
+    portfolio: PagePortfolio,
+  }[route] || PageEquityAutocall;
+
+  return (
+    <div className="hc-shell">
+      <Sidebar route={route} onRoute={setRoute} network={tweaks.network} />
+      <main>
+        <TopBar route={route} network={tweaks.network} walletState={tweaks.walletState} />
+        <Page tweaks={tweaks} onTweak={setTweak} />
+      </main>
+
+      <div className={`hc-tweaks ${tweaksOpen ? 'open' : ''}`}>
+        <h4>Tweaks</h4>
+        <div className="hc-tweak-row">
+          <label>Network</label>
+          <select value={tweaks.network} onChange={e => setTweak('network', e.target.value)}
+                  className="select-native" style={{width: 130, minHeight: 28, padding: '4px 8px', fontSize: 12}}>
+            <option value="devnet">Devnet</option>
+            <option value="mainnet-beta">Mainnet</option>
+          </select>
+        </div>
+        <div className="hc-tweak-row">
+          <label>Wallet</label>
+          <select value={tweaks.walletState} onChange={e => setTweak('walletState', e.target.value)}
+                  className="select-native" style={{width: 130, minHeight: 28, padding: '4px 8px', fontSize: 12}}>
+            <option value="connected">Connected</option>
+            <option value="disconnected">Disconnected</option>
+          </select>
+        </div>
+        <div className="hc-tweak-row">
+          <label>Issuance gate</label>
+          <Toggle checked={!!tweaks.showIssuanceGate}
+                  onChange={v => setTweak('showIssuanceGate', v)} />
+        </div>
+        <div className="hc-tweak-row">
+          <label>Mock LP $</label>
+          <input type="number" min={0} step={100}
+                 value={tweaks.mockLpValue ?? 0}
+                 onChange={e => setTweak('mockLpValue', Number(e.target.value) || 0)}
+                 className="input"
+                 style={{width: 130, minHeight: 28, padding: '4px 8px', fontSize: 12}}
+                 title="Mock detected LP position value in USDC. 0 = call real RPC using Wallet pubkey." />
+        </div>
+        <div className="hc-tweak-row">
+          <label>Mock has USDC</label>
+          <Toggle checked={!!tweaks.mockHasUsdc}
+                  onChange={v => setTweak('mockHasUsdc', v)} />
+        </div>
+        <div className="hc-tweak-row">
+          <label>Wallet pubkey</label>
+          <input type="text"
+                 value={tweaks.walletPubkey ?? ''}
+                 onChange={e => setTweak('walletPubkey', e.target.value.trim())}
+                 placeholder="(optional)"
+                 className="input"
+                 style={{width: 130, minHeight: 28, padding: '4px 8px', fontSize: 11,
+                         fontFamily: 'var(--f-mono)'}}
+                 title="Paste a mainnet wallet address to test real LP detection. Only used when Mock LP $ is 0." />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<App />);
+</script>
+
+</body>
+</html>

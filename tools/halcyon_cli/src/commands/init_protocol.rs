@@ -36,8 +36,14 @@ pub struct Args {
     pub pyth_quote_staleness_cap_secs: i64,
     #[arg(long, default_value_t = 60)]
     pub pyth_settle_staleness_cap_secs: i64,
+    #[arg(long, default_value_t = 300)]
+    pub quote_ttl_secs: i64,
     #[arg(long, default_value_t = 600_000)]
     pub sigma_floor_annualised_s6: i64,
+    #[arg(long, default_value_t = 7_500)]
+    pub sol_autocall_quote_share_bps: u16,
+    #[arg(long, default_value_t = 50)]
+    pub sol_autocall_issuer_margin_bps: u16,
     #[arg(long)]
     pub treasury_destination: Option<String>,
 }
@@ -76,7 +82,10 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
             regression_staleness_cap_secs: args.regression_staleness_cap_secs,
             pyth_quote_staleness_cap_secs: args.pyth_quote_staleness_cap_secs,
             pyth_settle_staleness_cap_secs: args.pyth_settle_staleness_cap_secs,
+            quote_ttl_secs: args.quote_ttl_secs,
             sigma_floor_annualised_s6: args.sigma_floor_annualised_s6,
+            sol_autocall_quote_share_bps: args.sol_autocall_quote_share_bps,
+            sol_autocall_issuer_margin_bps: args.sol_autocall_issuer_margin_bps,
             treasury_destination,
         },
     );

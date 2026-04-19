@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Client SDK for building Halcyon instructions. Grows across L2-L5."
 
+[lib]
+doctest = false
+
 [dependencies]
 anyhow = "1"
 anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
@@ -11,6 +14,7 @@ anchor-spl = "=0.32.1"
 base64 = "0.22"
 halcyon_common = { path = "../halcyon_common" }
 halcyon_kernel = { path = "../../programs/halcyon_kernel", features = ["cpi"] }
+halcyon_oracles = { path = "../halcyon_oracles" }
 halcyon_sol_autocall = { path = "../../programs/halcyon_sol_autocall", features = ["cpi"] }
 solana-account-decoder = "=2.3.1"
 solana-rpc-client = "=2.3.1"

@@ -1791,6 +1791,7 @@ mod tests {
         let phi2_neg = [false, true, true];
 
         let mut max_err = 0.0f64;
+        let mut feasible = 0u32;
         let mut n_compared = 0u32;
         for &barrier_log in &[0.0_f64, -0.22314, 0.02469] {
             // rhs = shift + (-L * barrier_log), sweep shift for a few factor values
@@ -1819,6 +1820,11 @@ mod tests {
                 let cov_uv = (sigma_uv * SCALE as f64).round() as i128;
                 let var_vv = (sigma_vv * SCALE as f64).round() as i128;
 
+                if collect_vertices(planes).is_err() {
+                    continue;
+                }
+                feasible += 1;
+
                 let gl20 = triangle_probability(mean_u, mean_v, var_uu, cov_uv, var_vv, planes);
                 let phi2 = triangle_probability_phi2(
                     mean_u,
@@ -1831,20 +1837,33 @@ mod tests {
                     phi2_neg,
                 );
 
-                if let (Ok(g), Ok(p)) = (gl20, phi2) {
-                    let gf = g as f64 / SCALE as f64;
-                    let pf = p as f64 / SCALE as f64;
-                    let err = (gf - pf).abs();
-                    if err > max_err {
-                        max_err = err;
-                    }
-                    n_compared += 1;
+                let g = gl20.unwrap_or_else(|err| {
+                    panic!(
+                        "GL20 failed on feasible product geometry: barrier_log={barrier_log} shift={shift} err={err:?}"
+                    )
+                });
+                let p = phi2.unwrap_or_else(|err| {
+                    panic!(
+                        "phi2 failed on feasible product geometry: barrier_log={barrier_log} shift={shift} err={err:?}"
+                    )
+                });
+
+                let gf = g as f64 / SCALE as f64;
+                let pf = p as f64 / SCALE as f64;
+                let err = (gf - pf).abs();
+                if err > max_err {
+                    max_err = err;
                 }
+                n_compared += 1;
             }
         }
         assert!(
-            n_compared >= 10,
-            "too few successful comparisons: {n_compared}"
+            feasible == 8,
+            "expected exactly 8 feasible product geometries from the fixed 3x5 sweep, got {feasible}"
+        );
+        assert!(
+            n_compared == feasible,
+            "expected all feasible geometries to compare successfully, compared {n_compared} of {feasible}"
         );
         assert!(
             max_err < 5.0e-4,

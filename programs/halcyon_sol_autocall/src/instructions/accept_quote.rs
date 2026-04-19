@@ -22,9 +22,6 @@ use crate::state::{
     ProductStatus, SolAutocallTerms, CURRENT_ENGINE_VERSION, NO_AUTOCALL_FIRST_N_OBS,
 };
 
-const SOL_QUOTE_SHARE_BPS: u16 = 7_500;
-const SOL_ISSUER_MARGIN_BPS: u16 = 50;
-
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct AcceptQuoteArgs {
     pub policy_id: Pubkey,
@@ -157,8 +154,8 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
     let quote = solve_quote(
         sigma_pricing_s6,
         args.notional_usdc,
-        SOL_QUOTE_SHARE_BPS,
-        SOL_ISSUER_MARGIN_BPS,
+        ctx.accounts.protocol_config.sol_autocall_quote_share_bps,
+        ctx.accounts.protocol_config.sol_autocall_issuer_margin_bps,
         now,
         ConfidenceGate::Abort,
     )?;
@@ -187,8 +184,8 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         no_autocall_first_n_obs: NO_AUTOCALL_FIRST_N_OBS,
         current_observation_index: 0,
         offered_coupon_bps_s6: quote.offered_coupon_bps_s6,
-        quote_share_bps: SOL_QUOTE_SHARE_BPS,
-        issuer_margin_bps: SOL_ISSUER_MARGIN_BPS,
+        quote_share_bps: ctx.accounts.protocol_config.sol_autocall_quote_share_bps,
+        issuer_margin_bps: ctx.accounts.protocol_config.sol_autocall_issuer_margin_bps,
         accumulated_coupon_usdc: 0,
         ki_triggered: false,
         status: ProductStatus::Active,

@@ -36,14 +36,32 @@ pub enum KernelError {
     JupiterAccountsMissing,
     #[msg("Jupiter requested an unexpected signer account")]
     UnexpectedJupiterSigner,
+    #[msg("Jupiter route requested an unexpected account")]
+    UnexpectedJupiterAccount,
+    #[msg("declared hedge execution bounds are invalid")]
+    InvalidHedgeExecutionBounds,
+    #[msg("executed hedge position landed outside declared bounds")]
+    ExecutedHedgeOutsideBounds,
     #[msg("hedge sleeve swap produced invalid token balance deltas")]
     InvalidHedgeSwapBalanceDelta,
     #[msg("executed hedge price must be positive")]
     InvalidExecutedPrice,
+    #[msg("oracle price must be positive")]
+    InvalidOraclePrice,
+    #[msg("a hedge swap is already pending reconciliation")]
+    PendingHedgeSwapActive,
+    #[msg("no pending hedge swap is available to reconcile")]
+    PendingHedgeSwapMissing,
+    #[msg("pending hedge swap does not match the requested reconciliation")]
+    PendingHedgeSwapMismatch,
+    #[msg("hedge transaction must be prepare -> Jupiter -> record in one transaction")]
+    InvalidHedgeTransactionShape,
+    #[msg("hedge sleeve balance is below the approved swap input amount")]
+    InsufficientHedgeSleeveBalance,
     #[msg("treasury balance is below requested sweep amount")]
     InsufficientTreasuryBalance,
     #[msg("reserved max_liability exceeds escrow deposited into the underwriting vault")]
     PolicyEscrowInsufficient,
-    #[msg("manual hedge trade recording is disabled; use execute_hedge_swap")]
-    HedgeTradeRecordingDisabled,
+    #[msg("direct kernel Jupiter CPI execution is disabled; use prepare_hedge_swap + record_hedge_trade")]
+    DeprecatedHedgeExecutionPath,
 }

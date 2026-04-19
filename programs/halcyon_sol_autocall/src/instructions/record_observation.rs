@@ -152,6 +152,10 @@ pub fn handler(ctx: Context<RecordObservation>, expected_index: u8) -> Result<()
     {
         return Ok(());
     }
+    require!(
+        !ctx.accounts.product_registry_entry.paused,
+        HalcyonError::IssuancePausedPerProduct
+    );
 
     let terms = &ctx.accounts.product_terms;
     if terms.current_observation_index > expected_index {

@@ -162,6 +162,8 @@ pub(crate) fn mod_2pi_6(x: i64) -> i64 {
 }
 
 /// Core sin on [−π/4, π/4] at 1e6 scale. Internal.
+/// Caller must pre-reduce into this interval; this function does not do any
+/// angle wrapping on its own.
 pub(crate) fn sin_core6(x: i64) -> Result<i64, SolMathError> {
     let t = mul6(x, x)?;
     let mut r = SC4_6;
@@ -173,6 +175,8 @@ pub(crate) fn sin_core6(x: i64) -> Result<i64, SolMathError> {
 }
 
 /// Core cos on [−π/4, π/4] at 1e6 scale. Internal.
+/// Caller must pre-reduce into this interval; this function does not do any
+/// angle wrapping on its own.
 pub(crate) fn cos_core6(x: i64) -> Result<i64, SolMathError> {
     let t = mul6(x, x)?;
     let mut r = CC4_6;
@@ -467,4 +471,91 @@ pub fn nig_put_64(
     let disc = exp6(-mul6(r, t)?)?;
     let put_i = call - s + mul6(k, disc)?;
     Ok(if put_i > 0 { put_i } else { 0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libm::{cos, sin};
+
+    #[test]
+    fn i64_trig_sincos6_return_order_matches_quadrant_landmarks() {
+        let (sin0, cos0) = sincos6(0).unwrap();
+        assert_eq!(sin0, 0);
+        assert_eq!(cos0, SCALE_6);
+
+        let (sin_half_pi, cos_half_pi) = sincos6(PIH_6).unwrap();
+        assert!(
+            (sin_half_pi - SCALE_6).abs() <= 1,
+            "sin(pi/2)={sin_half_pi}"
+        );
+        assert!(cos_half_pi.abs() <= 1, "cos(pi/2)={cos_half_pi}");
+
+        let (sin_pi, cos_pi) = sincos6(PI6).unwrap();
+        assert!(sin_pi.abs() <= 1, "sin(pi)={sin_pi}");
+        assert!((cos_pi + SCALE_6).abs() <= 1, "cos(pi)={cos_pi}");
+
+        let (sin_neg_half_pi, cos_neg_half_pi) = sincos6(-PIH_6).unwrap();
+        assert!(
+            (sin_neg_half_pi + SCALE_6).abs() <= 1,
+            "sin(-pi/2)={sin_neg_half_pi}"
+        );
+        assert!(cos_neg_half_pi.abs() <= 1, "cos(-pi/2)={cos_neg_half_pi}");
+    }
+
+    #[test]
+    fn i64_trig_sincos6_matches_core_functions_on_reduced_domain() {
+        let mut x = -PIQ_6;
+        let mut worst_sin = 0i64;
+        let mut worst_cos = 0i64;
+        while x <= PIQ_6 {
+            let (sin_fused, cos_fused) = sincos6(x).unwrap();
+            let sin_sep = sin_core6(x).unwrap();
+            let cos_sep = cos_core6(x).unwrap();
+            worst_sin = worst_sin.max((sin_fused - sin_sep).abs());
+            worst_cos = worst_cos.max((cos_fused - cos_sep).abs());
+            x += 997;
+        }
+        assert_eq!(worst_sin, 0, "worst_sin={worst_sin}");
+        assert_eq!(worst_cos, 0, "worst_cos={worst_cos}");
+    }
+
+    #[test]
+    fn i64_trig_sincos6_preserves_pythagorean_identity_on_wide_sweep() {
+        let mut x = -12 * PI6;
+        let mut max_err = 0i64;
+        while x <= 12 * PI6 {
+            let (s, c) = sincos6(x).unwrap();
+            let sum_sq = mul6(s, s).unwrap() + mul6(c, c).unwrap();
+            max_err = max_err.max((sum_sq - SCALE_6).abs());
+            x += 12_345;
+        }
+        assert!(max_err <= 8, "max_err={max_err}");
+    }
+
+    #[test]
+    fn i64_trig_sincos6_tracks_host_reference_on_wide_sweep() {
+        let mut x = -12 * PI6;
+        let mut max_sin_err = 0i64;
+        let mut max_cos_err = 0i64;
+        while x <= 12 * PI6 {
+            let (s, c) = sincos6(x).unwrap();
+            let angle = x as f64 / SCALE_6 as f64;
+            let want_s = (sin(angle) * SCALE_6 as f64).round() as i64;
+            let want_c = (cos(angle) * SCALE_6 as f64).round() as i64;
+            max_sin_err = max_sin_err.max((s - want_s).abs());
+            max_cos_err = max_cos_err.max((c - want_c).abs());
+            x += 12_345;
+        }
+        assert!(max_sin_err <= 32, "max_sin_err={max_sin_err}");
+        assert!(max_cos_err <= 32, "max_cos_err={max_cos_err}");
+    }
+
+    #[test]
+    fn i64_exp6_current_boundary_semantics_hold() {
+        assert_eq!(exp6(20 * SCALE_6), Err(SolMathError::Overflow));
+        assert_eq!(exp6(-20 * SCALE_6), Ok(0));
+        assert_eq!(exp6(0), Ok(SCALE_6));
+        assert!(exp6(19 * SCALE_6).unwrap() > 0);
+    }
 }

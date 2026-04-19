@@ -9,6 +9,7 @@ pub use halcyon_sol_autocall::{AcceptQuoteArgs, QuotePreview};
 
 pub fn preview_quote_ix(
     protocol_config: Pubkey,
+    product_registry_entry: Pubkey,
     vault_sigma: Pubkey,
     regime_signal: Pubkey,
     pyth_sol: Pubkey,
@@ -18,6 +19,7 @@ pub fn preview_quote_ix(
         program_id: halcyon_sol_autocall::ID,
         accounts: halcyon_sol_autocall::accounts::PreviewQuote {
             protocol_config,
+            product_registry_entry,
             vault_sigma,
             regime_signal,
             pyth_sol,
@@ -38,10 +40,12 @@ pub async fn simulate_preview_quote(
     notional: u64,
 ) -> Result<QuotePreview> {
     let (protocol_config, _) = pda::protocol_config();
+    let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_sol_autocall::ID);
     let (vault_sigma, _) = pda::vault_sigma(&halcyon_sol_autocall::ID);
     let (regime_signal, _) = pda::regime_signal(&halcyon_sol_autocall::ID);
     let ix = preview_quote_ix(
         protocol_config,
+        product_registry_entry,
         vault_sigma,
         regime_signal,
         pyth_sol,

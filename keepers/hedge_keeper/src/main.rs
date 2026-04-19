@@ -5,25 +5,29 @@ use clap::Parser;
 use halcyon_client_sdk::{
     decode::{fetch_anchor_account, fetch_anchor_account_opt, list_policy_headers_for_product},
     pda,
-    tx::send_instructions,
+    tx::send_versioned_instructions,
 };
 use halcyon_sol_autocall_quote::autocall_hedged::{
     price_hedged_autocall, AutocallTerms, CouponQuoteMode, PricingModel,
 };
 use pyth_solana_receiver_sdk::price_update::{PriceUpdateV2, VerificationLevel};
 use serde::Deserialize;
+use solana_account_decoder::parse_address_lookup_table::{
+    parse_address_lookup_table, LookupTableAccountType,
+};
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     account::Account,
+    address_lookup_table::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
-    instruction::AccountMeta,
+    instruction::{AccountMeta, Instruction},
     program_pack::Pack,
     pubkey::Pubkey,
     signature::{Keypair, Signature},
     signer::Signer,
 };
 use spl_token::state::Account as SplTokenAccount;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -33,6 +37,7 @@ use tracing::{error, info, warn};
 
 const JUPITER_SLIPPAGE_BPS: u16 = 50;
 const JUPITER_PRICE_SANITY_BPS: u64 = 100;
+const JUPITER_TARGET_TOLERANCE_BPS: u64 = 25;
 const JUPITER_MAX_ACCOUNTS: u16 = 64;
 const ASSET_TAG_SOL_SPOT: [u8; 8] = *b"SOL.SPOT";
 
@@ -79,7 +84,7 @@ fn default_failure_budget() -> u32 {
 }
 
 fn default_jupiter_base_url() -> String {
-    "https://api.jup.ag/swap/v2".to_string()
+    "https://api.jup.ag/swap/v1".to_string()
 }
 
 fn default_allowed_jupiter_program_ids() -> Vec<String> {
@@ -200,12 +205,22 @@ struct JupiterInstructionPayload {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct JupiterBuildResponse {
-    input_mint: String,
-    output_mint: String,
-    in_amount: String,
-    out_amount: String,
+struct JupiterSwapInstructionsResponse {
+    #[serde(default)]
+    token_ledger_instruction: Option<JupiterInstructionPayload>,
+    #[serde(default)]
+    compute_budget_instructions: Vec<JupiterInstructionPayload>,
+    #[serde(default)]
+    setup_instructions: Vec<JupiterInstructionPayload>,
     swap_instruction: JupiterInstructionPayload,
+    #[serde(default)]
+    cleanup_instruction: Option<JupiterInstructionPayload>,
+    #[serde(default)]
+    other_instructions: Vec<JupiterInstructionPayload>,
+    #[serde(default)]
+    address_lookup_table_addresses: Vec<String>,
+    #[serde(default)]
+    addresses_by_lookup_table_address: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -217,8 +232,10 @@ enum TradeDirection {
 #[derive(Debug)]
 struct PlannedSwap {
     direction: TradeDirection,
-    build: JupiterBuildResponse,
+    instructions: JupiterSwapInstructionsResponse,
     quoted_price_s6: i64,
+    quoted_in_raw: u64,
+    quoted_out_raw: u64,
 }
 
 #[derive(Debug)]
@@ -413,6 +430,14 @@ fn effective_price_s6(usdc_raw: u64, sol_raw: u64) -> Result<i64> {
     i64::try_from(raw).context("effective price overflow")
 }
 
+fn bps_tolerance_raw(amount: u64, bps: u64) -> Result<u64> {
+    let raw = u128::from(amount)
+        .checked_mul(u128::from(bps))
+        .context("bps tolerance overflow")?
+        / 10_000u128;
+    Ok(u64::try_from(raw).context("bps tolerance overflow")?.max(1))
+}
+
 fn price_deviation_bps(reference_price_s6: i64, observed_price_s6: i64) -> Result<u64> {
     anyhow::ensure!(reference_price_s6 > 0, "reference price must be positive");
     anyhow::ensure!(observed_price_s6 > 0, "observed price must be positive");
@@ -497,31 +522,21 @@ async fn read_wallet_custody(
     })
 }
 
-fn deserialize_jupiter_swap_payload(
+fn decode_instruction_payload(
     payload: &JupiterInstructionPayload,
-    allowed_programs: &BTreeSet<Pubkey>,
-    sleeve_authority: &Pubkey,
-    tx_signer: &Pubkey,
 ) -> Result<(Pubkey, Vec<AccountMeta>, Vec<u8>)> {
-    let program_id = Pubkey::from_str(&payload.program_id)
-        .with_context(|| format!("parsing Jupiter program id {}", payload.program_id))?;
-    anyhow::ensure!(
-        allowed_programs.contains(&program_id),
-        "Jupiter instruction uses non-allowlisted program {}",
-        program_id
-    );
+    let program_id = Pubkey::from_str(&payload.program_id).with_context(|| {
+        format!(
+            "parsing Jupiter instruction program id {}",
+            payload.program_id
+        )
+    })?;
     let accounts = payload
         .accounts
         .iter()
         .map(|account| {
             let pubkey = Pubkey::from_str(&account.pubkey)
                 .with_context(|| format!("parsing Jupiter account {}", account.pubkey))?;
-            anyhow::ensure!(
-                !account.is_signer || pubkey == *sleeve_authority || pubkey == *tx_signer,
-                "Jupiter instruction requested unexpected signer {} for program {}",
-                pubkey,
-                program_id
-            );
             Ok(AccountMeta {
                 pubkey,
                 is_signer: account.is_signer,
@@ -535,32 +550,188 @@ fn deserialize_jupiter_swap_payload(
     Ok((program_id, accounts, data))
 }
 
-async fn jupiter_build_swap(
+fn transform_route_accounts(
+    accounts: &[AccountMeta],
+    replacements: &BTreeMap<Pubkey, Pubkey>,
+) -> Vec<AccountMeta> {
+    accounts
+        .iter()
+        .map(|account| AccountMeta {
+            pubkey: *replacements.get(&account.pubkey).unwrap_or(&account.pubkey),
+            is_signer: account.is_signer,
+            is_writable: account.is_writable,
+        })
+        .collect()
+}
+
+fn deserialize_jupiter_swap_payload(
+    payload: &JupiterInstructionPayload,
+    allowed_programs: &BTreeSet<Pubkey>,
+    expected_signer: &Pubkey,
+    replacements: &BTreeMap<Pubkey, Pubkey>,
+) -> Result<(Pubkey, Vec<AccountMeta>, Vec<u8>)> {
+    let (program_id, decoded_accounts, data) = decode_instruction_payload(payload)?;
+    anyhow::ensure!(
+        allowed_programs.contains(&program_id),
+        "Jupiter instruction uses non-allowlisted program {}",
+        program_id
+    );
+    let accounts = transform_route_accounts(&decoded_accounts, replacements);
+    for account in &accounts {
+        anyhow::ensure!(
+            !account.is_signer || account.pubkey == *expected_signer,
+            "Jupiter instruction requested unexpected signer {} for program {}",
+            account.pubkey,
+            program_id
+        );
+    }
+    Ok((program_id, accounts, data))
+}
+
+fn ensure_required_route_accounts(
+    accounts: &[AccountMeta],
+    expected_signer: &Pubkey,
+    source_token_account: &Pubkey,
+    destination_token_account: &Pubkey,
+    forbidden_pubkeys: &[Pubkey],
+) -> Result<()> {
+    anyhow::ensure!(
+        accounts
+            .iter()
+            .any(|account| account.pubkey == *expected_signer && account.is_signer),
+        "Jupiter route omitted expected signer {expected_signer}"
+    );
+    anyhow::ensure!(
+        accounts
+            .iter()
+            .any(|account| account.pubkey == *source_token_account && account.is_writable),
+        "Jupiter route omitted writable source token account {source_token_account}"
+    );
+    anyhow::ensure!(
+        accounts
+            .iter()
+            .any(|account| account.pubkey == *destination_token_account && account.is_writable),
+        "Jupiter route omitted writable destination token account {destination_token_account}"
+    );
+    for forbidden in forbidden_pubkeys {
+        anyhow::ensure!(
+            !accounts.iter().any(|account| account.pubkey == *forbidden),
+            "Jupiter route referenced forbidden account {forbidden}"
+        );
+    }
+    Ok(())
+}
+
+fn ensure_only_expected_signer(
+    accounts: &[AccountMeta],
+    expected_signer: &Pubkey,
+    label: &str,
+) -> Result<()> {
+    for account in accounts {
+        anyhow::ensure!(
+            !account.is_signer || account.pubkey == *expected_signer,
+            "{label} requested unexpected signer {}",
+            account.pubkey
+        );
+    }
+    Ok(())
+}
+
+fn json_string_field<'a>(value: &'a serde_json::Value, field: &str) -> Result<&'a str> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .with_context(|| format!("missing Jupiter field `{field}`"))
+}
+
+async fn lookup_table_accounts(
+    rpc: &RpcClient,
+    response: &JupiterSwapInstructionsResponse,
+) -> Result<Vec<AddressLookupTableAccount>> {
+    if !response.addresses_by_lookup_table_address.is_empty() {
+        return response
+            .addresses_by_lookup_table_address
+            .iter()
+            .map(|(table, addresses)| {
+                Ok(AddressLookupTableAccount {
+                    key: Pubkey::from_str(table)
+                        .with_context(|| format!("parsing ALT address {table}"))?,
+                    addresses: addresses
+                        .iter()
+                        .map(|address| {
+                            Pubkey::from_str(address)
+                                .with_context(|| format!("parsing ALT entry address {address}"))
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                })
+            })
+            .collect();
+    }
+    if response.address_lookup_table_addresses.is_empty() {
+        return Ok(Vec::new());
+    }
+    let table_pubkeys = response
+        .address_lookup_table_addresses
+        .iter()
+        .map(|table| Pubkey::from_str(table).with_context(|| format!("parsing ALT address {table}")))
+        .collect::<Result<Vec<_>>>()?;
+    let accounts = rpc
+        .get_multiple_accounts(&table_pubkeys)
+        .await
+        .context("fetching Jupiter address lookup table accounts")?;
+    anyhow::ensure!(
+        accounts.len() == table_pubkeys.len(),
+        "lookup table RPC returned {} accounts for {} requested tables",
+        accounts.len(),
+        table_pubkeys.len()
+    );
+    table_pubkeys
+        .into_iter()
+        .zip(accounts.into_iter())
+        .map(|(table_pubkey, account)| {
+            let account = account.with_context(|| {
+                format!("lookup table account {table_pubkey} was missing from RPC response")
+            })?;
+            let parsed = parse_address_lookup_table(&account.data).with_context(|| {
+                format!("parsing lookup table account {table_pubkey}")
+            })?;
+            let LookupTableAccountType::LookupTable(table) = parsed else {
+                anyhow::bail!("lookup table account {table_pubkey} is uninitialized");
+            };
+            let addresses = table
+                .addresses
+                .into_iter()
+                .map(|address| {
+                    Pubkey::from_str(&address).with_context(|| {
+                        format!("parsing ALT entry address {address} from {table_pubkey}")
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(AddressLookupTableAccount {
+                key: table_pubkey,
+                addresses,
+            })
+        })
+        .collect()
+}
+
+async fn jupiter_quote(
     client: &KeeperClient,
     cfg: &KeeperConfig,
     input_mint: &Pubkey,
     output_mint: &Pubkey,
     amount: u64,
-    destination_token_account: &Pubkey,
-    taker: &Pubkey,
-) -> Result<JupiterBuildResponse> {
+) -> Result<serde_json::Value> {
     let api_key = cfg.jupiter_api_key()?;
-    let endpoint = format!("{}/build", cfg.jupiter_base_url.trim_end_matches('/'));
+    let endpoint = format!("{}/quote", cfg.jupiter_base_url.trim_end_matches('/'));
     let query = vec![
         ("inputMint", input_mint.to_string()),
         ("outputMint", output_mint.to_string()),
         ("amount", amount.to_string()),
-        ("taker", taker.to_string()),
-        ("payer", client.signer.pubkey().to_string()),
         ("slippageBps", JUPITER_SLIPPAGE_BPS.to_string()),
-        ("wrapAndUnwrapSol", "false".to_string()),
-        (
-            "destinationTokenAccount",
-            destination_token_account.to_string(),
-        ),
+        ("swapMode", "ExactIn".to_string()),
         ("maxAccounts", JUPITER_MAX_ACCOUNTS.to_string()),
     ];
-
     let response = client
         .http
         .get(&endpoint)
@@ -568,22 +739,70 @@ async fn jupiter_build_swap(
         .query(&query)
         .send()
         .await
-        .with_context(|| format!("calling Jupiter build endpoint {endpoint}"))?;
+        .with_context(|| format!("calling Jupiter quote endpoint {endpoint}"))?;
     let status = response.status();
     let body = response
         .text()
         .await
-        .context("reading Jupiter response body")?;
+        .context("reading Jupiter quote response body")?;
     anyhow::ensure!(
         status.is_success(),
-        "Jupiter build request failed ({status}): {body}"
+        "Jupiter quote request failed ({status}): {body}"
     );
-    serde_json::from_str(&body).context("parsing Jupiter build response")
+    serde_json::from_str(&body).context("parsing Jupiter quote response")
 }
 
-fn quote_price_s6(build: &JupiterBuildResponse, direction: TradeDirection) -> Result<i64> {
-    let in_amount = parse_u64_field("inAmount", &build.in_amount)?;
-    let out_amount = parse_u64_field("outAmount", &build.out_amount)?;
+async fn jupiter_swap_instructions(
+    client: &KeeperClient,
+    cfg: &KeeperConfig,
+    quote: &serde_json::Value,
+    destination_token_account: &Pubkey,
+    taker: &Pubkey,
+) -> Result<JupiterSwapInstructionsResponse> {
+    let api_key = cfg.jupiter_api_key()?;
+    let endpoint = format!(
+        "{}/swap-instructions",
+        cfg.jupiter_base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "userPublicKey": taker.to_string(),
+        "payer": taker.to_string(),
+        "wrapAndUnwrapSol": false,
+        "asLegacyTransaction": false,
+        "dynamicComputeUnitLimit": true,
+        "destinationTokenAccount": destination_token_account.to_string(),
+        "quoteResponse": quote,
+        "prioritizationFeeLamports": {
+            "priorityLevelWithMaxLamports": {
+                "priorityLevel": "medium",
+                "maxLamports": 500_000u64,
+                "global": false
+            }
+        }
+    });
+    let response = client
+        .http
+        .post(&endpoint)
+        .header("x-api-key", api_key)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("calling Jupiter swap-instructions endpoint {endpoint}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .context("reading Jupiter swap-instructions response body")?;
+    anyhow::ensure!(
+        status.is_success(),
+        "Jupiter swap-instructions request failed ({status}): {body}"
+    );
+    serde_json::from_str(&body).context("parsing Jupiter swap-instructions response")
+}
+
+fn quote_price_s6(quote: &serde_json::Value, direction: TradeDirection) -> Result<i64> {
+    let in_amount = parse_u64_field("inAmount", json_string_field(quote, "inAmount")?)?;
+    let out_amount = parse_u64_field("outAmount", json_string_field(quote, "outAmount")?)?;
     match direction {
         TradeDirection::BuyWsol => effective_price_s6(in_amount, out_amount),
         TradeDirection::SellWsol => effective_price_s6(out_amount, in_amount),
@@ -594,7 +813,6 @@ async fn plan_jupiter_swap(
     client: &KeeperClient,
     cfg: &KeeperConfig,
     pre_custody: &WalletCustody,
-    sleeve_authority: &Pubkey,
     desired_trade_raw: i64,
     spot_price_s6: i64,
 ) -> Result<PlannedSwap> {
@@ -606,7 +824,7 @@ async fn plan_jupiter_swap(
         TradeDirection::SellWsol
     };
 
-    let build = match direction {
+    let (quote, instructions) = match direction {
         TradeDirection::BuyWsol => {
             let desired_out_raw =
                 u64::try_from(desired_trade_raw).context("buy target overflow")?;
@@ -626,24 +844,31 @@ async fn plan_jupiter_swap(
                 "hedge sleeve has no USDC available for a required buy hedge"
             );
 
-            let mut build = jupiter_build_swap(
+            let mut quote = jupiter_quote(
                 client,
                 cfg,
                 &client.usdc_mint,
                 &client.wsol_mint,
                 requested_input_raw,
+            )
+            .await?;
+            let mut instructions = jupiter_swap_instructions(
+                client,
+                cfg,
+                &quote,
                 &pre_custody.wsol_ata,
-                sleeve_authority,
+                &client.signer.pubkey(),
             )
             .await?;
             anyhow::ensure!(
-                build.input_mint == client.usdc_mint.to_string()
-                    && build.output_mint == client.wsol_mint.to_string(),
+                json_string_field(&quote, "inputMint")? == client.usdc_mint.to_string()
+                    && json_string_field(&quote, "outputMint")? == client.wsol_mint.to_string(),
                 "unexpected Jupiter route pair {} -> {} for buy hedge",
-                build.input_mint,
-                build.output_mint
+                json_string_field(&quote, "inputMint")?,
+                json_string_field(&quote, "outputMint")?
             );
-            let quoted_out_raw = parse_u64_field("outAmount", &build.out_amount)?;
+            let quoted_out_raw =
+                parse_u64_field("outAmount", json_string_field(&quote, "outAmount")?)?;
             anyhow::ensure!(quoted_out_raw > 0, "Jupiter quoted zero WSOL output");
 
             let adjusted_input_raw = ((u128::from(requested_input_raw)
@@ -654,25 +879,31 @@ async fn plan_jupiter_swap(
             .min(u128::from(pre_custody.usdc_balance_raw));
 
             if adjusted_input_raw > 0 && adjusted_input_raw != u128::from(requested_input_raw) {
-                build = jupiter_build_swap(
+                quote = jupiter_quote(
                     client,
                     cfg,
                     &client.usdc_mint,
                     &client.wsol_mint,
                     u64::try_from(adjusted_input_raw).context("adjusted buy amount overflow")?,
+                )
+                .await?;
+                instructions = jupiter_swap_instructions(
+                    client,
+                    cfg,
+                    &quote,
                     &pre_custody.wsol_ata,
-                    sleeve_authority,
+                    &client.signer.pubkey(),
                 )
                 .await?;
                 anyhow::ensure!(
-                    build.input_mint == client.usdc_mint.to_string()
-                        && build.output_mint == client.wsol_mint.to_string(),
+                    json_string_field(&quote, "inputMint")? == client.usdc_mint.to_string()
+                        && json_string_field(&quote, "outputMint")? == client.wsol_mint.to_string(),
                     "unexpected Jupiter route pair {} -> {} for adjusted buy hedge",
-                    build.input_mint,
-                    build.output_mint
+                    json_string_field(&quote, "inputMint")?,
+                    json_string_field(&quote, "outputMint")?
                 );
             }
-            build
+            (quote, instructions)
         }
         TradeDirection::SellWsol => {
             let requested_input_raw = abs_i64_to_u64(desired_trade_raw, "desired_trade_raw")?
@@ -681,28 +912,36 @@ async fn plan_jupiter_swap(
                 requested_input_raw > 0,
                 "hedge sleeve has no WSOL inventory available for a required sell hedge"
             );
-            let build = jupiter_build_swap(
+            let quote = jupiter_quote(
                 client,
                 cfg,
                 &client.wsol_mint,
                 &client.usdc_mint,
                 requested_input_raw,
+            )
+            .await?;
+            let instructions = jupiter_swap_instructions(
+                client,
+                cfg,
+                &quote,
                 &pre_custody.usdc_ata,
-                sleeve_authority,
+                &client.signer.pubkey(),
             )
             .await?;
             anyhow::ensure!(
-                build.input_mint == client.wsol_mint.to_string()
-                    && build.output_mint == client.usdc_mint.to_string(),
+                json_string_field(&quote, "inputMint")? == client.wsol_mint.to_string()
+                    && json_string_field(&quote, "outputMint")? == client.usdc_mint.to_string(),
                 "unexpected Jupiter route pair {} -> {} for sell hedge",
-                build.input_mint,
-                build.output_mint
+                json_string_field(&quote, "inputMint")?,
+                json_string_field(&quote, "outputMint")?
             );
-            build
+            (quote, instructions)
         }
     };
 
-    let quoted_price_s6 = quote_price_s6(&build, direction)?;
+    let quoted_in_raw = parse_u64_field("inAmount", json_string_field(&quote, "inAmount")?)?;
+    let quoted_out_raw = parse_u64_field("outAmount", json_string_field(&quote, "outAmount")?)?;
+    let quoted_price_s6 = quote_price_s6(&quote, direction)?;
     let quote_deviation_bps = price_deviation_bps(spot_price_s6, quoted_price_s6)?;
     anyhow::ensure!(
         quote_deviation_bps <= JUPITER_PRICE_SANITY_BPS,
@@ -714,8 +953,10 @@ async fn plan_jupiter_swap(
 
     Ok(PlannedSwap {
         direction,
-        build,
+        instructions,
         quoted_price_s6,
+        quoted_in_raw,
+        quoted_out_raw,
     })
 }
 
@@ -730,43 +971,190 @@ async fn execute_target_swap(
     sequence: u64,
 ) -> Result<ExecutedSwap> {
     let hedge_sleeve = pda::hedge_sleeve(&client.sol_autocall_program).0;
-    let planned = plan_jupiter_swap(
-        client,
-        cfg,
-        &pre_custody,
-        &hedge_sleeve,
-        desired_trade_raw,
-        spot_price_s6,
-    )
-    .await?;
+    let planned =
+        plan_jupiter_swap(client, cfg, &pre_custody, desired_trade_raw, spot_price_s6).await?;
 
     let allowed_programs = cfg.allowed_jupiter_programs()?;
+    anyhow::ensure!(
+        planned.instructions.other_instructions.is_empty(),
+        "Jupiter returned unsupported otherInstructions"
+    );
+    anyhow::ensure!(
+        planned.instructions.token_ledger_instruction.is_none(),
+        "Jupiter returned unsupported tokenLedgerInstruction"
+    );
+    anyhow::ensure!(
+        planned.instructions.cleanup_instruction.is_none(),
+        "Jupiter returned unsupported cleanupInstruction"
+    );
+    let keeper_usdc_ata = pda::associated_token_account(&client.signer.pubkey(), &client.usdc_mint);
+    let keeper_wsol_ata = pda::associated_token_account(&client.signer.pubkey(), &client.wsol_mint);
+    let replacements = BTreeMap::from([
+        (keeper_usdc_ata, pre_custody.usdc_ata),
+        (keeper_wsol_ata, pre_custody.wsol_ata),
+    ]);
+    let forbidden_route_accounts = [
+        client.kernel_program,
+        hedge_sleeve,
+        keeper_usdc_ata,
+        keeper_wsol_ata,
+    ];
     let (jupiter_program, jupiter_accounts, jupiter_instruction_data) =
         deserialize_jupiter_swap_payload(
-            &planned.build.swap_instruction,
+            &planned.instructions.swap_instruction,
             &allowed_programs,
-            &hedge_sleeve,
             &client.signer.pubkey(),
+            &replacements,
         )?;
-    let ix = halcyon_client_sdk::kernel::execute_hedge_swap_ix(
+    match planned.direction {
+        TradeDirection::BuyWsol => ensure_required_route_accounts(
+            &jupiter_accounts,
+            &client.signer.pubkey(),
+            &pre_custody.usdc_ata,
+            &pre_custody.wsol_ata,
+            &forbidden_route_accounts,
+        )?,
+        TradeDirection::SellWsol => ensure_required_route_accounts(
+            &jupiter_accounts,
+            &client.signer.pubkey(),
+            &pre_custody.wsol_ata,
+            &pre_custody.usdc_ata,
+            &forbidden_route_accounts,
+        )?,
+    }
+
+    let (min_position_raw, max_position_raw) = match planned.direction {
+        TradeDirection::BuyWsol => {
+            let desired_out_raw = abs_i64_to_u64(desired_trade_raw, "desired_trade_raw")?;
+            let overfill_tolerance_raw =
+                bps_tolerance_raw(desired_out_raw.max(1), JUPITER_TARGET_TOLERANCE_BPS)?;
+            anyhow::ensure!(
+                planned.quoted_out_raw <= desired_out_raw.saturating_add(overfill_tolerance_raw),
+                "Jupiter buy quote overfills target: quoted_out_raw={} desired_out_raw={}",
+                planned.quoted_out_raw,
+                desired_out_raw
+            );
+            let min_output_raw = (u128::from(planned.quoted_out_raw)
+                * u128::from(10_000u64.saturating_sub(u64::from(JUPITER_SLIPPAGE_BPS))))
+                / 10_000u128;
+            let min_position_raw = old_position_raw
+                .checked_add(i64::try_from(min_output_raw).context("minimum buy output overflow")?)
+                .context("minimum buy position overflow")?;
+            let max_output_raw = planned
+                .quoted_out_raw
+                .saturating_add(bps_tolerance_raw(planned.quoted_out_raw.max(1), 10)?);
+            let quoted_position_raw = old_position_raw
+                .checked_add(i64::try_from(max_output_raw).context("quoted buy output overflow")?)
+                .context("maximum buy position overflow")?;
+            let max_position_raw = quoted_position_raw.min(target_position_raw);
+            anyhow::ensure!(
+                min_position_raw <= max_position_raw,
+                "Jupiter buy route cannot satisfy declared target bounds: min_position_raw={} max_position_raw={} target_position_raw={}",
+                min_position_raw,
+                max_position_raw,
+                target_position_raw
+            );
+            (min_position_raw, max_position_raw)
+        }
+        TradeDirection::SellWsol => {
+            let exact_position_raw = old_position_raw
+                .checked_sub(
+                    i64::try_from(planned.quoted_in_raw).context("sell route input overflow")?,
+                )
+                .context("sell target position overflow")?;
+            anyhow::ensure!(
+                exact_position_raw >= target_position_raw,
+                "Jupiter sell route would overshoot target: exact_position_raw={} target_position_raw={}",
+                exact_position_raw,
+                target_position_raw
+            );
+            (exact_position_raw, exact_position_raw)
+        }
+    };
+    let prepare_ix = halcyon_client_sdk::kernel::prepare_hedge_swap_ix(
         &client.signer.pubkey(),
         &client.signer.pubkey(),
         &client.usdc_mint,
         &client.pyth_sol,
-        &jupiter_program,
-        halcyon_kernel::ExecuteHedgeSwapArgs {
+        halcyon_kernel::PrepareHedgeSwapArgs {
             product_program_id: client.sol_autocall_program,
             asset_tag: ASSET_TAG_SOL_SPOT,
             leg_index: 0,
             old_position_raw,
             target_position_raw,
+            min_position_raw,
+            max_position_raw,
+            approved_input_amount: planned.quoted_in_raw,
             max_slippage_bps: JUPITER_PRICE_SANITY_BPS as u16,
-            jupiter_instruction_data,
             sequence,
         },
-        jupiter_accounts,
     );
-    let signature = send_instructions(&client.rpc, &client.signer, vec![ix]).await?;
+    let record_ix = halcyon_client_sdk::kernel::record_hedge_trade_ix(
+        &client.signer.pubkey(),
+        &client.usdc_mint,
+        halcyon_kernel::RecordHedgeTradeArgs {
+            product_program_id: client.sol_autocall_program,
+            sequence,
+        },
+    );
+    let mut instructions = Vec::new();
+    for payload in &planned.instructions.compute_budget_instructions {
+        let (program_id, accounts, data) = decode_instruction_payload(payload)?;
+        anyhow::ensure!(
+            program_id == solana_sdk::compute_budget::id(),
+            "unexpected Jupiter compute budget program {}",
+            program_id
+        );
+        ensure_only_expected_signer(
+            &accounts,
+            &client.signer.pubkey(),
+            "Jupiter compute budget instruction",
+        )?;
+        instructions.push(Instruction {
+            program_id,
+            accounts,
+            data,
+        });
+    }
+    let sleeve_ata_targets = [pre_custody.usdc_ata, pre_custody.wsol_ata];
+    for payload in &planned.instructions.setup_instructions {
+        let (program_id, accounts, _) = decode_instruction_payload(payload)?;
+        anyhow::ensure!(
+            program_id == spl_associated_token_account::ID,
+            "unsupported Jupiter setup instruction program {}",
+            program_id
+        );
+        ensure_only_expected_signer(
+            &accounts,
+            &client.signer.pubkey(),
+            "Jupiter setup instruction",
+        )?;
+        anyhow::ensure!(
+            accounts.iter().any(|account| {
+                account.is_writable && sleeve_ata_targets.contains(&account.pubkey)
+            }),
+            "Jupiter setup instruction did not target a sleeve custody ATA"
+        );
+        warn!(
+            target = "hedge_keeper",
+            "dropping Jupiter setup instructions; sleeve ATAs are prepared by the kernel instruction",
+        );
+    }
+    instructions.push(prepare_ix);
+    instructions.push(Instruction {
+        program_id: jupiter_program,
+        accounts: jupiter_accounts,
+        data: jupiter_instruction_data,
+    });
+    instructions.push(record_ix);
+    let lookup_table_accounts = lookup_table_accounts(client.rpc.as_ref(), &planned.instructions).await?;
+    let signature = send_versioned_instructions(
+        &client.rpc,
+        &client.signer,
+        instructions,
+        lookup_table_accounts,
+    )
+    .await?;
     let post_custody = read_wallet_custody(
         &client.rpc,
         &hedge_sleeve,
@@ -791,7 +1179,7 @@ async fn execute_target_swap(
         TradeDirection::BuyWsol => {
             anyhow::ensure!(
                 actual_position_delta_raw > 0 && actual_usdc_delta_raw < 0,
-                "kernel-executed buy hedge produced unexpected balance deltas: position_delta_raw={} usdc_delta_raw={}",
+                "keeper-built buy hedge produced unexpected balance deltas: position_delta_raw={} usdc_delta_raw={}",
                 actual_position_delta_raw,
                 actual_usdc_delta_raw
             );
@@ -799,7 +1187,7 @@ async fn execute_target_swap(
         TradeDirection::SellWsol => {
             anyhow::ensure!(
                 actual_position_delta_raw < 0 && actual_usdc_delta_raw > 0,
-                "kernel-executed sell hedge produced unexpected balance deltas: position_delta_raw={} usdc_delta_raw={}",
+                "keeper-built sell hedge produced unexpected balance deltas: position_delta_raw={} usdc_delta_raw={}",
                 actual_position_delta_raw,
                 actual_usdc_delta_raw
             );
@@ -1027,7 +1415,7 @@ async fn run_once(client: &KeeperClient, cfg: &KeeperConfig) -> Result<()> {
             target_position_raw,
             current_position_raw,
             trade_target_raw,
-            "dry-run: kernel execute_hedge_swap not invoked",
+            "dry-run: keeper-built hedge transaction not submitted",
         );
         return Ok(());
     }
@@ -1065,7 +1453,7 @@ async fn run_once(client: &KeeperClient, cfg: &KeeperConfig) -> Result<()> {
         new_position_raw,
         trade_delta_raw,
         sequence,
-        "executed kernel-backed hedge swap",
+        "executed keeper-built hedge swap",
     );
     Ok(())
 }
@@ -1140,4 +1528,134 @@ fn init_tracing() {
         .json()
         .with_current_span(false)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_payload(
+        program_id: Pubkey,
+        accounts: Vec<(Pubkey, bool, bool)>,
+    ) -> JupiterInstructionPayload {
+        JupiterInstructionPayload {
+            program_id: program_id.to_string(),
+            accounts: accounts
+                .into_iter()
+                .map(
+                    |(pubkey, is_signer, is_writable)| JupiterInstructionAccount {
+                        pubkey: pubkey.to_string(),
+                        is_signer,
+                        is_writable,
+                    },
+                )
+                .collect(),
+            data: base64::engine::general_purpose::STANDARD.encode([1u8, 2, 3, 4]),
+        }
+    }
+
+    #[test]
+    fn rejects_non_allowlisted_jupiter_program() {
+        let keeper = Pubkey::new_unique();
+        let allowed_program = Pubkey::new_unique();
+        let rejected_program = Pubkey::new_unique();
+        let payload = sample_payload(
+            rejected_program,
+            vec![(keeper, true, false), (Pubkey::new_unique(), false, true)],
+        );
+        let allowed = BTreeSet::from([allowed_program]);
+
+        let err = deserialize_jupiter_swap_payload(&payload, &allowed, &keeper, &BTreeMap::new())
+            .expect_err("must fail");
+        assert!(
+            err.to_string().contains("non-allowlisted program"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn rejects_unexpected_signer_in_route_payload() {
+        let keeper = Pubkey::new_unique();
+        let allowed_program = Pubkey::new_unique();
+        let payload = sample_payload(
+            allowed_program,
+            vec![
+                (keeper, true, false),
+                (Pubkey::new_unique(), true, false),
+                (Pubkey::new_unique(), false, true),
+            ],
+        );
+        let allowed = BTreeSet::from([allowed_program]);
+
+        let err = deserialize_jupiter_swap_payload(&payload, &allowed, &keeper, &BTreeMap::new())
+            .expect_err("must fail");
+        assert!(err.to_string().contains("unexpected signer"), "{err:#}");
+    }
+
+    #[test]
+    fn rejects_forbidden_route_accounts() {
+        let keeper = Pubkey::new_unique();
+        let source = Pubkey::new_unique();
+        let destination = Pubkey::new_unique();
+        let forbidden = Pubkey::new_unique();
+        let accounts = vec![
+            AccountMeta::new_readonly(keeper, true),
+            AccountMeta::new(source, false),
+            AccountMeta::new(destination, false),
+            AccountMeta::new_readonly(forbidden, false),
+        ];
+
+        let err =
+            ensure_required_route_accounts(&accounts, &keeper, &source, &destination, &[forbidden])
+                .expect_err("must fail");
+        assert!(err.to_string().contains("forbidden account"), "{err:#}");
+    }
+
+    #[test]
+    fn rejects_missing_writable_destination_account() {
+        let keeper = Pubkey::new_unique();
+        let source = Pubkey::new_unique();
+        let destination = Pubkey::new_unique();
+        let accounts = vec![
+            AccountMeta::new_readonly(keeper, true),
+            AccountMeta::new(source, false),
+            AccountMeta::new_readonly(destination, false),
+        ];
+
+        let err = ensure_required_route_accounts(&accounts, &keeper, &source, &destination, &[])
+            .expect_err("must fail");
+        assert!(
+            err.to_string()
+                .contains("omitted writable destination token account"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn accepts_route_when_only_keeper_signs_and_required_accounts_are_present() {
+        let keeper = Pubkey::new_unique();
+        let keeper_source = Pubkey::new_unique();
+        let sleeve_source = Pubkey::new_unique();
+        let destination = Pubkey::new_unique();
+        let allowed_program = Pubkey::new_unique();
+        let payload = sample_payload(
+            allowed_program,
+            vec![
+                (keeper, true, false),
+                (keeper_source, false, true),
+                (destination, false, true),
+            ],
+        );
+        let allowed = BTreeSet::from([allowed_program]);
+        let replacements = BTreeMap::from([(keeper_source, sleeve_source)]);
+
+        let (decoded_program, accounts, data) =
+            deserialize_jupiter_swap_payload(&payload, &allowed, &keeper, &replacements)
+                .expect("must decode");
+        assert_eq!(decoded_program, allowed_program);
+        assert_eq!(data, vec![1u8, 2, 3, 4]);
+
+        ensure_required_route_accounts(&accounts, &keeper, &sleeve_source, &destination, &[])
+            .expect("must accept");
+    }
 }

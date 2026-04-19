@@ -79,6 +79,6 @@ async fn fire_hedge(ctx: &CliContext, args: FireHedgeArgs) -> Result<()> {
     let _ = ctx;
     let _ = args;
     anyhow::bail!(
-        "keepers fire-hedge is disabled; manual hedge recording was retired. Use the hedge keeper's execute_hedge_swap path instead."
+        "keepers fire-hedge is disabled; manual hedge recording was retired. Use the hedge keeper prepare_hedge_swap -> Jupiter swap -> record_hedge_trade flow instead."
     )
 }

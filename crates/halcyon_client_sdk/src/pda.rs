@@ -103,6 +103,13 @@ pub fn hedge_book(product_program_id: &Pubkey) -> (Pubkey, u8) {
     )
 }
 
+pub fn pending_hedge_swap(product_program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[seeds::PENDING_HEDGE_SWAP, product_program_id.as_ref()],
+        &halcyon_kernel::ID,
+    )
+}
+
 pub fn policy(policy_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seeds::POLICY, policy_id.as_ref()], &halcyon_kernel::ID)
 }

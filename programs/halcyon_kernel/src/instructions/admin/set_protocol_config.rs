@@ -11,6 +11,12 @@ pub struct PremiumSplitsBps {
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct SolAutocallQuoteConfigBps {
+    pub quote_share_bps: u16,
+    pub issuer_margin_bps: u16,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct SetProtocolConfigArgs {
     pub utilization_cap_bps: Option<u64>,
     pub sigma_staleness_cap_secs: Option<i64>,
@@ -18,12 +24,14 @@ pub struct SetProtocolConfigArgs {
     pub regression_staleness_cap_secs: Option<i64>,
     pub pyth_quote_staleness_cap_secs: Option<i64>,
     pub pyth_settle_staleness_cap_secs: Option<i64>,
+    pub quote_ttl_secs: Option<i64>,
     pub ewma_rate_limit_secs: Option<i64>,
     pub senior_cooldown_secs: Option<i64>,
     pub sigma_floor_annualised_s6: Option<i64>,
     pub k12_correction_sha256: Option<[u8; 32]>,
     pub daily_ki_correction_sha256: Option<[u8; 32]>,
     pub premium_splits_bps: Option<PremiumSplitsBps>,
+    pub sol_autocall_quote_config_bps: Option<SolAutocallQuoteConfigBps>,
     pub treasury_destination: Option<Pubkey>,
 }
 
@@ -62,6 +70,9 @@ pub fn handler(ctx: Context<SetProtocolConfig>, args: SetProtocolConfigArgs) -> 
     if let Some(x) = args.pyth_settle_staleness_cap_secs {
         cfg.pyth_settle_staleness_cap_secs = x;
     }
+    if let Some(x) = args.quote_ttl_secs {
+        cfg.quote_ttl_secs = x;
+    }
     if let Some(x) = args.ewma_rate_limit_secs {
         cfg.ewma_rate_limit_secs = x;
     }
@@ -86,10 +97,38 @@ pub fn handler(ctx: Context<SetProtocolConfig>, args: SetProtocolConfigArgs) -> 
             KernelError::BadConfig
         );
     }
+    if let Some(quote_cfg) = args.sol_autocall_quote_config_bps {
+        cfg.sol_autocall_quote_share_bps = quote_cfg.quote_share_bps;
+        cfg.sol_autocall_issuer_margin_bps = quote_cfg.issuer_margin_bps;
+    }
     if let Some(dst) = args.treasury_destination {
         require_keys_neq!(dst, Pubkey::default(), HalcyonError::DestinationNotAllowed);
         cfg.treasury_destination = dst;
     }
+
+    require!(cfg.utilization_cap_bps <= 10_000, KernelError::BadConfig);
+    require!(cfg.senior_cooldown_secs >= 0, KernelError::BadConfig);
+    require!(cfg.ewma_rate_limit_secs > 0, KernelError::BadConfig);
+    require!(cfg.sigma_staleness_cap_secs > 0, KernelError::BadConfig);
+    require!(cfg.regime_staleness_cap_secs > 0, KernelError::BadConfig);
+    require!(
+        cfg.regression_staleness_cap_secs > 0,
+        KernelError::BadConfig
+    );
+    require!(
+        cfg.pyth_quote_staleness_cap_secs > 0,
+        KernelError::BadConfig
+    );
+    require!(
+        cfg.pyth_settle_staleness_cap_secs > 0,
+        KernelError::BadConfig
+    );
+    require!(cfg.quote_ttl_secs > 0, KernelError::BadConfig);
+    require!(cfg.sigma_floor_annualised_s6 > 0, KernelError::BadConfig);
+    require!(
+        cfg.sol_autocall_quote_config_valid(),
+        KernelError::BadConfig
+    );
 
     cfg.last_update_ts = now;
     emit!(ConfigUpdated {

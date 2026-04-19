@@ -254,21 +254,23 @@ mod tests {
 
     #[test]
     fn ki_moment_positive_probability_below_barrier() {
-        // Mean near barrier → significant KI probability
+        // Mean close enough to the barrier that the GH7 mass exceeds one SCALE_6 ULP.
+        // At -50_000 only a single corner node crosses, and its 548*548 weight rounds
+        // to zero under SCALE_6 accumulation.
         let (l11, l21, l22) = cholesky6(1756, -179, 2688).unwrap();
         let coords = [
             AffineCoord6 {
-                constant: -50_000,
+                constant: -100_000,
                 u_coeff: -500_000,
                 v_coeff: -400_000,
             },
             AffineCoord6 {
-                constant: -50_000,
+                constant: -100_000,
                 u_coeff: 500_000,
                 v_coeff: -400_000,
             },
             AffineCoord6 {
-                constant: -50_000,
+                constant: -100_000,
                 u_coeff: -500_000,
                 v_coeff: 600_000,
             },

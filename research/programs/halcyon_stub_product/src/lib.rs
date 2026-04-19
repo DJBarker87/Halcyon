@@ -97,6 +97,45 @@ pub mod halcyon_stub_product {
         Ok(())
     }
 
+    pub fn quote_only_stub(ctx: Context<QuoteOnlyStub>, args: StubAcceptArgs) -> Result<()> {
+        let bump = ctx.bumps.product_authority;
+        let seeds_refs: &[&[u8]] = &[seeds::PRODUCT_AUTHORITY, &[bump]];
+        let signer_seeds: &[&[&[u8]]] = &[seeds_refs];
+
+        halcyon_kernel::cpi::reserve_and_issue(
+            CpiContext::new_with_signer(
+                ctx.accounts.kernel_program.to_account_info(),
+                ReserveAndIssue {
+                    buyer: ctx.accounts.buyer.to_account_info(),
+                    product_authority: ctx.accounts.product_authority.to_account_info(),
+                    usdc_mint: ctx.accounts.usdc_mint.to_account_info(),
+                    buyer_usdc: ctx.accounts.buyer_usdc.to_account_info(),
+                    vault_usdc: ctx.accounts.vault_usdc.to_account_info(),
+                    treasury_usdc: ctx.accounts.treasury_usdc.to_account_info(),
+                    vault_authority: ctx.accounts.vault_authority.to_account_info(),
+                    protocol_config: ctx.accounts.protocol_config.to_account_info(),
+                    vault_state: ctx.accounts.vault_state.to_account_info(),
+                    fee_ledger: ctx.accounts.fee_ledger.to_account_info(),
+                    product_registry_entry: ctx.accounts.product_registry_entry.to_account_info(),
+                    policy_header: ctx.accounts.policy_header.to_account_info(),
+                    token_program: ctx.accounts.token_program.to_account_info(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            ReserveAndIssueArgs {
+                policy_id: args.policy_id,
+                notional: args.notional,
+                premium: args.premium,
+                max_liability: args.max_liability,
+                terms_hash: [0u8; 32],
+                engine_version: 1,
+                expiry_ts: args.expiry_ts,
+                shard_id: 0,
+            },
+        )
+    }
+
     /// Callback target used when registering the stub in the kernel. Present
     /// for discriminator-registration parity with real products. The stub
     /// writes `ProductTerms` inline in `accept_quote_stub` rather than through
@@ -217,6 +256,56 @@ pub struct AcceptQuoteStub<'info> {
         bump,
     )]
     pub product_terms: Account<'info, ProductTermsStub>,
+
+    pub kernel_program: Program<'info, halcyon_kernel::program::HalcyonKernel>,
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(args: StubAcceptArgs)]
+pub struct QuoteOnlyStub<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+
+    /// CHECK: PDA derived from this program's ID; signs for the kernel CPI.
+    #[account(seeds = [seeds::PRODUCT_AUTHORITY], bump)]
+    pub product_authority: UncheckedAccount<'info>,
+
+    pub usdc_mint: Account<'info, Mint>,
+
+    #[account(mut)]
+    pub buyer_usdc: Account<'info, TokenAccount>,
+
+    /// CHECK: kernel-owned, validated in kernel CPI by seed.
+    #[account(mut)]
+    pub vault_usdc: UncheckedAccount<'info>,
+
+    /// CHECK: kernel-owned, validated in kernel CPI by seed.
+    #[account(mut)]
+    pub treasury_usdc: UncheckedAccount<'info>,
+
+    /// CHECK: kernel PDA authority.
+    pub vault_authority: UncheckedAccount<'info>,
+
+    /// CHECK: kernel PDA.
+    #[account(mut)]
+    pub protocol_config: UncheckedAccount<'info>,
+
+    /// CHECK: kernel PDA.
+    #[account(mut)]
+    pub vault_state: UncheckedAccount<'info>,
+
+    /// CHECK: kernel PDA.
+    #[account(mut)]
+    pub fee_ledger: UncheckedAccount<'info>,
+
+    #[account(mut)]
+    pub product_registry_entry: Account<'info, ProductRegistryEntry>,
+
+    /// CHECK: kernel-owned policy header; created by the kernel during CPI.
+    #[account(mut)]
+    pub policy_header: UncheckedAccount<'info>,
 
     pub kernel_program: Program<'info, halcyon_kernel::program::HalcyonKernel>,
     pub token_program: Program<'info, Token>,

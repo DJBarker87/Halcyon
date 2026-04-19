@@ -3,11 +3,13 @@ use base64::Engine;
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
 use solana_sdk::{
+    address_lookup_table::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
     instruction::Instruction,
+    message::{v0::Message as MessageV0, VersionedMessage},
     signature::{Keypair, Signature},
     signer::Signer,
-    transaction::Transaction,
+    transaction::{Transaction, VersionedTransaction},
 };
 
 pub async fn send_instructions(
@@ -61,6 +63,30 @@ pub async fn simulate_instruction(
         return Err(anyhow!("simulation failed: {err:?}"));
     }
     Ok(response.value)
+}
+
+pub async fn send_versioned_instructions(
+    rpc: &RpcClient,
+    signer: &Keypair,
+    instructions: Vec<Instruction>,
+    address_lookup_table_accounts: Vec<AddressLookupTableAccount>,
+) -> Result<Signature> {
+    let recent_blockhash = rpc
+        .get_latest_blockhash()
+        .await
+        .context("latest blockhash")?;
+    let message = MessageV0::try_compile(
+        &signer.pubkey(),
+        &instructions,
+        &address_lookup_table_accounts,
+        recent_blockhash,
+    )
+    .context("compiling versioned transaction message")?;
+    let tx = VersionedTransaction::try_new(VersionedMessage::V0(message), &[signer])
+        .context("signing versioned transaction")?;
+    rpc.send_and_confirm_transaction(&tx)
+        .await
+        .context("sending versioned transaction")
 }
 
 pub fn decode_return_data<T>(

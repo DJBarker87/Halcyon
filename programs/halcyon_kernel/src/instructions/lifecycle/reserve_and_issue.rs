@@ -112,6 +112,14 @@ pub fn handler(ctx: Context<ReserveAndIssue>, args: ReserveAndIssueArgs) -> Resu
         return err!(HalcyonError::PausedGlobally);
     }
 
+    let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
+
+    require!(args.expiry_ts > now, HalcyonError::InvalidQuoteExpiry);
+    let quote_expiry_ts = now
+        .checked_add(ctx.accounts.protocol_config.quote_ttl_secs)
+        .ok_or(HalcyonError::Overflow)?;
+
     // --- 3. Cash movement on issuance:
     //        * buyer principal always escrows into `vault_usdc`
     //        * any explicit premium is then split between vault/treasury
@@ -229,8 +237,6 @@ pub fn handler(ctx: Context<ReserveAndIssue>, args: ReserveAndIssueArgs) -> Resu
         .ok_or(HalcyonError::Overflow)?;
 
     // --- 6. Vault-state mutation ---
-    let clock = Clock::get()?;
-    let now = clock.unix_timestamp;
     let vault = &mut ctx.accounts.vault_state;
     vault.total_reserved_liability = new_reserved;
     vault.lifetime_premium_received = vault
@@ -255,6 +261,7 @@ pub fn handler(ctx: Context<ReserveAndIssue>, args: ReserveAndIssueArgs) -> Resu
     header.max_liability = args.max_liability;
     header.issued_at = now;
     header.expiry_ts = args.expiry_ts;
+    header.quote_expiry_ts = quote_expiry_ts;
     header.settled_at = 0;
     header.terms_hash = args.terms_hash;
     header.engine_version = args.engine_version;

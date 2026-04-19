@@ -124,8 +124,8 @@ pub mod halcyon_kernel {
 
     // --- Oracle writes ---
 
-    pub fn update_ewma(ctx: Context<UpdateEwma>, ln_ratio_s12: i128) -> Result<()> {
-        instructions::oracle::update_ewma::handler(ctx, ln_ratio_s12)
+    pub fn update_ewma(ctx: Context<UpdateEwma>) -> Result<()> {
+        instructions::oracle::update_ewma::handler(ctx)
     }
 
     pub fn write_regression(
@@ -184,10 +184,11 @@ pub mod halcyon_kernel {
         instructions::lifecycle::record_hedge_trade::handler(ctx, args)
     }
 
-    pub fn execute_hedge_swap<'info>(
-        ctx: Context<'_, '_, '_, 'info, ExecuteHedgeSwap<'info>>,
-        args: ExecuteHedgeSwapArgs,
+    pub fn prepare_hedge_swap(
+        ctx: Context<PrepareHedgeSwap>,
+        args: PrepareHedgeSwapArgs,
     ) -> Result<()> {
-        instructions::lifecycle::execute_hedge_swap::handler(ctx, args)
+        instructions::lifecycle::prepare_hedge_swap::handler(ctx, args)
     }
+
 }

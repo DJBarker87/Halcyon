@@ -47,6 +47,7 @@ const KERNEL_SEEDS = {
   VAULT_USDC: Buffer.from("vault_usdc"),
   TREASURY_USDC: Buffer.from("treasury_usdc"),
 };
+const DUMMY_ORACLE_FEED_ID = Array.from({ length: 32 }, (_, i) => (i + 1) & 0xff);
 
 describe("halcyon kernel L1", function () {
   this.timeout(240_000);
@@ -203,7 +204,10 @@ describe("halcyon kernel L1", function () {
         regressionStalenessCapSecs: new BN(5 * 86_400),
         pythQuoteStalenessCapSecs: new BN(30),
         pythSettleStalenessCapSecs: new BN(60),
+        quoteTtlSecs: new BN(5),
         sigmaFloorAnnualisedS6: new BN(400_000),
+        solAutocallQuoteShareBps: 7_500,
+        solAutocallIssuerMarginBps: 50,
         treasuryDestination: destinationUsdc,
       })
       .accounts({
@@ -223,7 +227,7 @@ describe("halcyon kernel L1", function () {
       .rpc();
 
     const cfg = await kernel.account.protocolConfig.fetch(protocolConfig);
-    expect(cfg.version).to.eq(1);
+    expect(cfg.version).to.eq(3);
     expect(cfg.admin.toBase58()).to.eq(admin.publicKey.toBase58());
     expect(cfg.utilizationCapBps.toNumber()).to.eq(9_000);
     expect(cfg.seniorShareBps).to.eq(9_000);
@@ -231,6 +235,8 @@ describe("halcyon kernel L1", function () {
     expect(cfg.treasuryShareBps).to.eq(700);
     expect(cfg.issuancePausedGlobal).to.be.false;
     expect(cfg.settlementPausedGlobal).to.be.false;
+    expect(cfg.solAutocallQuoteShareBps).to.eq(7_500);
+    expect(cfg.solAutocallIssuerMarginBps).to.eq(50);
     expect(cfg.treasuryDestination.toBase58()).to.eq(
       destinationUsdc.toBase58()
     );
@@ -269,6 +275,7 @@ describe("halcyon kernel L1", function () {
       .registerProduct({
         productProgramId: stub.programId,
         expectedAuthority: productAuthority,
+        oracleFeedId: DUMMY_ORACLE_FEED_ID,
         perPolicyRiskCap: new BN(50_000_000_000),
         globalRiskCap: new BN(1_000_000_000_000),
         engineVersion: 1,
@@ -366,12 +373,14 @@ describe("halcyon kernel L1", function () {
         regressionStalenessCapSecs: null,
         pythQuoteStalenessCapSecs: null,
         pythSettleStalenessCapSecs: null,
+        quoteTtlSecs: null,
         ewmaRateLimitSecs: null,
         seniorCooldownSecs: new BN(0),
         sigmaFloorAnnualisedS6: null,
         k12CorrectionSha256: null,
         dailyKiCorrectionSha256: null,
         premiumSplitsBps: null,
+        solAutocallQuoteConfigBps: null,
         treasuryDestination: null,
       })
       .accounts({
@@ -1019,6 +1028,71 @@ describe("halcyon kernel L1", function () {
       const code = err?.error?.errorCode?.code ?? "";
       expect(code).to.eq("NotReapable");
     }
+  });
+
+  it("14b. reap_quoted uses quote_ttl for stuck Quoted reservations", async () => {
+    const policyId = Keypair.generate().publicKey;
+    const policyHeader = pda([KERNEL_SEEDS.POLICY, policyId.toBuffer()]);
+
+    await stub.methods
+      .quoteOnlyStub({
+        policyId,
+        notional: new BN(500_000_000),
+        premium: new BN(5_000_000),
+        maxLiability: new BN(100_000_000),
+        expiryTs: new BN(Math.floor(Date.now() / 1000) + 365 * 86_400),
+        magic: new BN(1401),
+      })
+      .accounts({
+        buyer: buyer.publicKey,
+        productAuthority,
+        usdcMint,
+        buyerUsdc,
+        vaultUsdc,
+        treasuryUsdc,
+        vaultAuthority,
+        protocolConfig,
+        vaultState,
+        feeLedger,
+        productRegistryEntry,
+        policyHeader,
+        kernelProgram: kernel.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .signers([buyer])
+      .rpc();
+
+    const quotedHeader = await kernel.account.policyHeader.fetch(policyHeader);
+    expect(quotedHeader.status.quoted).to.not.be.undefined;
+    expect(quotedHeader.expiryTs.toNumber()).to.be.greaterThan(
+      Math.floor(Date.now() / 1000) + 300 * 86_400
+    );
+
+    const reapDeadline = Date.now() + 20_000;
+    for (;;) {
+      try {
+        await kernel.methods
+          .reapQuoted()
+          .accounts({
+            rentDestination: buyer.publicKey,
+            vaultState,
+            productRegistryEntry,
+            policyHeader,
+          } as any)
+          .rpc();
+        break;
+      } catch (err: any) {
+        const code = err?.error?.errorCode?.code ?? "";
+        if (code !== "NotReapable" || Date.now() >= reapDeadline) {
+          throw err;
+        }
+        await new Promise((r) => setTimeout(r, 1_000));
+      }
+    }
+
+    const reapedHeader = await provider.connection.getAccountInfo(policyHeader);
+    expect(reapedHeader).to.be.null;
   });
 
   // -----------------------------------------------------------------

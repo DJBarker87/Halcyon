@@ -29,6 +29,11 @@ idl-build = []
 # Zero dependencies — pure Rust, no_std
 
 [dev-dependencies]
+libm = "0.2"
 proptest = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[[example]]
+name = "precision_baseline"
+required-features = ["full"]

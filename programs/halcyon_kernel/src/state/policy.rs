@@ -23,6 +23,7 @@ pub struct PolicyHeader {
     pub max_liability: u64,
     pub issued_at: i64,
     pub expiry_ts: i64,
+    pub quote_expiry_ts: i64,
     pub settled_at: i64,
     pub terms_hash: [u8; 32],
     pub engine_version: u16,
@@ -33,5 +34,5 @@ pub struct PolicyHeader {
 }
 
 impl PolicyHeader {
-    pub const CURRENT_VERSION: u8 = 1;
+    pub const CURRENT_VERSION: u8 = 2;
 }

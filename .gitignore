@@ -22,3 +22,5 @@ marketing-video/out/
 *.mp4
 *.mov
 *.webm
+.env
+.env.*

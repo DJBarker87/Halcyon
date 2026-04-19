@@ -13,7 +13,7 @@ use crate::state::*;
 /// and is never released, and the per-product `total_reserved` counter
 /// the `global_risk_cap` gate reads from diverges from reality.
 ///
-/// K8 — callable by anyone after `now > expiry_ts`. Releases both the
+/// K8 — callable by anyone after `now > quote_expiry_ts`. Releases both the
 /// vault-level and product-level reservations. Does NOT refund the premium
 /// (the kernel cannot tell who paid, and the product-specific `accept_quote`
 /// is a single atomic transaction in every real product; a stuck `Quoted`
@@ -52,11 +52,11 @@ pub fn handler(ctx: Context<ReapQuoted>) -> Result<()> {
         HalcyonError::NotReapable
     );
 
-    // Must be past expiry_ts — otherwise a MEV bot races every issuance to
+    // Must be past quote_expiry_ts — otherwise a MEV bot races every issuance to
     // close it before the product's own finalize CPI lands.
     let now = Clock::get()?.unix_timestamp;
     require!(
-        now > ctx.accounts.policy_header.expiry_ts,
+        now > ctx.accounts.policy_header.quote_expiry_ts,
         HalcyonError::NotReapable
     );
 

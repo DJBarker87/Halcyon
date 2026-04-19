@@ -14,6 +14,9 @@ cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
 no-log-ix-name = []
+custom-heap = []
+custom-panic = []
+anchor-debug = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "halcyon_common/idl-build"]
 
 [dependencies]
@@ -21,6 +24,7 @@ anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
 anchor-spl = "=0.32.1"
 halcyon_common = { path = "../../crates/halcyon_common" }
 halcyon_oracles = { path = "../../crates/halcyon_oracles" }
+solmath-core = { path = "../../solmath-core" }
 # SHA-256 for K1+K2 terms_hash rehash. anchor-lang 0.32.1 dropped the
 # `solana_program::hash` re-export, so we depend on solana-sha256-hasher
 # directly. Version pinned to match the solana-hash in the existing

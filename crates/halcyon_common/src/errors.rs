@@ -95,6 +95,8 @@ pub enum HalcyonError {
     // --- Settlement timing ---
     #[msg("policy has not reached expiry and no force_reason given")]
     ExpiryNotElapsed,
+    #[msg("quote expiry is invalid for this protocol")]
+    InvalidQuoteExpiry,
 
     // --- Sweep destination ---
     #[msg("sweep destination does not match configured treasury_destination")]

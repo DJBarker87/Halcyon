@@ -16,6 +16,7 @@ pub const TERMS: &[u8] = b"terms";
 pub const COUPON_VAULT: &[u8] = b"coupon_vault";
 pub const HEDGE_SLEEVE: &[u8] = b"hedge_sleeve";
 pub const HEDGE_BOOK: &[u8] = b"hedge_book";
+pub const PENDING_HEDGE_SWAP: &[u8] = b"pending_hedge_swap";
 pub const AGGREGATE_DELTA: &[u8] = b"aggregate_delta";
 pub const REGRESSION: &[u8] = b"regression";
 pub const VAULT_SIGMA: &[u8] = b"vault_sigma";

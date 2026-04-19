@@ -7,6 +7,7 @@ use crate::state::*;
 pub struct RegisterProductArgs {
     pub product_program_id: Pubkey,
     pub expected_authority: Pubkey,
+    pub oracle_feed_id: [u8; 32],
     pub per_policy_risk_cap: u64,
     pub global_risk_cap: u64,
     pub engine_version: u16,
@@ -77,6 +78,12 @@ pub fn handler(ctx: Context<RegisterProduct>, args: RegisterProductArgs) -> Resu
     let sigma = &mut ctx.accounts.vault_sigma;
     sigma.version = VaultSigma::CURRENT_VERSION;
     sigma.product_program_id = args.product_program_id;
-    sigma.ewma_last_timestamp = now;
+    sigma.oracle_feed_id = args.oracle_feed_id;
+    sigma.ewma_last_timestamp = 0;
+    sigma.last_price_s6 = 0;
+    sigma.last_publish_ts = 0;
+    sigma.last_publish_slot = 0;
+    sigma.last_update_slot = 0;
+    sigma.sample_count = 0;
     Ok(())
 }

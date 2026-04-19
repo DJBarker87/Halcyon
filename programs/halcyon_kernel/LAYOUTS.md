@@ -36,12 +36,15 @@ Every struct has `u8 version` at offset 0 for in-place upgrade migration.
 | regression_staleness_cap_secs    | i64      | 8     | 81     |
 | pyth_quote_staleness_cap_secs    | i64      | 8     | 89     |
 | pyth_settle_staleness_cap_secs   | i64      | 8     | 97     |
-| sigma_floor_annualised_s6        | i64      | 8     | 105    |
-| k12_correction_sha256            | [u8; 32] | 32    | 113    |
-| daily_ki_correction_sha256       | [u8; 32] | 32    | 145    |
-| treasury_destination             | Pubkey   | 32    | 177    |
-| last_update_ts                   | i64      | 8     | 209    |
-| **TOTAL**                        |          | **217** |      |
+| quote_ttl_secs                   | i64      | 8     | 105    |
+| sigma_floor_annualised_s6        | i64      | 8     | 113    |
+| sol_autocall_quote_share_bps     | u16      | 2     | 121    |
+| sol_autocall_issuer_margin_bps   | u16      | 2     | 123    |
+| k12_correction_sha256            | [u8; 32] | 32    | 125    |
+| daily_ki_correction_sha256       | [u8; 32] | 32    | 157    |
+| treasury_destination             | Pubkey   | 32    | 189    |
+| last_update_ts                   | i64      | 8     | 221    |
+| **TOTAL**                        |          | **229** |      |
 
 `treasury_destination` is the only USDC account `sweep_fees` is allowed to
 route to — K5 allowlist. Admin rotates via `set_protocol_config`; each
@@ -117,14 +120,15 @@ and `reap_quoted` decrement. Gates `global_risk_cap` — K9 fix.
 | max_liability       | u64           | 8     | 81     |
 | issued_at           | i64           | 8     | 89     |
 | expiry_ts           | i64           | 8     | 97     |
-| settled_at          | i64           | 8     | 105    |
-| terms_hash          | [u8; 32]      | 32    | 113    |
-| engine_version      | u16           | 2     | 145    |
-| status              | u8 (enum tag) | 1     | 147    |
-| product_terms       | Pubkey        | 32    | 148    |
-| shard_id            | u16           | 2     | 180    |
-| policy_id           | Pubkey        | 32    | 182    |
-| **TOTAL**           |               | **214** |      |
+| quote_expiry_ts     | i64           | 8     | 105    |
+| settled_at          | i64           | 8     | 113    |
+| terms_hash          | [u8; 32]      | 32    | 121    |
+| engine_version      | u16           | 2     | 153    |
+| status              | u8 (enum tag) | 1     | 155    |
+| product_terms       | Pubkey        | 32    | 156    |
+| shard_id            | u16           | 2     | 188    |
+| policy_id           | Pubkey        | 32    | 190    |
+| **TOTAL**           |               | **222** |      |
 
 `status` is a Borsh enum serialized as a single tag byte (variants are
 `Quoted=0`, `Active=1`, `Observed=2`, `AutoCalled=3`, `KnockedIn=4`,
@@ -178,6 +182,34 @@ target_position_raw i64 + last_rebalance_ts i64 + last_rebalance_price_s6 i64`
 trade must pass `args.sequence > hedge_book.sequence`. Replays and reordered
 keeper submissions are rejected by the kernel (K4 fix).
 
+## PendingHedgeSwap — one per hedged product
+
+Transient escrow of the keeper-approved swap envelope. `prepare_hedge_swap`
+writes it, Jupiter executes in the same transaction, and `record_hedge_trade`
+consumes and clears it.
+
+| Field                        | Type     | Bytes | Offset |
+|-----------------------------|----------|-------|--------|
+| version                     | u8       | 1     | 0      |
+| active                      | bool     | 1     | 1      |
+| product_program_id          | Pubkey   | 32    | 2      |
+| keeper                      | Pubkey   | 32    | 34     |
+| asset_tag                   | [u8; 8]  | 8     | 66     |
+| leg_index                   | u8       | 1     | 74     |
+| source_is_wsol              | bool     | 1     | 75     |
+| old_position_raw            | i64      | 8     | 76     |
+| target_position_raw         | i64      | 8     | 84     |
+| min_position_raw            | i64      | 8     | 92     |
+| max_position_raw            | i64      | 8     | 100    |
+| approved_input_amount       | u64      | 8     | 108    |
+| source_balance_before       | u64      | 8     | 116    |
+| destination_balance_before  | u64      | 8     | 124    |
+| spot_price_s6               | i64      | 8     | 132    |
+| max_slippage_bps            | u16      | 2     | 140    |
+| sequence                    | u64      | 8     | 142    |
+| prepared_at                 | i64      | 8     | 150    |
+| **TOTAL**                   |          | **158** |      |
+
 ## AggregateDelta — flagship only
 
 | Field                 | Type     | Bytes | Offset |
@@ -219,12 +251,16 @@ keeper submissions are rejected by the kernel (K4 fix).
 |------------------------------|--------|-------|--------|
 | version                      | u8     | 1     | 0      |
 | product_program_id           | Pubkey | 32    | 1      |
-| ewma_var_daily_s12           | i128   | 16    | 33     |
-| ewma_last_ln_ratio_s12       | i128   | 16    | 49     |
-| ewma_last_timestamp          | i64    | 8     | 65     |
-| last_update_slot             | u64    | 8     | 73     |
-| sample_count                 | u64    | 8     | 81     |
-| **TOTAL**                    |        | **89** |      |
+| oracle_feed_id               | [u8; 32] | 32  | 33     |
+| ewma_var_daily_s12           | i128   | 16    | 65     |
+| ewma_last_ln_ratio_s12       | i128   | 16    | 81     |
+| ewma_last_timestamp          | i64    | 8     | 97     |
+| last_price_s6                | i64    | 8     | 105    |
+| last_publish_ts              | i64    | 8     | 113    |
+| last_publish_slot            | u64    | 8     | 121    |
+| last_update_slot             | u64    | 8     | 129    |
+| sample_count                 | u64    | 8     | 137    |
+| **TOTAL**                    |        | **145** |      |
 
 ## RegimeSignal — one per product using regime-switching
 

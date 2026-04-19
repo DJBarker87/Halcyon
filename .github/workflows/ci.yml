@@ -5,9 +5,12 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   rust:
-    name: cargo check + tests + backtest replay
+    name: L0-L2 cargo check + tests + precision baseline
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v4.2.2 pinned 2026-04-18
@@ -16,14 +19,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
       # Swatinem/rust-cache@v2.8.1 pinned 2026-04-18
       - uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1
-      - name: cargo check --workspace (excluding wasm target)
-        run: cargo check --workspace --exclude halcyon-wasm
-      # CI1 — no --exclude blanket on the kernel programs. Any `#[cfg(test)]`
-      # modules inside the kernel run here alongside the quote-crate smoke tests.
-      - name: cargo test --workspace
-        run: cargo test --workspace --exclude halcyon-wasm
-      - name: backtest replay (make sol-autocall)
-        run: make sol-autocall
+      - name: make l2-cargo-check
+        run: make l2-cargo-check
+      - name: make l2-cargo-test
+        run: make l2-cargo-test
+      - name: precision baseline regression check
+        run: make precision-baseline-check
+      - name: cargo audit (no masked advisories)
+        run: make audit-check
       # X1 — pure-Rust invariant guard. The three quote crates must build
       # without anchor-lang / solana-program in their dep graph. This check
       # fails fast if anyone re-adds the halcyon_common dep.
@@ -39,7 +42,7 @@ jobs:
           echo "pure-Rust invariant: clean"
 
   anchor:
-    name: anchor build + test + layouts + cpi-seeds
+    name: L0-L2 anchor build + test + layouts + cpi-seeds
     runs-on: ubuntu-latest
     steps:
       # actions/checkout@v4.2.2 pinned 2026-04-18
@@ -66,8 +69,8 @@ jobs:
         run: yarn install --frozen-lockfile
       - name: yarn audit
         run: yarn audit --level high
-      - name: anchor build
-        run: anchor build
+      - name: anchor build (L0-L2 only, fail on verifier errors)
+        run: make anchor-build-l2
       # K11 — regression guard for the CPI seeds+bump aliasing bug.
       - name: cpi-seeds regression guard
         run: make cpi-seeds-check
@@ -83,5 +86,5 @@ jobs:
           set -e
           for i in 1 2 3; do
             echo "=== anchor test run $i/3 ==="
-            anchor test --skip-lint
+            make anchor-test-l2
           done

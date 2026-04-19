@@ -17,7 +17,10 @@ pub struct InitializeProtocolArgs {
     pub regression_staleness_cap_secs: i64,
     pub pyth_quote_staleness_cap_secs: i64,
     pub pyth_settle_staleness_cap_secs: i64,
+    pub quote_ttl_secs: i64,
     pub sigma_floor_annualised_s6: i64,
+    pub sol_autocall_quote_share_bps: u16,
+    pub sol_autocall_issuer_margin_bps: u16,
     /// USDC token account the admin is permitted to sweep fees into. Must be a
     /// USDC account; ownership is enforced at `sweep_fees` time.
     pub treasury_destination: Pubkey,
@@ -114,7 +117,10 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
     config.regression_staleness_cap_secs = args.regression_staleness_cap_secs;
     config.pyth_quote_staleness_cap_secs = args.pyth_quote_staleness_cap_secs;
     config.pyth_settle_staleness_cap_secs = args.pyth_settle_staleness_cap_secs;
+    config.quote_ttl_secs = args.quote_ttl_secs;
     config.sigma_floor_annualised_s6 = args.sigma_floor_annualised_s6;
+    config.sol_autocall_quote_share_bps = args.sol_autocall_quote_share_bps;
+    config.sol_autocall_issuer_margin_bps = args.sol_autocall_issuer_margin_bps;
     config.k12_correction_sha256 = [0u8; 32];
     config.daily_ki_correction_sha256 = [0u8; 32];
     config.treasury_destination = args.treasury_destination;
@@ -122,6 +128,47 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
 
     require!(
         config.premium_splits_sum_to_ten_thousand(),
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.utilization_cap_bps <= 10_000,
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.senior_cooldown_secs >= 0,
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.ewma_rate_limit_secs > 0,
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.sigma_staleness_cap_secs > 0,
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.regime_staleness_cap_secs > 0,
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.regression_staleness_cap_secs > 0,
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.pyth_quote_staleness_cap_secs > 0,
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.pyth_settle_staleness_cap_secs > 0,
+        crate::KernelError::BadConfig
+    );
+    require!(config.quote_ttl_secs > 0, crate::KernelError::BadConfig);
+    require!(
+        config.sigma_floor_annualised_s6 > 0,
+        crate::KernelError::BadConfig
+    );
+    require!(
+        config.sol_autocall_quote_config_valid(),
         crate::KernelError::BadConfig
     );
     // Sanity: treasury_destination cannot be the default pubkey — `sweep_fees`

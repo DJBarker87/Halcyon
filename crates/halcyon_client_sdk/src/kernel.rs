@@ -1,13 +1,13 @@
 use anchor_lang::{prelude::Pubkey, Discriminator, InstructionData, ToAccountMetas};
 use solana_sdk::{
-    instruction::{AccountMeta, Instruction},
+    instruction::Instruction,
     system_program,
 };
 
 use crate::pda;
 
 pub use halcyon_kernel::{
-    ApplySettlementArgs, ExecuteHedgeSwapArgs, InitializeProtocolArgs, RecordHedgeTradeArgs,
+    ApplySettlementArgs, InitializeProtocolArgs, PrepareHedgeSwapArgs, RecordHedgeTradeArgs,
     RegisterProductArgs, SettlementReason,
 };
 
@@ -60,6 +60,7 @@ pub fn register_sol_autocall_ix(
     let args = RegisterProductArgs {
         product_program_id: halcyon_sol_autocall::ID,
         expected_authority: product_authority,
+        oracle_feed_id: halcyon_oracles::feed_ids::SOL_USD,
         per_policy_risk_cap,
         global_risk_cap,
         engine_version: halcyon_sol_autocall::state::CURRENT_ENGINE_VERSION,
@@ -275,70 +276,73 @@ pub fn sweep_fees_ix(
 
 pub fn record_hedge_trade_ix(
     keeper: &Pubkey,
-    payer: &Pubkey,
+    usdc_mint: &Pubkey,
     args: RecordHedgeTradeArgs,
 ) -> Instruction {
     let (keeper_registry, _) = pda::keeper_registry();
     let (product_registry_entry, _) = pda::product_registry_entry(&args.product_program_id);
     let (hedge_book, _) = pda::hedge_book(&args.product_program_id);
     let (hedge_sleeve, _) = pda::hedge_sleeve(&args.product_program_id);
+    let (pending_hedge_swap, _) = pda::pending_hedge_swap(&args.product_program_id);
+    let hedge_sleeve_usdc = pda::hedge_sleeve_usdc(&args.product_program_id, usdc_mint);
+    let hedge_sleeve_wsol = pda::hedge_sleeve_wsol(&args.product_program_id);
     Instruction {
         program_id: halcyon_kernel::ID,
         accounts: halcyon_kernel::accounts::RecordHedgeTrade {
             keeper: *keeper,
             keeper_registry,
             product_registry_entry,
-            payer: *payer,
             hedge_book,
             hedge_sleeve,
-            system_program: system_program::ID,
+            pending_hedge_swap,
+            hedge_sleeve_usdc,
+            usdc_mint: *usdc_mint,
+            hedge_sleeve_wsol,
+            token_program: anchor_spl::token::ID,
         }
         .to_account_metas(None),
         data: halcyon_kernel::instruction::RecordHedgeTrade { args }.data(),
     }
 }
 
-pub fn execute_hedge_swap_ix(
+pub fn prepare_hedge_swap_ix(
     keeper: &Pubkey,
     payer: &Pubkey,
     usdc_mint: &Pubkey,
     pyth_sol: &Pubkey,
-    jupiter_program: &Pubkey,
-    args: ExecuteHedgeSwapArgs,
-    mut jupiter_accounts: Vec<AccountMeta>,
+    args: PrepareHedgeSwapArgs,
 ) -> Instruction {
     let (keeper_registry, _) = pda::keeper_registry();
     let (product_registry_entry, _) = pda::product_registry_entry(&args.product_program_id);
     let (protocol_config, _) = pda::protocol_config();
     let (hedge_book, _) = pda::hedge_book(&args.product_program_id);
     let (hedge_sleeve, _) = pda::hedge_sleeve(&args.product_program_id);
+    let (pending_hedge_swap, _) = pda::pending_hedge_swap(&args.product_program_id);
     let hedge_sleeve_usdc = pda::hedge_sleeve_usdc(&args.product_program_id, usdc_mint);
     let hedge_sleeve_wsol = pda::hedge_sleeve_wsol(&args.product_program_id);
 
-    let mut accounts = halcyon_kernel::accounts::ExecuteHedgeSwap {
-        keeper: *keeper,
-        payer: *payer,
-        keeper_registry,
-        product_registry_entry,
-        protocol_config,
-        hedge_book,
-        hedge_sleeve,
-        pyth_sol: *pyth_sol,
-        usdc_mint: *usdc_mint,
-        wsol_mint: anchor_spl::token::spl_token::native_mint::ID,
-        hedge_sleeve_usdc,
-        hedge_sleeve_wsol,
-        token_program: anchor_spl::token::ID,
-        associated_token_program: anchor_spl::associated_token::ID,
-        system_program: system_program::ID,
-        jupiter_program: *jupiter_program,
-    }
-    .to_account_metas(None);
-    accounts.append(&mut jupiter_accounts);
-
     Instruction {
         program_id: halcyon_kernel::ID,
-        accounts,
-        data: halcyon_kernel::instruction::ExecuteHedgeSwap { args }.data(),
+        accounts: halcyon_kernel::accounts::PrepareHedgeSwap {
+            keeper: *keeper,
+            payer: *payer,
+            keeper_registry,
+            product_registry_entry,
+            protocol_config,
+            hedge_book,
+            hedge_sleeve,
+            pending_hedge_swap,
+            pyth_sol: *pyth_sol,
+            usdc_mint: *usdc_mint,
+            wsol_mint: anchor_spl::token::spl_token::native_mint::ID,
+            hedge_sleeve_usdc,
+            hedge_sleeve_wsol,
+            token_program: anchor_spl::token::ID,
+            associated_token_program: anchor_spl::associated_token::ID,
+            system_program: system_program::ID,
+            instructions: solana_sdk::sysvar::instructions::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::PrepareHedgeSwap { args }.data(),
     }
 }

@@ -1231,6 +1231,7 @@ impl PricedAutocall {
         }
 
         let observation_days: HashSet<usize> = self.observation_days.iter().copied().collect();
+        let ordered_observation_days = &self.observation_days;
         let mut steps = Vec::with_capacity(self.terms.maturity_days + 1);
         let mut autocalled = false;
         let mut knock_in_latched = false;
@@ -1318,9 +1319,8 @@ impl PricedAutocall {
 
             // Observation index (1-indexed): obs 1 = first observation (day 2), etc.
             let obs_index = if observation_day {
-                observation_days
-                    .iter()
-                    .position(|&d| d == day)
+                ordered_observation_days
+                    .binary_search(&day)
                     .map(|i| i + 1)
                     .unwrap_or(0)
             } else {

@@ -34,7 +34,7 @@ fn sol_autocall_product_smoke() {
 
     let path = (0..=16)
         .map(|day| {
-            let close = if day == 2 { 1.03 } else { 1.0 };
+            let close = if day == 2 || day == 4 { 1.03 } else { 1.0 };
             PathPoint {
                 day,
                 close,
@@ -46,6 +46,23 @@ fn sol_autocall_product_smoke() {
     let replay = priced
         .simulate_path(&default_policy(), &path)
         .expect("replay current_v1");
+
+    let first_obs = replay
+        .steps
+        .iter()
+        .find(|step| step.day == 2)
+        .expect("day-2 observation step");
+    assert!(first_obs.observation_day);
+    assert!(!first_obs.autocalled);
+    assert!(first_obs.coupon_paid > 0.0);
+
+    let second_obs = replay
+        .steps
+        .iter()
+        .find(|step| step.day == 4)
+        .expect("day-4 observation step");
+    assert!(second_obs.observation_day);
+    assert!(second_obs.autocalled);
 
     assert!(replay.autocalled);
     assert!(!replay.knock_in_triggered);

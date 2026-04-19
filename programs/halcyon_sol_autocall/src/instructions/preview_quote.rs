@@ -7,7 +7,7 @@
 
 use anchor_lang::prelude::*;
 use halcyon_common::seeds;
-use halcyon_kernel::state::{ProtocolConfig, RegimeSignal, VaultSigma};
+use halcyon_kernel::state::{ProductRegistryEntry, ProtocolConfig, RegimeSignal, VaultSigma};
 
 use crate::pricing::{
     self, compose_pricing_sigma, require_protocol_unpaused, require_regime_fresh,
@@ -37,6 +37,13 @@ pub struct PreviewQuote<'info> {
     #[account(seeds = [seeds::PROTOCOL_CONFIG], bump)]
     pub protocol_config: Account<'info, ProtocolConfig>,
     #[account(
+        seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
+        bump,
+        constraint = product_registry_entry.product_program_id == crate::ID,
+        constraint = product_registry_entry.active @ halcyon_common::HalcyonError::ProductNotRegistered,
+    )]
+    pub product_registry_entry: Account<'info, ProductRegistryEntry>,
+    #[account(
         seeds = [seeds::VAULT_SIGMA, crate::ID.as_ref()],
         bump,
         constraint = vault_sigma.product_program_id == crate::ID,
@@ -57,6 +64,10 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
     let now = ctx.accounts.clock.unix_timestamp;
 
     require_protocol_unpaused(&ctx.accounts.protocol_config)?;
+    require!(
+        !ctx.accounts.product_registry_entry.paused,
+        halcyon_common::HalcyonError::IssuancePausedPerProduct
+    );
     require_sigma_fresh(
         &ctx.accounts.vault_sigma,
         now,
@@ -89,8 +100,8 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
     let quote = solve_quote(
         sigma_pricing_s6,
         notional_usdc,
-        protocol_share_bps(&ctx.accounts.protocol_config)?,
-        protocol_margin_bps(&ctx.accounts.protocol_config)?,
+        protocol_share_bps(&ctx.accounts.protocol_config),
+        protocol_margin_bps(&ctx.accounts.protocol_config),
         now,
         ConfidenceGate::SignalOnly,
     )?;
@@ -107,17 +118,12 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
     })
 }
 
-/// Governance-tunable quote share and issuer margin live in `ProtocolConfig`.
-/// L2 kernel doesn't yet expose SOL-Autocall-specific fields there; until it
-/// does, fall back to the whitepaper defaults (0.75 share, 50 bps margin).
-/// Once the kernel adds `sol_autocall_quote_share_bps` / `sol_autocall_issuer_margin_bps`,
-/// swap these two helpers for direct field reads.
-fn protocol_share_bps(_cfg: &ProtocolConfig) -> Result<u16> {
-    Ok(7_500)
+fn protocol_share_bps(cfg: &ProtocolConfig) -> u16 {
+    cfg.sol_autocall_quote_share_bps
 }
 
-fn protocol_margin_bps(_cfg: &ProtocolConfig) -> Result<u16> {
-    Ok(50)
+fn protocol_margin_bps(cfg: &ProtocolConfig) -> u16 {
+    cfg.sol_autocall_issuer_margin_bps
 }
 
 // Silence unused-import warnings when the pricing module gates a specific

@@ -530,6 +530,12 @@ mod tests {
     }
 
     #[test]
+    fn exp_upper_boundary_is_overflow() {
+        assert_eq!(exp_fixed_i(40 * SCALE_I), Err(SolMathError::Overflow));
+        assert!(exp_fixed_i(39 * SCALE_I).unwrap() > 0);
+    }
+
+    #[test]
     fn exp_underflow_is_zero() {
         assert_eq!(exp_fixed_i(-41 * SCALE_I), Ok(0));
     }
@@ -950,7 +956,6 @@ mod tests {
         let rate = 50_000_000_000u128;
 
         let mut pass = 0u32;
-        let mut fail = 0u32;
         let mut total = 0u32;
 
         for &s in &spots {
@@ -976,13 +981,9 @@ mod tests {
                                 };
                                 if err <= 1000 {
                                     pass += 1;
-                                } else {
-                                    fail += 1;
                                 }
                             }
-                            Err(_) => {
-                                fail += 1;
-                            }
+                            Err(_) => {}
                         }
                     }
                 }
@@ -1000,16 +1001,6 @@ mod tests {
 
     #[test]
     fn implied_vol_vector_recovery() {
-        use std::vec::Vec;
-
-        // Load iv_vectors.json and report recovery by difficulty
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../benchmark/iv_vectors.json");
-        let data =
-            std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("Cannot read {:?}", path));
-        let parsed: serde_json::Value = serde_json::from_str(&data).unwrap();
-        let vectors = parsed["vectors"].as_array().unwrap();
-
         let mut pass_easy = 0u32;
         let mut total_easy = 0u32;
         let mut pass_mod = 0u32;
@@ -1017,49 +1008,82 @@ mod tests {
         let mut pass_hard = 0u32;
         let mut total_hard = 0u32;
         let mut max_ulp: u128 = 0;
-        let mut ulps: Vec<u128> = Vec::new();
+        let mut ulps = std::vec::Vec::new();
 
-        for v in vectors {
-            let s = v["s"].as_u64().unwrap() as u128;
-            let k = v["k"].as_u64().unwrap() as u128;
-            let r = v["r"].as_u64().unwrap() as u128;
-            let t_val = v["t"].as_u64().unwrap() as u128;
-            let sigma_in = v["sigma"].as_u64().unwrap() as u128;
-            let call_price = v["call_price"].as_u64().unwrap() as u128;
-            let difficulty = v["difficulty"].as_str().unwrap();
-            let root_tag = v.get("root_tag").and_then(|rt| rt.as_str()).unwrap_or("");
+        let s = 100 * SCALE;
+        let strikes = [
+            80 * SCALE,
+            90 * SCALE,
+            100 * SCALE,
+            110 * SCALE,
+            120 * SCALE,
+        ];
+        let rates = [50_000_000_000u128];
+        let times = [
+            100_000_000_000u128,
+            250_000_000_000u128,
+            500_000_000_000u128,
+            SCALE,
+        ];
+        let sigmas = [
+            100_000_000_000u128,
+            200_000_000_000u128,
+            400_000_000_000u128,
+            1_000_000_000_000u128,
+        ];
 
-            // Skip expected failures and zero-price
-            if difficulty == "expected_failure"
-                || root_tag == "zero_price"
-                || root_tag == "intrinsic_only"
-            {
-                continue;
-            }
+        for &k in &strikes {
+            for &r in &rates {
+                for &t_val in &times {
+                    for &sigma_in in &sigmas {
+                        let bs = match bs_full(s, k, r, sigma_in, t_val) {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        };
+                        if bs.call < 2 {
+                            continue;
+                        }
 
-            let (total_ref, pass_ref) = match difficulty {
-                "easy" => (&mut total_easy, &mut pass_easy),
-                "moderate" => (&mut total_mod, &mut pass_mod),
-                _ => (&mut total_hard, &mut pass_hard),
-            };
-            *total_ref += 1;
+                        let moneyness_bp = if s >= k {
+                            ((s - k) * 10_000 / s) as u32
+                        } else {
+                            ((k - s) * 10_000 / s) as u32
+                        };
 
-            match implied_vol(call_price, s, k, r, t_val) {
-                Ok(sigma_out) => {
-                    let ulp = if sigma_out > sigma_in {
-                        sigma_out - sigma_in
-                    } else {
-                        sigma_in - sigma_out
-                    };
-                    ulps.push(ulp);
-                    if ulp > max_ulp {
-                        max_ulp = ulp;
-                    }
-                    if ulp <= 1000 {
-                        *pass_ref += 1;
+                        let (total_ref, pass_ref) = if moneyness_bp <= 1_000
+                            && t_val >= 250_000_000_000
+                            && sigma_in <= 500_000_000_000
+                        {
+                            (&mut total_easy, &mut pass_easy)
+                        } else if moneyness_bp >= 2_000
+                            || t_val <= 100_000_000_000
+                            || sigma_in >= 1_000_000_000_000
+                        {
+                            (&mut total_hard, &mut pass_hard)
+                        } else {
+                            (&mut total_mod, &mut pass_mod)
+                        };
+                        *total_ref += 1;
+
+                        match implied_vol(bs.call, s, k, r, t_val) {
+                            Ok(sigma_out) => {
+                                let ulp = if sigma_out > sigma_in {
+                                    sigma_out - sigma_in
+                                } else {
+                                    sigma_in - sigma_out
+                                };
+                                ulps.push(ulp);
+                                if ulp > max_ulp {
+                                    max_ulp = ulp;
+                                }
+                                if ulp <= 1000 {
+                                    *pass_ref += 1;
+                                }
+                            }
+                            Err(_) => {}
+                        }
                     }
                 }
-                Err(_) => {}
             }
         }
 

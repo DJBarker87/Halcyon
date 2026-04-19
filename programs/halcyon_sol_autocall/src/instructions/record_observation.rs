@@ -6,7 +6,10 @@
 //! Prior coupons are therefore never re-paid at terminal settlement.
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_spl::{
+    associated_token::get_associated_token_address,
+    token::{Mint, Token, TokenAccount},
+};
 use halcyon_common::{seeds, HalcyonError};
 use halcyon_kernel::{
     cpi::accounts::{ApplySettlement, PayCoupon},
@@ -85,6 +88,9 @@ pub struct RecordObservation<'info> {
         mut,
         constraint = coupon_vault_usdc.mint == usdc_mint.key(),
         constraint = coupon_vault_usdc.owner == coupon_vault.key() @ KernelError::ProductProgramMismatch,
+        constraint = coupon_vault_usdc.key()
+            == get_associated_token_address(&coupon_vault.key(), &usdc_mint.key())
+            @ KernelError::ProductProgramMismatch,
     )]
     pub coupon_vault_usdc: Box<Account<'info, TokenAccount>>,
 

@@ -81,6 +81,11 @@ pub fn handler(ctx: Context<FinalizePolicy>) -> Result<()> {
         ctx.accounts.policy_header.status == PolicyStatus::Quoted,
         HalcyonError::PolicyNotQuoted
     );
+    let now = Clock::get()?.unix_timestamp;
+    require!(
+        now <= ctx.accounts.policy_header.quote_expiry_ts,
+        HalcyonError::InvalidQuoteExpiry
+    );
 
     // --- 5. Validate the product_terms account we're about to bind ---
     let terms_info = ctx.accounts.product_terms.to_account_info();

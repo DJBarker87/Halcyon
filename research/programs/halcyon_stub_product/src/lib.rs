@@ -136,6 +136,50 @@ pub mod halcyon_stub_product {
         )
     }
 
+    pub fn reserve_only_stub(ctx: Context<QuoteOnlyStub>, args: StubAcceptArgs) -> Result<()> {
+        let mut blob = [0u8; 16];
+        blob[..8].copy_from_slice(ProductTermsStub::DISCRIMINATOR);
+        blob[8..].copy_from_slice(&args.magic.to_le_bytes());
+        let terms_hash = hashv(&[&blob]).to_bytes();
+
+        let bump = ctx.bumps.product_authority;
+        let seeds_refs: &[&[u8]] = &[seeds::PRODUCT_AUTHORITY, &[bump]];
+        let signer_seeds: &[&[&[u8]]] = &[seeds_refs];
+
+        halcyon_kernel::cpi::reserve_and_issue(
+            CpiContext::new_with_signer(
+                ctx.accounts.kernel_program.to_account_info(),
+                ReserveAndIssue {
+                    buyer: ctx.accounts.buyer.to_account_info(),
+                    product_authority: ctx.accounts.product_authority.to_account_info(),
+                    usdc_mint: ctx.accounts.usdc_mint.to_account_info(),
+                    buyer_usdc: ctx.accounts.buyer_usdc.to_account_info(),
+                    vault_usdc: ctx.accounts.vault_usdc.to_account_info(),
+                    treasury_usdc: ctx.accounts.treasury_usdc.to_account_info(),
+                    vault_authority: ctx.accounts.vault_authority.to_account_info(),
+                    protocol_config: ctx.accounts.protocol_config.to_account_info(),
+                    vault_state: ctx.accounts.vault_state.to_account_info(),
+                    fee_ledger: ctx.accounts.fee_ledger.to_account_info(),
+                    product_registry_entry: ctx.accounts.product_registry_entry.to_account_info(),
+                    policy_header: ctx.accounts.policy_header.to_account_info(),
+                    token_program: ctx.accounts.token_program.to_account_info(),
+                    system_program: ctx.accounts.system_program.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            ReserveAndIssueArgs {
+                policy_id: args.policy_id,
+                notional: args.notional,
+                premium: args.premium,
+                max_liability: args.max_liability,
+                terms_hash,
+                engine_version: 1,
+                expiry_ts: args.expiry_ts,
+                shard_id: 0,
+            },
+        )
+    }
+
     /// Callback target used when registering the stub in the kernel. Present
     /// for discriminator-registration parity with real products. The stub
     /// writes `ProductTerms` inline in `accept_quote_stub` rather than through
@@ -149,6 +193,33 @@ pub mod halcyon_stub_product {
     pub fn init_terms_stub(ctx: Context<InitTermsStub>, magic: u64) -> Result<()> {
         let terms = &mut ctx.accounts.product_terms;
         terms.magic = magic;
+        Ok(())
+    }
+
+    pub fn finalize_only_stub(
+        ctx: Context<FinalizeOnlyStub>,
+        _policy_id: Pubkey,
+        magic: u64,
+    ) -> Result<()> {
+        let terms = &mut ctx.accounts.product_terms;
+        terms.magic = magic;
+        ctx.accounts.product_terms.exit(ctx.program_id)?;
+
+        let bump = ctx.bumps.product_authority;
+        let seeds_refs: &[&[u8]] = &[seeds::PRODUCT_AUTHORITY, &[bump]];
+        let signer_seeds: &[&[&[u8]]] = &[seeds_refs];
+
+        halcyon_kernel::cpi::finalize_policy(CpiContext::new_with_signer(
+            ctx.accounts.kernel_program.to_account_info(),
+            FinalizePolicy {
+                product_authority: ctx.accounts.product_authority.to_account_info(),
+                product_registry_entry: ctx.accounts.product_registry_entry.to_account_info(),
+                protocol_config: ctx.accounts.protocol_config.to_account_info(),
+                policy_header: ctx.accounts.policy_header.to_account_info(),
+                product_terms: ctx.accounts.product_terms.to_account_info(),
+            },
+            signer_seeds,
+        ))?;
         Ok(())
     }
 
@@ -316,6 +387,38 @@ pub struct QuoteOnlyStub<'info> {
 pub struct InitTermsStub<'info> {
     #[account(mut)]
     pub product_terms: Account<'info, ProductTermsStub>,
+}
+
+#[derive(Accounts)]
+#[instruction(policy_id: Pubkey)]
+pub struct FinalizeOnlyStub<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    /// CHECK: PDA derived from this program's ID; signs for the kernel CPI.
+    #[account(seeds = [seeds::PRODUCT_AUTHORITY], bump)]
+    pub product_authority: UncheckedAccount<'info>,
+
+    pub product_registry_entry: Account<'info, ProductRegistryEntry>,
+
+    /// CHECK: kernel PDA.
+    pub protocol_config: UncheckedAccount<'info>,
+
+    /// CHECK: kernel-owned policy header.
+    #[account(mut)]
+    pub policy_header: UncheckedAccount<'info>,
+
+    #[account(
+        init,
+        payer = payer,
+        space = 8 + ProductTermsStub::INIT_SPACE,
+        seeds = [seeds::TERMS, policy_id.as_ref()],
+        bump,
+    )]
+    pub product_terms: Account<'info, ProductTermsStub>,
+
+    pub kernel_program: Program<'info, halcyon_kernel::program::HalcyonKernel>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]

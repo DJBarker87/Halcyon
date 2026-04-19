@@ -28,6 +28,13 @@ pub struct AcceptQuoteArgs {
     pub notional_usdc: u64,
     pub max_premium: u64,
     pub min_max_liability: u64,
+    pub min_offered_coupon_bps_s6: i64,
+    pub preview_quote_slot: u64,
+    pub max_quote_slot_delta: u64,
+    pub preview_entry_price_s6: i64,
+    pub max_entry_price_deviation_bps: u16,
+    pub preview_expiry_ts: i64,
+    pub max_expiry_delta_secs: i64,
 }
 
 #[derive(Accounts)]
@@ -168,6 +175,17 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         quote.max_liability >= args.min_max_liability,
         HalcyonError::SlippageExceeded
     );
+    crate::pricing::require_quote_acceptance_bounds(
+        &quote,
+        args.min_offered_coupon_bps_s6,
+        args.preview_quote_slot,
+        args.max_quote_slot_delta,
+        pyth.price_s6,
+        args.preview_entry_price_s6,
+        args.max_entry_price_deviation_bps,
+        args.preview_expiry_ts,
+        args.max_expiry_delta_secs,
+    )?;
 
     let (autocall_barrier_s6, coupon_barrier_s6, ki_barrier_s6) =
         derive_barriers_from_entry(pyth.price_s6)?;

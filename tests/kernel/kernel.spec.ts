@@ -1095,6 +1095,95 @@ describe("halcyon kernel L1", function () {
     expect(reapedHeader).to.be.null;
   });
 
+  it("14c. stale Quoted reservations cannot be finalized after quote_ttl", async () => {
+    const policyId = Keypair.generate().publicKey;
+    const policyHeader = pda([KERNEL_SEEDS.POLICY, policyId.toBuffer()]);
+    const productTerms = pda(
+      [KERNEL_SEEDS.TERMS, policyId.toBuffer()],
+      stub.programId
+    );
+
+    await stub.methods
+      .reserveOnlyStub({
+        policyId,
+        notional: new BN(500_000_000),
+        premium: new BN(5_000_000),
+        maxLiability: new BN(100_000_000),
+        expiryTs: new BN(Math.floor(Date.now() / 1000) + 365 * 86_400),
+        magic: new BN(1402),
+      })
+      .accounts({
+        buyer: buyer.publicKey,
+        productAuthority,
+        usdcMint,
+        buyerUsdc,
+        vaultUsdc,
+        treasuryUsdc,
+        vaultAuthority,
+        protocolConfig,
+        vaultState,
+        feeLedger,
+        productRegistryEntry,
+        policyHeader,
+        kernelProgram: kernel.programId,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .signers([buyer])
+      .rpc();
+
+    const quotedHeader = await kernel.account.policyHeader.fetch(policyHeader);
+    expect(quotedHeader.status.quoted).to.not.be.undefined;
+
+    const staleDeadline = Date.now() + 20_000;
+    for (;;) {
+      try {
+        await kernel.methods
+          .reapQuoted()
+          .accounts({
+            rentDestination: buyer.publicKey,
+            vaultState,
+            productRegistryEntry,
+            policyHeader,
+          } as any)
+          .simulate();
+        break;
+      } catch (err: any) {
+        if (Date.now() >= staleDeadline) {
+          throw err;
+        }
+        await new Promise((r) => setTimeout(r, 1_000));
+      }
+    }
+
+    let failed = false;
+    try {
+      await stub.methods
+        .finalizeOnlyStub(policyId, new BN(1402))
+        .accounts({
+          payer: buyer.publicKey,
+          productAuthority,
+          productRegistryEntry,
+          protocolConfig,
+          policyHeader,
+          productTerms,
+          kernelProgram: kernel.programId,
+          systemProgram: SystemProgram.programId,
+        } as any)
+        .signers([buyer])
+        .rpc();
+    } catch (err: any) {
+      failed = true;
+    }
+    expect(failed).to.eq(true);
+
+    const headerAfterFailedFinalize = await kernel.account.policyHeader.fetch(policyHeader);
+    expect(headerAfterFailedFinalize.status.quoted).to.not.be.undefined;
+    expect(headerAfterFailedFinalize.productTerms.toBase58()).to.eq(
+      PublicKey.default.toBase58()
+    );
+  });
+
   // -----------------------------------------------------------------
   // Test 15 — K11 CPI-seeds regression. Guards against reintroduction of
   // `seeds + bump` on kernel-owned PDAs that sit at the product→kernel

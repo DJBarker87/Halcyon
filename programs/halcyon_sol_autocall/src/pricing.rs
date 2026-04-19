@@ -230,6 +230,68 @@ pub fn coupon_per_observation_usdc(notional_usdc: u64, offered_coupon_bps_s6: i6
     u64::try_from(coupon).map_err(|_| error!(HalcyonError::Overflow))
 }
 
+/// Guard a previewed buyer quote against drift before `accept_quote`.
+///
+/// Any product that previews a sigma-sensitive quote and accepts it later must
+/// bind both the buyer's economic floor and the preview's freshness. When IL
+/// Protection grows its L3 issuance path, it should mirror this pattern instead
+/// of accepting a recomputed live quote with those fields unbounded.
+pub fn require_quote_acceptance_bounds(
+    quote: &QuoteOutputs,
+    min_offered_coupon_bps_s6: i64,
+    preview_quote_slot: u64,
+    max_quote_slot_delta: u64,
+    live_entry_price_s6: i64,
+    preview_entry_price_s6: i64,
+    max_entry_price_deviation_bps: u16,
+    preview_expiry_ts: i64,
+    max_expiry_delta_secs: i64,
+) -> Result<()> {
+    require!(
+        quote.offered_coupon_bps_s6 >= min_offered_coupon_bps_s6,
+        HalcyonError::SlippageExceeded
+    );
+    require!(
+        quote.quote_slot >= preview_quote_slot,
+        HalcyonError::SlippageExceeded
+    );
+    require!(
+        quote.quote_slot - preview_quote_slot <= max_quote_slot_delta,
+        HalcyonError::SlippageExceeded
+    );
+    require!(live_entry_price_s6 > 0, SolAutocallError::InvalidEntryPrice);
+    require!(
+        preview_entry_price_s6 > 0,
+        SolAutocallError::InvalidEntryPrice
+    );
+    require!(max_expiry_delta_secs >= 0, HalcyonError::SlippageExceeded);
+    let price_delta = i128::from(live_entry_price_s6)
+        .checked_sub(i128::from(preview_entry_price_s6))
+        .ok_or(HalcyonError::Overflow)?
+        .abs();
+    let price_delta_bps = price_delta
+        .checked_mul(10_000)
+        .and_then(|v| v.checked_div(i128::from(preview_entry_price_s6)))
+        .ok_or(HalcyonError::Overflow)?;
+    require!(
+        price_delta_bps <= i128::from(max_entry_price_deviation_bps),
+        HalcyonError::SlippageExceeded
+    );
+    require!(
+        quote.expiry_ts >= preview_expiry_ts,
+        HalcyonError::SlippageExceeded
+    );
+    let expiry_delta_secs = quote
+        .expiry_ts
+        .checked_sub(preview_expiry_ts)
+        .ok_or(HalcyonError::Overflow)?;
+    require!(
+        expiry_delta_secs <= max_expiry_delta_secs,
+        HalcyonError::SlippageExceeded
+    );
+    Ok(())
+}
+
 pub fn build_observation_schedule(issued_at: i64) -> Result<[i64; OBSERVATION_COUNT]> {
     let mut schedule = [0i64; OBSERVATION_COUNT];
     for (i, slot) in schedule.iter_mut().enumerate() {
@@ -294,4 +356,166 @@ pub fn require_regime_fresh(regime_signal: &RegimeSignal, now: i64, cap_secs: i6
 pub fn require_protocol_unpaused(config: &ProtocolConfig) -> Result<()> {
     require!(!config.issuance_paused_global, HalcyonError::PausedGlobally);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coupon_can_move_while_accept_bounds_stay_constant() {
+        let notional_usdc = 1_000_000u64;
+        let coupon_a = offered_coupon_bps_s6(100_000_000, 750_000, 50_000_000);
+        let coupon_b = offered_coupon_bps_s6(250_000_000, 750_000, 50_000_000);
+        assert_ne!(
+            coupon_a, coupon_b,
+            "different fair coupons should produce different offered coupons"
+        );
+
+        let quote_a = QuoteOutputs {
+            premium: 0,
+            max_liability: notional_usdc,
+            offered_coupon_bps_s6: coupon_a,
+            fair_coupon_bps_s6: 100_000_000,
+            expiry_ts: 1,
+            quote_slot: 1,
+            engine_version: CURRENT_ENGINE_VERSION,
+        };
+        let quote_b = QuoteOutputs {
+            premium: 0,
+            max_liability: notional_usdc,
+            offered_coupon_bps_s6: coupon_b,
+            fair_coupon_bps_s6: 250_000_000,
+            expiry_ts: 1,
+            quote_slot: 2,
+            engine_version: CURRENT_ENGINE_VERSION,
+        };
+
+        assert_eq!(
+            quote_a.premium, quote_b.premium,
+            "accept slippage keeps the same premium bound"
+        );
+        assert_eq!(
+            quote_a.max_liability, quote_b.max_liability,
+            "accept slippage keeps the same liability bound"
+        );
+    }
+
+    #[test]
+    fn quote_acceptance_bounds_reject_lower_coupon_and_stale_preview() {
+        let quote = QuoteOutputs {
+            premium: 0,
+            max_liability: 1_000_000,
+            offered_coupon_bps_s6: 120_000_000,
+            fair_coupon_bps_s6: 150_000_000,
+            expiry_ts: 1,
+            quote_slot: 150,
+            engine_version: CURRENT_ENGINE_VERSION,
+        };
+
+        assert!(
+            require_quote_acceptance_bounds(
+                &quote,
+                120_000_000,
+                125,
+                25,
+                100_000_000,
+                100_500_000,
+                50,
+                1,
+                0,
+            )
+            .is_ok(),
+            "matching coupon floor and slot tolerance must pass"
+        );
+        assert!(
+            require_quote_acceptance_bounds(
+                &quote,
+                130_000_000,
+                125,
+                25,
+                100_000_000,
+                100_500_000,
+                50,
+                1,
+                0,
+            )
+            .is_err(),
+            "buyer coupon floor must reject a worse live coupon"
+        );
+        assert!(
+            require_quote_acceptance_bounds(
+                &quote,
+                120_000_000,
+                100,
+                25,
+                100_000_000,
+                100_500_000,
+                50,
+                1,
+                0,
+            )
+            .is_err(),
+            "preview slot tolerance must reject stale previews"
+        );
+    }
+
+    #[test]
+    fn quote_acceptance_bounds_reject_entry_and_expiry_drift() {
+        let quote = QuoteOutputs {
+            premium: 0,
+            max_liability: 1_000_000,
+            offered_coupon_bps_s6: 120_000_000,
+            fair_coupon_bps_s6: 150_000_000,
+            expiry_ts: 10,
+            quote_slot: 150,
+            engine_version: CURRENT_ENGINE_VERSION,
+        };
+
+        assert!(
+            require_quote_acceptance_bounds(
+                &quote,
+                120_000_000,
+                125,
+                25,
+                100_000_000,
+                100_000_000,
+                0,
+                10,
+                0,
+            )
+            .is_ok(),
+            "identical previewed entry and expiry must pass"
+        );
+        assert!(
+            require_quote_acceptance_bounds(
+                &quote,
+                120_000_000,
+                125,
+                25,
+                102_000_000,
+                100_000_000,
+                100,
+                10,
+                0,
+            )
+            .is_err(),
+            "entry-price drift above the caller tolerance must fail"
+        );
+        assert!(
+            require_quote_acceptance_bounds(
+                &quote,
+                120_000_000,
+                125,
+                25,
+                100_000_000,
+                100_000_000,
+                0,
+                8,
+                1,
+            )
+            .is_err(),
+            "expiry drift above the caller tolerance must fail"
+        );
+    }
 }

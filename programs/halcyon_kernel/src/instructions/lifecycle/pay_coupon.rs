@@ -1,5 +1,8 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::{
+    associated_token::get_associated_token_address,
+    token::{self, Mint, Token, TokenAccount, Transfer},
+};
 use halcyon_common::{events::CouponPaid, seeds, HalcyonError};
 
 use crate::{state::*, KernelError};
@@ -37,6 +40,9 @@ pub struct PayCoupon<'info> {
         mut,
         token::mint = usdc_mint,
         token::authority = coupon_vault,
+        constraint = coupon_vault_usdc.key()
+            == get_associated_token_address(&coupon_vault.key(), &usdc_mint.key())
+            @ KernelError::ProductProgramMismatch,
     )]
     pub coupon_vault_usdc: Account<'info, TokenAccount>,
 

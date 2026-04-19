@@ -15,6 +15,10 @@ pub struct Args {
     pub pyth_sol: String,
     #[arg(long, default_value_t = 50)]
     pub slippage_bps: u16,
+    #[arg(long, default_value_t = 32)]
+    pub max_quote_slot_delta: u64,
+    #[arg(long, default_value_t = 30)]
+    pub max_expiry_delta_secs: i64,
     #[arg(long)]
     pub policy_id: Option<String>,
 }
@@ -52,6 +56,13 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
             notional_usdc: args.notional,
             max_premium,
             min_max_liability,
+            min_offered_coupon_bps_s6: preview.offered_coupon_bps_s6,
+            preview_quote_slot: preview.quote_slot,
+            max_quote_slot_delta: args.max_quote_slot_delta,
+            preview_entry_price_s6: preview.entry_price_s6,
+            max_entry_price_deviation_bps: args.slippage_bps,
+            preview_expiry_ts: preview.expiry_ts,
+            max_expiry_delta_secs: args.max_expiry_delta_secs,
         },
     );
     let signature = tx::send_instructions(ctx.rpc.as_ref(), buyer, vec![ix]).await?;
@@ -65,12 +76,23 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     println!("  principal_escrow_usdc={}", args.notional);
     println!("  premium_usdc={}", preview.premium);
     println!("  max_liability_usdc={}", preview.max_liability);
+    println!("  offered_coupon_bps_s6={}", preview.offered_coupon_bps_s6);
+    println!("  preview_entry_price_s6={}", preview.entry_price_s6);
+    println!("  preview_expiry_ts={}", preview.expiry_ts);
+    println!("  preview_quote_slot={}", preview.quote_slot);
     println!(
         "  liability_buffer_usdc={}",
         preview.max_liability.saturating_sub(args.notional)
     );
     println!("  max_premium_bound={max_premium}");
     println!("  min_max_liability_bound={min_max_liability}");
+    println!(
+        "  min_offered_coupon_bps_s6_bound={}",
+        preview.offered_coupon_bps_s6
+    );
+    println!("  max_quote_slot_delta={}", args.max_quote_slot_delta);
+    println!("  max_entry_price_deviation_bps={}", args.slippage_bps);
+    println!("  max_expiry_delta_secs={}", args.max_expiry_delta_secs);
     Ok(())
 }
 

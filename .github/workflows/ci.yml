@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: cargo check + tests + backtest replay
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout@v4.2.2 pinned 2026-04-18
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # dtolnay/rust-toolchain@stable pinned 2026-04-18
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      # Swatinem/rust-cache@v2.8.1 pinned 2026-04-18
+      - uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1
+      - name: cargo check --workspace (excluding wasm target)
+        run: cargo check --workspace --exclude halcyon-wasm
+      # CI1 — no --exclude blanket on the kernel programs. Any `#[cfg(test)]`
+      # modules inside the kernel run here alongside the quote-crate smoke tests.
+      - name: cargo test --workspace
+        run: cargo test --workspace --exclude halcyon-wasm
+      - name: backtest replay (make sol-autocall)
+        run: make sol-autocall
+      # X1 — pure-Rust invariant guard. The three quote crates must build
+      # without anchor-lang / solana-program in their dep graph. This check
+      # fails fast if anyone re-adds the halcyon_common dep.
+      - name: pure-Rust quote-crate invariant
+        run: |
+          set -e
+          for crate in halcyon_flagship_quote halcyon_il_quote halcyon_sol_autocall_quote; do
+            if cargo tree -p "$crate" --edges=normal | grep -Ei 'anchor-lang|solana-program'; then
+              echo "ERROR: $crate transitively pulls a Solana dep. L0 invariant broken." >&2
+              exit 1
+            fi
+          done
+          echo "pure-Rust invariant: clean"
+
+  anchor:
+    name: anchor build + test + layouts + cpi-seeds
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout@v4.2.2 pinned 2026-04-18
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # dtolnay/rust-toolchain@stable pinned 2026-04-18
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      # Swatinem/rust-cache@v2.8.1 pinned 2026-04-18
+      - uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1
+      # actions/setup-node@v4.4.0 pinned 2026-04-18
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+      - name: Install Solana CLI
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/anza-xyz/agave/releases/download/v2.3.0/solana-release-x86_64-unknown-linux-gnu.tar.bz2 -o /tmp/solana-release.tar.bz2
+          echo "56241fbe862495ff01b2b875195e44f94c22e9f2a504591a3ade1b9d82862730  /tmp/solana-release.tar.bz2" | sha256sum -c -
+          mkdir -p "$HOME/.local/share/solana"
+          tar -xjf /tmp/solana-release.tar.bz2 -C "$HOME/.local/share/solana"
+          echo "$HOME/.local/share/solana/solana-release/bin" >> $GITHUB_PATH
+      - name: Install Anchor CLI
+        run: cargo install --git https://github.com/coral-xyz/anchor anchor-cli --rev 1ebbe58158d089a2a40b5e35ebead5a10db9090d --locked
+      - name: Install test harness deps
+        run: yarn install --frozen-lockfile
+      - name: yarn audit
+        run: yarn audit --level high
+      - name: anchor build
+        run: anchor build
+      # K11 — regression guard for the CPI seeds+bump aliasing bug.
+      - name: cpi-seeds regression guard
+        run: make cpi-seeds-check
+      # Layouts parity check against the compiled IDL.
+      - name: layouts-check
+        run: make layouts-check
+      # CI1 — exit criterion: the 12+ kernel tests must pass reliably.
+      # We run `anchor test` three times in CI; flakiness caught here
+      # rather than at L2 boundary. "Ten consecutive invocations" is a
+      # local-machine bar — three keeps CI turnaround tolerable.
+      - name: anchor test x3 (no `|| echo` — real enforcement)
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "=== anchor test run $i/3 ==="
+            anchor test --skip-lint
+          done

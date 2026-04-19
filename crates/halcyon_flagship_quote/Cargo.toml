@@ -1,0 +1,23 @@
+[package]
+name = "halcyon_flagship_quote"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust pricing for the flagship worst-of-3 SPY/QQQ/IWM autocall"
+
+[features]
+default = ["full"]
+full = [
+    "solmath-core/transcendental",
+    "solmath-core/barrier",
+    "solmath-core/complex",
+    "solmath-core/insurance",
+]
+
+[dependencies]
+# Pure-Rust invariant (L0 §4.2): no Solana deps. `halcyon_common` pulls
+# anchor-lang -> solana-program; the flagship pricer does not use its
+# surface, so it must not appear in this dep graph.
+solmath-core = { path = "../../solmath-core", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nalgebra = "0.33"

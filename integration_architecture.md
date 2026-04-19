@@ -334,19 +334,28 @@ One process with per-product dispatch handlers sharing scheduling infrastructure
 
 Pause flags are admin-mutable with no timelock. Unpause requires the same admin.
 
-### 2.10 The mutual-CPI pattern at issuance
+### 2.10 The issuance CPI pattern
 
-When the product's `accept_quote` CPIs into the kernel's `reserve_and_issue`:
+The product's `accept_quote` makes **two sequential CPIs into the kernel** inside a single transaction, with the product writing its `ProductTerms` account locally in between. There is no kernel→product callback; the kernel never invokes product code.
 
-1. Kernel validates (registered product, not paused, max_liability within risk cap, free capital sufficient, sigma and regime signals fresh, slippage signatures match).
-2. Kernel mutates (transfers premium USDC, splits tranche, creates `PolicyHeader` with status `Quoted` and pointer to the future `ProductTerms` address).
-3. Kernel CPIs back into the product's `init_terms` entry point (registered in `ProductRegistryEntry`). The product writes `ProductTerms` with product-specific layout.
-4. Kernel verifies `ProductTerms` was created at the expected address and updates `PolicyHeader.status` to `Active`.
-5. All mutations happen in one transaction; any failure rolls back the whole flow.
+1. product → `kernel::reserve_and_issue`. Kernel validates (registered product, not paused, `max_liability` within per-policy and global risk caps, free capital sufficient, sigma and regime signals fresh, premium slippage within caller's bound). Kernel mutates (transfers premium USDC, splits into senior / junior / treasury shares, increments `vault_state.total_reserved_liability` and `product_registry_entry.total_reserved`, creates `PolicyHeader` with `status = Quoted`, stores the product-supplied `terms_hash`, leaves `product_terms = Pubkey::default()`).
+2. Product writes `ProductTerms` at the expected `[b"terms", policy_id]` PDA, under its own program's ownership. No CPI — the product owns this account.
+3. product → `kernel::finalize_policy`. Kernel rehashes the bytes of `ProductTerms` (discriminator + payload) and compares against `PolicyHeader.terms_hash`; validates `ProductTerms.owner == product_program_id`; flips `PolicyHeader.status` to `Active` and records the `product_terms` address.
 
-This mutual-CPI keeps layout responsibility clean: kernel owns `PolicyHeader` layout and invariants; product owns `ProductTerms` layout. The kernel never deserializes `ProductTerms`; it only checks the address exists.
+All three steps are in the same transaction. Any failure rolls the whole flow back atomically.
 
-This pattern needs an explicit localnet test early in the build because Anchor's account-constraints macro can produce subtle re-entrance issues on mutual CPIs. See Layer 2 exit criteria in a later document part.
+This layout keeps responsibility clean: kernel owns `PolicyHeader` layout and invariants; product owns `ProductTerms` layout. The kernel never deserializes `ProductTerms` with a product-specific schema — it only hashes the raw bytes and records the address — but the hash rehash at `finalize_policy` binds the product's on-disk terms to the `terms_hash` the product committed to at `reserve_and_issue` time. A product that tries to commit one hash and write different bytes fails `finalize_policy` and the entire transaction rolls back.
+
+**Two kernel entries, not one.** `PolicyHeader` exists in a `Quoted` intermediate state between the two CPIs. Splitting the lifecycle into two kernel instructions — each re-borrowing `PolicyHeader` cleanly on entry — sidesteps a class of Anchor account-constraints gotchas that bite if a single handler tries to mutate an account, CPI out, and mutate the same account again. See `LEARNED.md` for the related Anchor 0.32.1 seed-constraint aliasing bug, which applies to any kernel-owned `Account<T>` passed across a product→kernel CPI.
+
+**`ProductRegistryEntry.init_terms_discriminator` is metadata only.** An earlier draft of this section described a kernel→product callback via that discriminator. That draft is superseded by the pattern above; the field survives as optional provenance metadata but nothing on-chain invokes it.
+
+**Test obligations at L1 exit (replaces the re-entrance test this section used to call out):**
+
+- **Happy path.** After `accept_quote` returns, `PolicyHeader.status == Active`, `PolicyHeader.product_terms` points at the expected PDA, `PolicyHeader.terms_hash` matches `sha256(product_terms.account_data)`, and vault/product reservations are incremented by `max_liability`.
+- **Atomicity.** If the product aborts between `reserve_and_issue` and `finalize_policy` (panic, early return, explicit failure), `PolicyHeader` does not persist and reservations are unchanged. Transaction atomicity handles this, but the test pins the invariant.
+- **Terms-binding enforcement.** `finalize_policy` with a `product_terms` account whose bytes do not hash to `PolicyHeader.terms_hash` fails with `TermsHashMismatch` and the transaction rolls back.
+- **Status-machine integrity.** `finalize_policy` on a header not in `Quoted` (Active / Settled / absent) fails with `PolicyNotQuoted`.
 
 ### 2.11 Address Lookup Tables
 

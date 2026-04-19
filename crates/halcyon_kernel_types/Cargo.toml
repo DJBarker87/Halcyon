@@ -1,0 +1,12 @@
+[package]
+name = "halcyon_kernel_types"
+version = "0.1.0"
+edition = "2021"
+description = "Kernel account layouts exported for cross-program reads."
+
+[features]
+default = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "=0.32.1"

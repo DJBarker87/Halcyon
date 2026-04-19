@@ -1,0 +1,7 @@
+[package]
+name = "regime_keeper"
+version = "0.1.0"
+edition = "2021"
+description = "fvol regime signal keeper for IL Protection. Logic lands in L3."
+
+[dependencies]

@@ -1,0 +1,24 @@
+[package]
+name = "halcyon_stub_product"
+version = "0.1.0"
+edition = "2021"
+description = "L1-only stub product under research/. Kept in the workspace so kernel tests can exercise the mutual-CPI seam; not deployed to devnet."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "halcyon_stub_product"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "halcyon_common/idl-build", "halcyon_kernel/idl-build"]
+
+[dependencies]
+anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
+anchor-spl = "=0.32.1"
+halcyon_common = { path = "../../../crates/halcyon_common" }
+halcyon_kernel = { path = "../../../programs/halcyon_kernel", features = ["cpi"] }
+solana-sha256-hasher = "=2.3.0"

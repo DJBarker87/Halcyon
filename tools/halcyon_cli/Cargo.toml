@@ -1,0 +1,24 @@
+[package]
+name = "halcyon_cli"
+version = "0.1.0"
+edition = "2021"
+description = "Operator CLI for Halcyon — admin bring-up, capital, preview, buy, settle, keeper force-firing, state dump."
+
+[[bin]]
+name = "halcyon"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.47", features = ["full"] }
+solana-sdk = "=2.3.1"
+solana-rpc-client = "=2.3.1"
+solana-rpc-client-api = "=2.3.1"
+solana-account-decoder = "=2.3.1"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
+halcyon_client_sdk = { path = "../../crates/halcyon_client_sdk" }
+halcyon_kernel = { path = "../../programs/halcyon_kernel", features = ["cpi"] }
+halcyon_sol_autocall = { path = "../../programs/halcyon_sol_autocall", features = ["cpi"] }

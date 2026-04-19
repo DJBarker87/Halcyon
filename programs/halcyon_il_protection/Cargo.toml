@@ -1,0 +1,22 @@
+[package]
+name = "halcyon_il_protection"
+version = "0.1.0"
+edition = "2021"
+description = "IL Protection product program on SOL/USDC. Handlers land in L3."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "halcyon_il_protection"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "=0.32.1"
+halcyon_common = { path = "../../crates/halcyon_common" }
+halcyon_il_quote = { path = "../../crates/halcyon_il_quote" }

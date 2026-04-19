@@ -1,0 +1,26 @@
+[package]
+name = "halcyon_il_quote"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust pricing for the IL Protection product on SOL/USDC"
+
+[features]
+default = ["full"]
+full = [
+    "solmath-core/transcendental",
+    "solmath-core/barrier",
+    "solmath-core/complex",
+    "solmath-core/insurance",
+]
+
+[dependencies]
+# Pure-Rust invariant (L0 §4.2): no Solana deps. `pool/*` references a
+# nonexistent halcyon_common surface but is not declared in `lib.rs`, so
+# it's dead code and does not affect compile.
+solmath-core = { path = "../../solmath-core", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "il_hedge_product"
+path = "src/bin/il_hedge_product.rs"

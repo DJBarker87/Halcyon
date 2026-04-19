@@ -1,7 +1,38 @@
 [workspace]
-members = ["crates/halcyon-quote", "crates/halcyon-wasm", "solmath-core"]
-default-members = ["crates/halcyon-quote"]
 resolver = "2"
+members = [
+    # Pricing crates (pure Rust, zero Solana deps — shared by on-chain programs and the backtest harness)
+    "solmath-core",
+    "crates/halcyon_common",
+    "crates/halcyon_kernel_types",
+    "crates/halcyon_oracles",
+    "crates/halcyon_flagship_quote",
+    "crates/halcyon_il_quote",
+    "crates/halcyon_sol_autocall_quote",
+    "crates/halcyon_client_sdk",
+    # Browser shim
+    "crates/halcyon-wasm",
+    # Anchor programs (handlers populated through L1+)
+    "programs/halcyon_kernel",
+    "research/programs/halcyon_stub_product",
+    "programs/halcyon_flagship_autocall",
+    "programs/halcyon_il_protection",
+    "programs/halcyon_sol_autocall",
+    # Keepers (empty L0 scaffolds — logic lands in L2+)
+    "keepers/observation_keeper",
+    "keepers/regression_keeper",
+    "keepers/delta_keeper",
+    "keepers/hedge_keeper",
+    "keepers/regime_keeper",
+    # Operator CLI
+    "tools/halcyon_cli",
+]
+default-members = [
+    "crates/halcyon_sol_autocall_quote",
+    "crates/halcyon_il_quote",
+    "crates/halcyon_flagship_quote",
+]
+exclude = ["target", "marketing-video"]
 
 [profile.release]
 overflow-checks = true
@@ -12,3 +43,4 @@ codegen-units = 1
 opt-level = 3
 incremental = false
 codegen-units = 1
+

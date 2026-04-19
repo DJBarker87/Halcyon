@@ -1,0 +1,24 @@
+[package]
+name = "halcyon_sol_autocall_quote"
+version = "0.1.0"
+edition = "2021"
+description = "Pure-Rust pricing and hedge-controller logic for the SOL Autocall product"
+
+[features]
+default = ["full"]
+full = [
+    "solmath-core/transcendental",
+    "solmath-core/barrier",
+    "solmath-core/complex",
+]
+
+[dependencies]
+# Pure-Rust invariant (L0 §4.2): no Solana deps.
+solmath-core = { path = "../../solmath-core", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+nalgebra = "0.33"
+
+[[bin]]
+name = "sol_autocall_product"
+path = "src/bin/sol_autocall_product.rs"

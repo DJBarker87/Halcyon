@@ -2,14 +2,28 @@
 // Halcyon — Flagship worst-of-3 equity autocall
 // PRODUCT CARD: product params are fixed on-chain. Buyer input = notional + slippage.
 
-const { useState: useState_eq, useMemo: useMemo_eq } = React;
+const { useState: useState_eq, useMemo: useMemo_eq, useEffect: useEffect_eq } = React;
 const HM_eq = window.HalcyonMath;
 
 const FLAGSHIP = {
   underlyings: ['SPY', 'QQQ', 'IWM'],
   tenorMonths: 18,
+  // N_OBS quarterly observation dates over the 18-month tenor. The c1 filter
+  // tracks 6 quarterly obs (coupon memory folds 18 monthlies into these).
+  // fair_coupon_bps from the WASM pricer is per quarterly obs; annualise with
+  // × (obsPerYear = 4).
+  nObsQuarterly: 6,
+  obsPerYear: 4,
   autocallBarrier: 1.00,
   knockInBarrier: 0.80,
+  // Production quote composition (math-stack doc §6)
+  quoteShare: 0.60,
+  issuerMarginBps: 100,
+  fcFloorBps: 150,
+  fcCeilingBps: 1400,
+  // σ default when no live feed is present. 0.29 matches the production-σ
+  // neighbourhood the K=12 correction table was tuned around.
+  sigmaAnnFallback: 0.29,
   spot: { SPY: 580.42, QQQ: 512.67, IWM: 229.81 },
   names: { SPY: 'S&P 500', QQQ: 'Nasdaq 100', IWM: 'Russell 2000' },
   loadings: { SPY: 0.516, QQQ: 0.568, IWM: 0.641 },
@@ -20,19 +34,96 @@ const EQ_PYTH = {
   IWM: { feed: 'HRJHMgqiP8wSFkBjBWyMdL5u3W8Yt4nHP6Y3YGE1s8C3', staleSec: 4 },
 };
 
-function computeFlagshipQuote({ notional, slippageBps }) {
-  // Whitepaper: quoted coupon 15.60% p.a., realised IRR 9.4%
-  const quotedCoupon  = 0.1560;
-  const offeredCoupon = quotedCoupon + Math.sin(notional / 17_000) * 0.0004;
-  const fairCoupon    = quotedCoupon / 0.65;   // 24% p.a. model fair
+// Hook: subscribe to live EWMA σ for SPY/QQQ/IWM when the feeds are wired.
+// Today oracles.js only serves SOL; this hook degrades gracefully and returns
+// `FLAGSHIP.sigmaAnnFallback` until the equity feeds come online. Also
+// re-renders when the WASM module is ready so the pricer swaps in live.
+function useLiveSigma_eq() {
+  const readComposite = () => {
+    const o = window.HalcyonOracles;
+    if (!o || !o.getEwma) return null;
+    const parts = FLAGSHIP.underlyings
+      .map(s => o.getEwma(s))
+      .filter(x => x && Number.isFinite(x.sigmaAnn));
+    if (!parts.length) return null;
+    // Equal-weight geometric mean of the individual EWMAs. When live feeds
+    // arrive, replace with the factor-model composite per the calibration
+    // JSON (common_factor_delta_scale_annual_trading_day × loadings).
+    const mean = parts.reduce((a, p) => a * p.sigmaAnn, 1) ** (1 / parts.length);
+    return Number.isFinite(mean) ? mean : null;
+  };
+  const [sigma, setSigma] = useState_eq(() => readComposite());
+  useEffect_eq(() => {
+    const o = window.HalcyonOracles;
+    if (!o || !o.subscribeEwma) return;
+    const unsubs = FLAGSHIP.underlyings.map(s =>
+      o.subscribeEwma(s, () => setSigma(readComposite())));
+    return () => unsubs.forEach(fn => fn && fn());
+  }, []);
+  // Re-render when WASM finishes loading so the pricer swaps in.
+  const [, setTick] = useState_eq(0);
+  useEffect_eq(() => {
+    if (window.HalcyonMath && window.HalcyonMath.wasmReady) return;
+    const h = () => setTick(t => t + 1);
+    window.addEventListener('halcyon-wasm-ready', h);
+    return () => window.removeEventListener('halcyon-wasm-ready', h);
+  }, []);
+  return sigma;
+}
+
+function computeFlagshipQuote({ notional, slippageBps, sigmaAnn }) {
+  // Live WASM path: run the EXACT on-chain K=12 pricer (projected c1 filter
+  // + K=12 correction). Falls back to whitepaper constants when WASM hasn't
+  // loaded yet or σ is outside the [0.08, 0.80] calibration range.
+  const wasm = window.HalcyonMath && window.HalcyonMath.wasm;
+  const canPrice = !!wasm
+    && typeof wasm.worst_of_k12_coupon_bps === 'function'
+    && Number.isFinite(sigmaAnn) && sigmaAnn >= 0.08 && sigmaAnn <= 0.80;
+
+  let fairCoupon;         // annualised decimal
+  let kiRate, acRate;
+  let fcBpsPerObs, engine;
+  if (canPrice) {
+    fcBpsPerObs = wasm.worst_of_k12_coupon_bps(sigmaAnn);
+    if (Number.isFinite(fcBpsPerObs) && fcBpsPerObs > 0) {
+      fairCoupon = (fcBpsPerObs / 10_000) * FLAGSHIP.obsPerYear;
+      kiRate     = wasm.worst_of_k12_knock_in_rate(sigmaAnn);
+      acRate     = wasm.worst_of_k12_autocall_rate(sigmaAnn);
+      engine     = 'K=12 c1 filter (on-chain path)';
+    } else {
+      fairCoupon = 0.24; engine = 'whitepaper fallback';
+    }
+  } else {
+    fairCoupon = 0.24;   // 24% p.a. model fair (whitepaper constant)
+    engine     = 'whitepaper fallback';
+  }
+
+  // Convert annualised fair coupon → per-obs → apply quote share + margin → annualised offered.
+  const fairPerObs    = fairCoupon / FLAGSHIP.obsPerYear;
+  const offeredPerObs = Math.max(0, fairPerObs * FLAGSHIP.quoteShare
+                                    - FLAGSHIP.issuerMarginBps / 10_000);
+  // Tiny liquidity-depth jitter (same shape as the SOL page, ±0.4 bps on a
+  // 100k notional), visible only in the UI — not a pricing model input.
+  const liveJitter    = Math.sin(notional / 17_000) * 0.00004;
+  const offeredCoupon = offeredPerObs * FLAGSHIP.obsPerYear + liveJitter;
+  const quotedCoupon  = offeredCoupon; // offered = what the protocol actually pays
+
+  // Issuance gate (math-stack doc §6). UI only surfaces the fact, not blocks;
+  // the on-chain program enforces.
+  const fcBpsAnn = fairCoupon * 10_000;
+  const issuable = fcBpsAnn >= FLAGSHIP.fcFloorBps
+                && fcBpsAnn <= FLAGSHIP.fcCeilingBps;
+
   const maxPremium    = notional * (1 + slippageBps / 10_000);
   // Max liability reserved: (1 − KI) × notional on worst-case KI path
   const maxLiability  = notional * (1 - FLAGSHIP.knockInBarrier);  // 20% of notional
-  const issuanceFee   = notional * 0.01;
+  const issuanceFee   = notional * FLAGSHIP.issuerMarginBps / 10_000;
   const perCoupon     = notional * offeredCoupon / 12;  // monthly
   const maxIncome     = notional * offeredCoupon * (FLAGSHIP.tenorMonths / 12);
   return { offeredCoupon, quotedCoupon, fairCoupon, maxPremium,
-           maxLiability, issuanceFee, perCoupon, maxIncome };
+           maxLiability, issuanceFee, perCoupon, maxIncome,
+           sigmaAnn, engine, issuable,
+           kiProbability: kiRate, autocallProbability: acRate };
 }
 
 function PageEquityAutocall({ tweaks }) {
@@ -41,10 +132,13 @@ function PageEquityAutocall({ tweaks }) {
   const [advOpen,     setAdvOpen]     = useState_eq(false);
   const [gateOpen,    setGateOpen]    = useState_eq(false);
 
+  const liveSigma = useLiveSigma_eq();
+  const sigmaAnn  = Number.isFinite(liveSigma) ? liveSigma : FLAGSHIP.sigmaAnnFallback;
+
   const hasQuote = notional >= 100;
   const q = useMemo_eq(
-    () => hasQuote ? computeFlagshipQuote({ notional, slippageBps }) : null,
-    [notional, slippageBps, hasQuote]);
+    () => hasQuote ? computeFlagshipQuote({ notional, slippageBps, sigmaAnn }) : null,
+    [notional, slippageBps, hasQuote, sigmaAnn]);
 
   const walletOk = tweaks.walletState === 'connected';
   const canIssue = hasQuote && walletOk;

@@ -8,8 +8,10 @@ description = "WASM shim exposing solmath-core pricing primitives to the browser
 crate-type = ["cdylib"]
 
 [dependencies]
-solmath-core  = { path = "../../solmath-core",  default-features = false, features = ["bs", "transcendental", "barrier", "iv"] }
-halcyon-quote = { path = "../halcyon-quote",    default-features = false, features = ["full"] }
+solmath-core = { path = "../../solmath-core", default-features = false, features = ["bs", "transcendental", "barrier", "iv"] }
+halcyon_sol_autocall_quote = { path = "../halcyon_sol_autocall_quote", default-features = false, features = ["full"] }
+halcyon_flagship_quote     = { path = "../halcyon_flagship_quote",     default-features = false, features = ["full"] }
+halcyon_il_quote           = { path = "../halcyon_il_quote",           default-features = false, features = ["full"] }
 
 [profile.release]
 opt-level = "z"

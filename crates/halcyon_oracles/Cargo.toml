@@ -1,0 +1,21 @@
+[package]
+name = "halcyon_oracles"
+version = "0.1.0"
+edition = "2021"
+description = "Pyth pull-model read surface + staleness gates for Halcyon products."
+
+[features]
+default = ["pyth-pull"]
+# Real Pyth pull-model receiver.
+pyth-pull = ["dep:pyth-solana-receiver-sdk"]
+# Localnet/test replacement: reads a borsh-encoded PriceSnapshot wrapped in a
+# mock account owned by the sol_autocall program. Enabled for localnet tests
+# that cannot run a Pyth receiver. The fixtures/ directory carries canned
+# account payloads the test harness loads into the validator.
+mock-pyth = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "=0.32.1"
+halcyon_common = { path = "../halcyon_common" }
+pyth-solana-receiver-sdk = { version = "=1.1.0", optional = true }

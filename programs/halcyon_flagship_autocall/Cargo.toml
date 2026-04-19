@@ -1,0 +1,22 @@
+[package]
+name = "halcyon_flagship_autocall"
+version = "0.1.0"
+edition = "2021"
+description = "Flagship SPY/QQQ/IWM worst-of autocall program. Handlers land in L4."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "halcyon_flagship_autocall"
+
+[features]
+default = []
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = ["anchor-lang/idl-build"]
+
+[dependencies]
+anchor-lang = "=0.32.1"
+halcyon_common = { path = "../../crates/halcyon_common" }
+halcyon_flagship_quote = { path = "../../crates/halcyon_flagship_quote" }

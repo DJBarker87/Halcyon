@@ -1,0 +1,37 @@
+[package]
+name = "halcyon_sol_autocall"
+version = "0.1.0"
+edition = "2021"
+description = "SOL Autocall product program — L2 issuance, observation, settlement."
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "halcyon_sol_autocall"
+
+[features]
+# Default feature-set: production Pyth pull-model. Localnet tests that need
+# deterministic prices build with `--no-default-features --features mock-pyth`.
+default = ["pyth-pull"]
+pyth-pull = ["halcyon_oracles/pyth-pull"]
+mock-pyth = ["halcyon_oracles/mock-pyth"]
+cpi = ["no-entrypoint"]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+idl-build = [
+    "anchor-lang/idl-build",
+    "anchor-spl/idl-build",
+    "halcyon_common/idl-build",
+    "halcyon_kernel/idl-build",
+    "halcyon_oracles/idl-build",
+]
+
+[dependencies]
+anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
+anchor-spl = "=0.32.1"
+halcyon_common = { path = "../../crates/halcyon_common" }
+halcyon_oracles = { path = "../../crates/halcyon_oracles", default-features = false }
+halcyon_kernel = { path = "../halcyon_kernel", features = ["cpi"] }
+halcyon_sol_autocall_quote = { path = "../../crates/halcyon_sol_autocall_quote" }
+solmath-core = { path = "../../solmath-core" }
+solana-sha256-hasher = "=2.3.0"

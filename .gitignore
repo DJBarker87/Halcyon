@@ -4,6 +4,11 @@
 # Rust build artifacts (root + any nested workspace/crate)
 target/
 /target
+.anchor/
+target/deploy/*-keypair.json
+**/*keypair*.json
+**/*.pem
+**/*.key
 
 # Node / JS
 **/node_modules/

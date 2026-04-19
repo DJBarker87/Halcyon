@@ -1,8 +1,5 @@
 use anchor_lang::{prelude::Pubkey, Discriminator, InstructionData, ToAccountMetas};
-use solana_sdk::{
-    instruction::Instruction,
-    system_program,
-};
+use solana_sdk::{instruction::Instruction, system_program};
 
 use crate::pda;
 

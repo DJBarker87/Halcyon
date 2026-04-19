@@ -12,8 +12,8 @@ use halcyon_sol_autocall_quote::autocall_hedged::{
 };
 use pyth_solana_receiver_sdk::price_update::{PriceUpdateV2, VerificationLevel};
 use serde::Deserialize;
-use solana_account_decoder::parse_address_lookup_table::{
-    parse_address_lookup_table, LookupTableAccountType,
+use solana_address_lookup_table_interface::{
+    program::ID as ADDRESS_LOOKUP_TABLE_PROGRAM_ID, state::AddressLookupTable,
 };
 use solana_rpc_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
@@ -648,33 +648,21 @@ async fn lookup_table_accounts(
     rpc: &RpcClient,
     response: &JupiterSwapInstructionsResponse,
 ) -> Result<Vec<AddressLookupTableAccount>> {
-    if !response.addresses_by_lookup_table_address.is_empty() {
-        return response
-            .addresses_by_lookup_table_address
-            .iter()
-            .map(|(table, addresses)| {
-                Ok(AddressLookupTableAccount {
-                    key: Pubkey::from_str(table)
-                        .with_context(|| format!("parsing ALT address {table}"))?,
-                    addresses: addresses
-                        .iter()
-                        .map(|address| {
-                            Pubkey::from_str(address)
-                                .with_context(|| format!("parsing ALT entry address {address}"))
-                        })
-                        .collect::<Result<Vec<_>>>()?,
-                })
-            })
-            .collect();
-    }
-    if response.address_lookup_table_addresses.is_empty() {
+    let table_pubkeys = lookup_table_pubkeys(response)?;
+    if table_pubkeys.is_empty() {
         return Ok(Vec::new());
     }
-    let table_pubkeys = response
-        .address_lookup_table_addresses
-        .iter()
-        .map(|table| Pubkey::from_str(table).with_context(|| format!("parsing ALT address {table}")))
-        .collect::<Result<Vec<_>>>()?;
+    if !response.addresses_by_lookup_table_address.is_empty() {
+        warn!(
+            tables = ?table_pubkeys,
+            "ignoring Jupiter-supplied ALT contents; resolving live lookup tables from RPC"
+        );
+    } else {
+        info!(
+            tables = ?table_pubkeys,
+            "resolving Jupiter address lookup tables from RPC"
+        );
+    }
     let accounts = rpc
         .get_multiple_accounts(&table_pubkeys)
         .await
@@ -692,27 +680,44 @@ async fn lookup_table_accounts(
             let account = account.with_context(|| {
                 format!("lookup table account {table_pubkey} was missing from RPC response")
             })?;
-            let parsed = parse_address_lookup_table(&account.data).with_context(|| {
-                format!("parsing lookup table account {table_pubkey}")
-            })?;
-            let LookupTableAccountType::LookupTable(table) = parsed else {
-                anyhow::bail!("lookup table account {table_pubkey} is uninitialized");
-            };
-            let addresses = table
-                .addresses
-                .into_iter()
-                .map(|address| {
-                    Pubkey::from_str(&address).with_context(|| {
-                        format!("parsing ALT entry address {address} from {table_pubkey}")
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Ok(AddressLookupTableAccount {
-                key: table_pubkey,
-                addresses,
-            })
+            parse_lookup_table_account(table_pubkey, account)
         })
         .collect()
+}
+
+fn lookup_table_pubkeys(response: &JupiterSwapInstructionsResponse) -> Result<Vec<Pubkey>> {
+    let mut seen = BTreeSet::new();
+    let mut table_pubkeys = Vec::new();
+    for table in response
+        .address_lookup_table_addresses
+        .iter()
+        .chain(response.addresses_by_lookup_table_address.keys())
+    {
+        let table_pubkey =
+            Pubkey::from_str(table).with_context(|| format!("parsing ALT address {table}"))?;
+        if seen.insert(table_pubkey) {
+            table_pubkeys.push(table_pubkey);
+        }
+    }
+    Ok(table_pubkeys)
+}
+
+fn parse_lookup_table_account(
+    table_pubkey: Pubkey,
+    account: Account,
+) -> Result<AddressLookupTableAccount> {
+    anyhow::ensure!(
+        account.owner == ADDRESS_LOOKUP_TABLE_PROGRAM_ID,
+        "lookup table account {table_pubkey} is owned by {}, expected {}",
+        account.owner,
+        ADDRESS_LOOKUP_TABLE_PROGRAM_ID
+    );
+    let table = AddressLookupTable::deserialize(&account.data)
+        .with_context(|| format!("parsing lookup table account {table_pubkey}"))?;
+    Ok(AddressLookupTableAccount {
+        key: table_pubkey,
+        addresses: table.addresses.iter().copied().collect(),
+    })
 }
 
 async fn jupiter_quote(
@@ -1147,7 +1152,8 @@ async fn execute_target_swap(
         data: jupiter_instruction_data,
     });
     instructions.push(record_ix);
-    let lookup_table_accounts = lookup_table_accounts(client.rpc.as_ref(), &planned.instructions).await?;
+    let lookup_table_accounts =
+        lookup_table_accounts(client.rpc.as_ref(), &planned.instructions).await?;
     let signature = send_versioned_instructions(
         &client.rpc,
         &client.signer,
@@ -1657,5 +1663,71 @@ mod tests {
 
         ensure_required_route_accounts(&accounts, &keeper, &sleeve_source, &destination, &[])
             .expect("must accept");
+    }
+
+    #[test]
+    fn lookup_table_pubkeys_ignore_response_supplied_alt_contents() {
+        let table = Pubkey::new_unique();
+        let response = JupiterSwapInstructionsResponse {
+            token_ledger_instruction: None,
+            compute_budget_instructions: Vec::new(),
+            setup_instructions: Vec::new(),
+            swap_instruction: sample_payload(Pubkey::new_unique(), Vec::new()),
+            cleanup_instruction: None,
+            other_instructions: Vec::new(),
+            address_lookup_table_addresses: vec![table.to_string()],
+            addresses_by_lookup_table_address: BTreeMap::from([(
+                table.to_string(),
+                vec!["not-a-pubkey".to_string()],
+            )]),
+        };
+
+        let tables = lookup_table_pubkeys(&response).expect("must parse table keys");
+        assert_eq!(tables, vec![table]);
+    }
+
+    #[test]
+    fn rejects_lookup_table_accounts_with_non_alt_owner() {
+        let table = Pubkey::new_unique();
+        let err = parse_lookup_table_account(
+            table,
+            Account {
+                lamports: 1,
+                data: vec![0; 8],
+                owner: Pubkey::new_unique(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .expect_err("must reject non-ALT owners");
+        assert!(err.to_string().contains("expected"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn response_supplied_alt_contents_are_ignored_and_fetched_from_rpc() {
+        let table = Pubkey::new_unique();
+        let response = JupiterSwapInstructionsResponse {
+            token_ledger_instruction: None,
+            compute_budget_instructions: Vec::new(),
+            setup_instructions: Vec::new(),
+            swap_instruction: sample_payload(Pubkey::new_unique(), Vec::new()),
+            cleanup_instruction: None,
+            other_instructions: Vec::new(),
+            address_lookup_table_addresses: vec![table.to_string()],
+            addresses_by_lookup_table_address: BTreeMap::from([(
+                table.to_string(),
+                vec!["not-a-pubkey".to_string()],
+            )]),
+        };
+        let rpc = RpcClient::new("http://127.0.0.1:1".to_string());
+
+        let err = lookup_table_accounts(&rpc, &response)
+            .await
+            .expect_err("must resolve live lookup tables from RPC");
+        assert!(
+            err.to_string()
+                .contains("fetching Jupiter address lookup table accounts"),
+            "{err:#}"
+        );
     }
 }

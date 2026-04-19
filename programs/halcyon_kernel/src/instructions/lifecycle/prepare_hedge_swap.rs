@@ -365,11 +365,17 @@ fn validate_jupiter_instruction(
             saw_keeper_signer = true;
         }
         if account.pubkey == expected_source_token_account {
-            require!(account.is_writable, KernelError::InvalidHedgeTransactionShape);
+            require!(
+                account.is_writable,
+                KernelError::InvalidHedgeTransactionShape
+            );
             saw_source = true;
         }
         if account.pubkey == expected_destination_token_account {
-            require!(account.is_writable, KernelError::InvalidHedgeTransactionShape);
+            require!(
+                account.is_writable,
+                KernelError::InvalidHedgeTransactionShape
+            );
             saw_destination = true;
         }
     }

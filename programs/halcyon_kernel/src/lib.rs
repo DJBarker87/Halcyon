@@ -190,5 +190,4 @@ pub mod halcyon_kernel {
     ) -> Result<()> {
         instructions::lifecycle::prepare_hedge_swap::handler(ctx, args)
     }
-
 }

@@ -12,6 +12,14 @@ target/deploy/*-keypair.json
 
 # Node / JS
 **/node_modules/
+frontend/.next/
+frontend/test-results/
+frontend/playwright-report/
+frontend/.turbo/
+frontend/.vercel/
+
+# Local tool state
+.claude/*.lock
 
 # Logs & scratch JSON at repo root
 *.log

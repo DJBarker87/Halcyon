@@ -21,7 +21,8 @@ use crate::moment_tables::{
 };
 use crate::nig_weights_lookup::nig_importance_weights_9_lookup;
 use crate::worst_of_c1_fast::{
-    build_triple_correction_pre, triple_complement_gh3, C1FastConfig, C1FastQuote,
+    build_triple_correction_pre, c1_fast_quote_from_components, triple_complement_gh3,
+    C1FastConfig, C1FastQuote,
 };
 use solmath_core::{
     triangle_probability_i64, SolMathError, PHI2_RESID_QQQ_IWM, PHI2_RESID_SPY_IWM,
@@ -441,13 +442,14 @@ pub fn quote_c1_lookup_trace(
     };
 
     Ok(C1LookupTrace {
-        quote: C1FastQuote {
-            fair_coupon_bps: fair_coupon_frac as f64 * 10_000.0 / cfg.notional as f64,
-            zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-            coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-            knock_in_rate: total_ki as f64 / S6 as f64,
-            autocall_rate: total_ac as f64 / S6 as f64,
-        },
+        quote: c1_fast_quote_from_components(
+            cfg.notional,
+            fair_coupon_frac,
+            redemption_pv,
+            coupon_annuity,
+            total_ki,
+            total_ac,
+        ),
         observation_survival,
         observation_autocall_first_hit,
         observation_coupon_annuity_contribution,
@@ -511,14 +513,14 @@ pub fn quote_c1_lookup_exact_trace(
         .max(0);
 
     Ok(C1LookupTrace {
-        quote: C1FastQuote {
-            fair_coupon_bps: fair_coupon_frac as f64 * 10_000.0 / S6 as f64,
-            zero_coupon_pv: exact_redemption_from_frac(zero_coupon_frac, cfg.notional) as f64
-                / S6 as f64,
-            coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-            knock_in_rate: total_ki as f64 / S6 as f64,
-            autocall_rate: total_ac as f64 / S6 as f64,
-        },
+        quote: c1_fast_quote_from_components(
+            cfg.notional,
+            fair_coupon_frac,
+            exact_redemption_from_frac(zero_coupon_frac, cfg.notional),
+            coupon_annuity,
+            total_ki,
+            total_ac,
+        ),
         observation_survival,
         observation_autocall_first_hit,
         observation_coupon_annuity_contribution,
@@ -786,7 +788,10 @@ mod tests {
         let first = quote_c1_lookup_trace(&cfg, sigma_s6, drift_shift_63).unwrap();
         for _ in 0..100 {
             let next = quote_c1_lookup_trace(&cfg, sigma_s6, drift_shift_63).unwrap();
-            assert_eq!(first.quote.fair_coupon_bps, next.quote.fair_coupon_bps);
+            assert_eq!(
+                first.quote.fair_coupon_bps_s6,
+                next.quote.fair_coupon_bps_s6
+            );
             assert_eq!(
                 first.observation_autocall_first_hit,
                 next.observation_autocall_first_hit
@@ -805,21 +810,22 @@ mod tests {
             let exact = exact_quote(sigma);
             let lookup = quote_coupon_c1_lookup(&cfg, sigma_s6, drift_shift_63).unwrap();
             assert!(
-                (lookup.fair_coupon_bps - exact.fair_coupon_bps).abs() < 10.0,
+                (lookup.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs() < 10.0,
                 "sigma={sigma:.2} lookup={} exact={}",
-                lookup.fair_coupon_bps,
+                lookup.fair_coupon_bps_f64(),
                 exact.fair_coupon_bps
             );
             assert!(
-                (lookup.zero_coupon_pv - exact.zero_coupon_pv).abs() < 0.1,
+                (lookup.zero_coupon_pv_f64() - exact.zero_coupon_pv).abs() < 0.1,
                 "sigma={sigma:.2} lookup={} exact={}",
-                lookup.zero_coupon_pv,
+                lookup.zero_coupon_pv_f64(),
                 exact.zero_coupon_pv
             );
             assert!(
-                (lookup.coupon_annuity_pv - exact.leg_decomposition.coupon_annuity_pv).abs() < 0.1,
+                (lookup.coupon_annuity_pv_f64() - exact.leg_decomposition.coupon_annuity_pv).abs()
+                    < 0.1,
                 "sigma={sigma:.2} lookup={} exact={}",
-                lookup.coupon_annuity_pv,
+                lookup.coupon_annuity_pv_f64(),
                 exact.leg_decomposition.coupon_annuity_pv
             );
         }
@@ -835,11 +841,11 @@ mod tests {
             let trace = quote_c1_lookup_exact_trace(&cfg, sigma_s6).unwrap();
             println!(
                 "{sigma:>6.2} lookup_bps={:>10.4} exact_bps={:>10.4} lookup_v0={:>10.6} exact_v0={:>10.6} lookup_u0={:>10.6} exact_u0={:>10.6}",
-                lookup.fair_coupon_bps,
+                lookup.fair_coupon_bps_f64(),
                 exact.fair_coupon_bps,
-                lookup.zero_coupon_pv,
+                lookup.zero_coupon_pv_f64(),
                 exact.zero_coupon_pv,
-                lookup.coupon_annuity_pv,
+                lookup.coupon_annuity_pv_f64(),
                 exact.leg_decomposition.coupon_annuity_pv,
             );
             for obs_idx in 0..N_OBS {
@@ -864,11 +870,11 @@ mod tests {
             let lookup = quote_c1_lookup_trace(&cfg, sigma_s6, drift_shift_63).unwrap();
             println!(
                 "{sigma:>6.2} {:>12.4} {:>12.4} {:>12.6} {:>12.6} {:>12.6} {:>12.6}",
-                lookup.quote.fair_coupon_bps,
+                lookup.quote.fair_coupon_bps_f64(),
                 exact.fair_coupon_bps,
-                lookup.quote.zero_coupon_pv,
+                lookup.quote.zero_coupon_pv_f64(),
                 exact.zero_coupon_pv,
-                lookup.quote.coupon_annuity_pv,
+                lookup.quote.coupon_annuity_pv_f64(),
                 exact.leg_decomposition.coupon_annuity_pv,
             );
             for obs_idx in 0..N_OBS {
@@ -889,9 +895,9 @@ mod tests {
         let lookup = quote_c1_lookup_trace(&cfg, sigma_s6, drift_shift_63).unwrap();
         println!(
             "sigma=0.20 fair_coupon_bps={:.6} U0={:.6} V0={:.6}",
-            lookup.quote.fair_coupon_bps,
-            lookup.quote.coupon_annuity_pv,
-            lookup.quote.zero_coupon_pv,
+            lookup.quote.fair_coupon_bps_f64(),
+            lookup.quote.coupon_annuity_pv_f64(),
+            lookup.quote.zero_coupon_pv_f64(),
         );
         println!(
             "maturity_split safe={:.6} knock_in={:.6}",

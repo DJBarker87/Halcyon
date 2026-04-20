@@ -209,6 +209,8 @@ describe("halcyon kernel L1", function () {
         solAutocallQuoteShareBps: 7_500,
         solAutocallIssuerMarginBps: 50,
         treasuryDestination: destinationUsdc,
+        hedgeMaxSlippageBpsCap: 100,
+        hedgeDefundDestination: destinationUsdc,
       })
       .accounts({
         admin: admin.publicKey,
@@ -227,7 +229,7 @@ describe("halcyon kernel L1", function () {
       .rpc();
 
     const cfg = await kernel.account.protocolConfig.fetch(protocolConfig);
-    expect(cfg.version).to.eq(3);
+    expect(cfg.version).to.eq(4);
     expect(cfg.admin.toBase58()).to.eq(admin.publicKey.toBase58());
     expect(cfg.utilizationCapBps.toNumber()).to.eq(9_000);
     expect(cfg.seniorShareBps).to.eq(9_000);
@@ -280,6 +282,13 @@ describe("halcyon kernel L1", function () {
         globalRiskCap: new BN(1_000_000_000_000),
         engineVersion: 1,
         initTermsDiscriminator: accountDiscriminator("ProductTermsStub"),
+        // L3-H1 — register stub as principal-backed so reserve_and_issue
+        // enforces escrow >= notional for it. Tests that drive the stub
+        // with `vaultDepositAmountOverride = 0` exercise both the
+        // premium-portion gate (test 8: premium > 0, trips that first)
+        // and the new principal-escrow gate (new test 8b below: premium
+        // = 0, notional > 0, trips the principal gate).
+        requiresPrincipalEscrow: true,
       })
       .accounts({
         admin: admin.publicKey,
@@ -382,6 +391,8 @@ describe("halcyon kernel L1", function () {
         premiumSplitsBps: null,
         solAutocallQuoteConfigBps: null,
         treasuryDestination: null,
+        hedgeMaxSlippageBpsCap: null,
+        hedgeDefundDestination: null,
       })
       .accounts({
         admin: admin.publicKey,
@@ -433,6 +444,7 @@ describe("halcyon kernel L1", function () {
         policyId,
         notional: new BN(1_000_000_000),
         premium,
+        vaultDepositAmountOverride: null,
         maxLiability,
         expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
         magic: new BN(42),
@@ -489,6 +501,7 @@ describe("halcyon kernel L1", function () {
           policyId,
           notional: new BN(1_000_000_000),
           premium: new BN(100_000_000),
+          vaultDepositAmountOverride: null,
           maxLiability: new BN(500_000_000),
           expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
           magic: new BN(7),
@@ -529,9 +542,10 @@ describe("halcyon kernel L1", function () {
   });
 
   // -----------------------------------------------------------------
-  // Test 8 — Under-collateralized issuance fails before capacity checks
+  // Test 8 — Kernel rejects a product that funds the vault below the
+  //          premium portion that must remain in protocol capital.
   // -----------------------------------------------------------------
-  it("8. issuance with max liability above escrow fails with PolicyEscrowInsufficient", async () => {
+  it("8. issuance with vault deposit below premium portion fails", async () => {
     const policyId = Keypair.generate().publicKey;
     try {
       await stub.methods
@@ -539,6 +553,7 @@ describe("halcyon kernel L1", function () {
           policyId,
           notional: new BN(1_000_000_000),
           premium: new BN(100_000_000),
+          vaultDepositAmountOverride: new BN(0),
           maxLiability: new BN(9_999_999_999_999), // well above 50k cap
           expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
           magic: new BN(8),
@@ -566,10 +581,10 @@ describe("halcyon kernel L1", function () {
         } as any)
         .signers([buyer])
         .rpc();
-      assert.fail("issuance should have failed over cap");
+      assert.fail("issuance should have failed on vault deposit floor");
     } catch (err: any) {
       const code = err?.error?.errorCode?.code ?? "";
-      expect(code).to.eq("PolicyEscrowInsufficient");
+      expect(code).to.eq("VaultDepositBelowPremiumPortion");
     }
   });
 
@@ -631,6 +646,7 @@ describe("halcyon kernel L1", function () {
         policyId,
         notional: new BN(1_000_000_000),
         premium: new BN(50_000_000),
+        vaultDepositAmountOverride: null,
         maxLiability: new BN(200_000_000),
         expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
         magic: new BN(10),
@@ -713,6 +729,7 @@ describe("halcyon kernel L1", function () {
         policyId,
         notional: new BN(1_000_000_000),
         premium: new BN(50_000_000),
+        vaultDepositAmountOverride: null,
         maxLiability: new BN(100_000_000),
         expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
         magic: new BN(11),
@@ -851,6 +868,8 @@ describe("halcyon kernel L1", function () {
         protocolConfig,
         lookupTableRegistry: altRegistry,
         productProgramId: productProgramIdSeed,
+        // L-3 — handler now owner-checks the ALT account itself.
+        lookupTableAccount: lookupTable,
         systemProgram: SystemProgram.programId,
       } as any)
       .rpc();
@@ -875,6 +894,7 @@ describe("halcyon kernel L1", function () {
         policyId,
         notional: new BN(1_000_000_000),
         premium: new BN(10_000_000),
+        vaultDepositAmountOverride: null,
         maxLiability: new BN(50_000_000),
         expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
         magic: new BN(12),
@@ -988,6 +1008,7 @@ describe("halcyon kernel L1", function () {
         policyId,
         notional: new BN(1_000_000_000),
         premium: new BN(10_000_000),
+        vaultDepositAmountOverride: null,
         maxLiability: new BN(50_000_000),
         expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
         magic: new BN(14),
@@ -1039,6 +1060,7 @@ describe("halcyon kernel L1", function () {
         policyId,
         notional: new BN(500_000_000),
         premium: new BN(5_000_000),
+        vaultDepositAmountOverride: null,
         maxLiability: new BN(100_000_000),
         expiryTs: new BN(Math.floor(Date.now() / 1000) + 365 * 86_400),
         magic: new BN(1401),
@@ -1108,6 +1130,7 @@ describe("halcyon kernel L1", function () {
         policyId,
         notional: new BN(500_000_000),
         premium: new BN(5_000_000),
+        vaultDepositAmountOverride: null,
         maxLiability: new BN(100_000_000),
         expiryTs: new BN(Math.floor(Date.now() / 1000) + 365 * 86_400),
         magic: new BN(1402),
@@ -1211,15 +1234,38 @@ describe("halcyon kernel L1", function () {
   // -----------------------------------------------------------------
   it("16. finalize_policy rejects a registry terms discriminator mismatch", async () => {
     const wrongDiscriminator = Array(8).fill(0x5a) as any;
+    // M-4 — pairing the discriminator rotation with `paused = true`
+    // satisfies the kernel's M-4 guard (rotation is allowed only when
+    // either there are no live reservations or the product is being
+    // paused in the same call). This test also immediately unpauses so
+    // subsequent tests relying on issuance continue to work.
     await kernel.methods
       .updateProductRegistry({
         productProgramId: stub.programId,
         active: null,
-        paused: null,
+        paused: true,
         perPolicyRiskCap: null,
         globalRiskCap: null,
         engineVersion: null,
         initTermsDiscriminator: wrongDiscriminator,
+      })
+      .accounts({
+        admin: admin.publicKey,
+        protocolConfig,
+        productRegistryEntry,
+      } as any)
+      .rpc();
+    // Unpause so the test's acceptQuoteStub can still reach the kernel
+    // CPI and exercise the K2 terms-hash rehash.
+    await kernel.methods
+      .updateProductRegistry({
+        productProgramId: stub.programId,
+        active: null,
+        paused: false,
+        perPolicyRiskCap: null,
+        globalRiskCap: null,
+        engineVersion: null,
+        initTermsDiscriminator: null,
       })
       .accounts({
         admin: admin.publicKey,
@@ -1241,6 +1287,7 @@ describe("halcyon kernel L1", function () {
           policyId,
           notional: new BN(1_000_000_000),
           premium: new BN(10_000_000),
+          vaultDepositAmountOverride: null,
           maxLiability: new BN(50_000_000),
           expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
           magic: new BN(16),
@@ -1272,11 +1319,15 @@ describe("halcyon kernel L1", function () {
       const code = err?.error?.errorCode?.code ?? "";
       expect(code).to.eq("TermsAccountInvalid");
     } finally {
+      // M-4 — pair the restore-discriminator rotation with paused:true so
+      // the kernel allows the rotation in the presence of live
+      // reservations, then immediately unpause to restore the suite's
+      // precondition for tests 17+18.
       await kernel.methods
         .updateProductRegistry({
           productProgramId: stub.programId,
           active: null,
-          paused: null,
+          paused: true,
           perPolicyRiskCap: null,
           globalRiskCap: null,
           engineVersion: null,
@@ -1288,14 +1339,30 @@ describe("halcyon kernel L1", function () {
           productRegistryEntry,
         } as any)
         .rpc();
+      await kernel.methods
+        .updateProductRegistry({
+          productProgramId: stub.programId,
+          active: null,
+          paused: false,
+          perPolicyRiskCap: null,
+          globalRiskCap: null,
+          engineVersion: null,
+          initTermsDiscriminator: null,
+        })
+        .accounts({
+          admin: admin.publicKey,
+          protocolConfig,
+          productRegistryEntry,
+        } as any)
+        .rpc();
     }
   });
 
   // -----------------------------------------------------------------
-  // Test 17 — kernel must reject max_liability that exceeds actual vault
-  // escrow, even for a registered product.
+  // Test 17 — the deposit floor also holds for other registered-product
+  //           issuances, not only the earlier over-cap scenario.
   // -----------------------------------------------------------------
-  it("17. reserve_and_issue rejects undercollateralized max_liability", async () => {
+  it("17. reserve_and_issue rejects vault deposit below premium portion", async () => {
     const policyId = Keypair.generate().publicKey;
     const policyHeader = pda([KERNEL_SEEDS.POLICY, policyId.toBuffer()]);
     const productTerms = pda(
@@ -1308,7 +1375,8 @@ describe("halcyon kernel L1", function () {
         .acceptQuoteStub({
           policyId,
           notional: new BN(100_000_000),
-          premium: new BN(0),
+          premium: new BN(10_000_000),
+          vaultDepositAmountOverride: new BN(0),
           maxLiability: new BN(200_000_000),
           expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
           magic: new BN(17),
@@ -1333,10 +1401,10 @@ describe("halcyon kernel L1", function () {
         } as any)
         .signers([buyer])
         .rpc();
-      assert.fail("undercollateralized issuance should have failed");
+      assert.fail("issuance below premium floor should have failed");
     } catch (err: any) {
       const code = err?.error?.errorCode?.code ?? "";
-      expect(code).to.eq("PolicyEscrowInsufficient");
+      expect(code).to.eq("VaultDepositBelowPremiumPortion");
     }
   });
 
@@ -1356,6 +1424,7 @@ describe("halcyon kernel L1", function () {
         policyId,
         notional: new BN(1_000_000_000),
         premium: new BN(25_000_000),
+        vaultDepositAmountOverride: null,
         maxLiability: new BN(100_000_000),
         expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
         magic: new BN(18),
@@ -1406,6 +1475,113 @@ describe("halcyon kernel L1", function () {
         code === "ConstraintSeeds" ||
           text.includes("seeds constraint was violated")
       ).to.eq(true);
+    }
+  });
+
+  // -----------------------------------------------------------------
+  // Test 19 (L3-H1 + L3-M1) — register a second product (IL Protection's
+  // program ID) as synthetic; verify `requires_principal_escrow = false`
+  // is stored on the registry entry. This is the minimal structural test
+  // for the new field; full IL Protection accept/settle coverage awaits
+  // a mock-Pyth harness.
+  // -----------------------------------------------------------------
+  it("19. register IL Protection as synthetic (requires_principal_escrow=false)", async () => {
+    const IL_PROGRAM_ID = new PublicKey(
+      "HuUQUngf79HgTWdggxAsE135qFeHfYV9Mj9xsCcwqz5g"
+    );
+    const ilRegistryEntry = pda([
+      KERNEL_SEEDS.PRODUCT_REGISTRY,
+      IL_PROGRAM_ID.toBuffer(),
+    ]);
+    const ilVaultSigma = pda([KERNEL_SEEDS.VAULT_SIGMA, IL_PROGRAM_ID.toBuffer()]);
+    const ilProductAuthority = PublicKey.findProgramAddressSync(
+      [KERNEL_SEEDS.PRODUCT_AUTHORITY],
+      IL_PROGRAM_ID
+    )[0];
+    // Use an arbitrary 8-byte discriminator — test only probes the kernel
+    // registry, not finalize_policy's terms rehash.
+    const IL_DISCRIMINATOR = Array.from({ length: 8 }, (_, i) => 0xa0 + i);
+    await kernel.methods
+      .registerProduct({
+        productProgramId: IL_PROGRAM_ID,
+        expectedAuthority: ilProductAuthority,
+        oracleFeedId: DUMMY_ORACLE_FEED_ID,
+        perPolicyRiskCap: new BN(10_000_000_000),
+        globalRiskCap: new BN(100_000_000_000),
+        engineVersion: 1,
+        initTermsDiscriminator: IL_DISCRIMINATOR,
+        requiresPrincipalEscrow: false,
+      })
+      .accounts({
+        admin: admin.publicKey,
+        protocolConfig,
+        productRegistryEntry: ilRegistryEntry,
+        vaultSigma: ilVaultSigma,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .rpc();
+
+    const entry = await kernel.account.productRegistryEntry.fetch(
+      ilRegistryEntry
+    );
+    expect(entry.productProgramId.toBase58()).to.eq(IL_PROGRAM_ID.toBase58());
+    expect(entry.requiresPrincipalEscrow).to.eq(false);
+    expect(entry.active).to.eq(true);
+    expect(entry.paused).to.eq(false);
+  });
+
+  // -----------------------------------------------------------------
+  // Test 20 (L3-H1) — principal-backed product (stub) with premium=0 and
+  // vault_deposit_amount=0 but notional>0 must fail with
+  // PolicyEscrowInsufficient. This is the gap the L0-L2 audit's K14
+  // previously guarded; the L3-H1 fix reinstates it via
+  // `requires_principal_escrow`.
+  // -----------------------------------------------------------------
+  it("20. principal-backed product rejects vault deposit below notional", async () => {
+    const policyId = Keypair.generate().publicKey;
+    const policyHeader = pda([KERNEL_SEEDS.POLICY, policyId.toBuffer()]);
+    const productTerms = pda(
+      [KERNEL_SEEDS.TERMS, policyId.toBuffer()],
+      stub.programId
+    );
+    try {
+      await stub.methods
+        .acceptQuoteStub({
+          policyId,
+          notional: new BN(100_000_000),
+          premium: new BN(0),
+          // premium=0 → premium_vault_portion=0 → the
+          // VaultDepositBelowPremiumPortion gate passes. Only L3-H1's
+          // new principal-escrow gate should trip here.
+          vaultDepositAmountOverride: new BN(0),
+          maxLiability: new BN(50_000_000),
+          expiryTs: new BN(Math.floor(Date.now() / 1000) + 86_400),
+          magic: new BN(20),
+        })
+        .accounts({
+          buyer: buyer.publicKey,
+          productAuthority,
+          usdcMint,
+          buyerUsdc,
+          vaultUsdc,
+          treasuryUsdc,
+          vaultAuthority,
+          protocolConfig,
+          vaultState,
+          feeLedger,
+          productRegistryEntry,
+          policyHeader,
+          productTerms,
+          kernelProgram: kernel.programId,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        } as any)
+        .signers([buyer])
+        .rpc();
+      assert.fail("undercollateralized principal-backed issuance should fail");
+    } catch (err: any) {
+      const code = err?.error?.errorCode?.code ?? "";
+      expect(code).to.eq("PolicyEscrowInsufficient");
     }
   });
 });

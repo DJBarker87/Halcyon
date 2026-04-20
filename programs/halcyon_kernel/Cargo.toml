@@ -18,6 +18,11 @@ custom-heap = []
 custom-panic = []
 anchor-debug = []
 idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "halcyon_common/idl-build"]
+# M-5 — enabled by mainnet / release CI; refuses to register known test-only
+# product IDs (currently the L1 kernel-seam stub). Default OFF so the
+# localnet anchor-test suite can still register the stub through the normal
+# `register_product` instruction.
+mainnet-guards = []
 
 [dependencies]
 anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }

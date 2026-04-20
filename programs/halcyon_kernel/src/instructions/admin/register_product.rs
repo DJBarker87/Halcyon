@@ -3,6 +3,18 @@ use halcyon_common::{seeds, HalcyonError};
 
 use crate::state::*;
 
+/// M-5 — mainnet-only deny-list. Known test-only product program IDs the
+/// admin must never register on mainnet. The `mainnet-guards` cargo feature
+/// activates the deny-list at compile time; CI and release builds must
+/// enable it. Localnet / devnet anchor tests build with the feature off so
+/// the L1 stub-seam tests can still register the stub through the normal
+/// `register_product` path.
+#[cfg(feature = "mainnet-guards")]
+const TEST_ONLY_PRODUCT_IDS: [Pubkey; 1] = [
+    // research/programs/halcyon_stub_product
+    pubkey!("BHjoWaj82FyupNLgHQTjBCfoNaED4HwQbR2KBNapht1d"),
+];
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct RegisterProductArgs {
     pub product_program_id: Pubkey,
@@ -12,6 +24,10 @@ pub struct RegisterProductArgs {
     pub global_risk_cap: u64,
     pub engine_version: u16,
     pub init_terms_discriminator: [u8; 8],
+    /// L3-H1 — see `ProductRegistryEntry.requires_principal_escrow`. Admin
+    /// sets to `true` for principal-backed products (SOL Autocall) and
+    /// `false` for synthetic products (IL Protection).
+    pub requires_principal_escrow: bool,
 }
 
 #[derive(Accounts)]
@@ -51,6 +67,18 @@ pub struct RegisterProduct<'info> {
 pub fn handler(ctx: Context<RegisterProduct>, args: RegisterProductArgs) -> Result<()> {
     let now = Clock::get()?.unix_timestamp;
 
+    // M-5 — mainnet-only deny-list guard. See `TEST_ONLY_PRODUCT_IDS`.
+    #[cfg(feature = "mainnet-guards")]
+    {
+        for denied in TEST_ONLY_PRODUCT_IDS.iter() {
+            require_keys_neq!(
+                args.product_program_id,
+                *denied,
+                crate::KernelError::ProductAlreadyRegistered
+            );
+        }
+    }
+
     // K15 — canonical product_authority PDA. If the admin passes any other
     // key, a subsequent issuance could be signed by a plain keypair without
     // `invoke_signed` and the kernel's program-origin guarantee collapses.
@@ -73,6 +101,7 @@ pub fn handler(ctx: Context<RegisterProduct>, args: RegisterProductArgs) -> Resu
     entry.engine_version = args.engine_version;
     entry.init_terms_discriminator = args.init_terms_discriminator;
     entry.total_reserved = 0;
+    entry.requires_principal_escrow = args.requires_principal_escrow;
     entry.last_update_ts = now;
 
     let sigma = &mut ctx.accounts.vault_sigma;

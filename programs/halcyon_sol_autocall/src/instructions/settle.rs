@@ -84,10 +84,16 @@ pub struct Settle<'info> {
     #[account(seeds = [seeds::VAULT_AUTHORITY], bump)]
     pub vault_authority: UncheckedAccount<'info>,
 
+    /// M-1 — canonical-ATA equality: `settle` is permissionless, so every
+    /// caller (including an attacker motivated to grief) must route maturity
+    /// payout to the buyer's canonical ATA, not any token account they own.
     #[account(
         mut,
         constraint = buyer_usdc.mint == usdc_mint.key(),
         constraint = buyer_usdc.owner == policy_header.owner @ HalcyonError::ProductAuthorityMismatch,
+        constraint = buyer_usdc.key()
+            == get_associated_token_address(&policy_header.owner, &usdc_mint.key())
+            @ HalcyonError::ProductAuthorityMismatch,
     )]
     pub buyer_usdc: Box<Account<'info, TokenAccount>>,
 

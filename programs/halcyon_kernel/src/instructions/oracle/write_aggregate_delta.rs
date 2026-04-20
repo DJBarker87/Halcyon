@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use halcyon_common::{seeds, HalcyonError};
 
-use crate::state::*;
+use crate::{state::*, KernelError};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct WriteAggregateDeltaArgs {
@@ -16,9 +16,6 @@ pub struct WriteAggregateDeltaArgs {
     pub live_note_count: u32,
 }
 
-/// Flagship-only at L4. At L1 the handler exists and writes so the instruction
-/// surface is in the IDL; it does not gate on the flagship product being
-/// registered. L2+ will attach a product-activeness check when relevant.
 #[derive(Accounts)]
 #[instruction(args: WriteAggregateDeltaArgs)]
 pub struct WriteAggregateDelta<'info> {
@@ -26,6 +23,15 @@ pub struct WriteAggregateDelta<'info> {
 
     #[account(seeds = [seeds::KEEPER_REGISTRY], bump)]
     pub keeper_registry: Account<'info, KeeperRegistry>,
+
+    #[account(
+        seeds = [seeds::PRODUCT_REGISTRY, args.product_program_id.as_ref()],
+        bump,
+        constraint = product_registry_entry.product_program_id == args.product_program_id
+            @ KernelError::ProductProgramMismatch,
+        constraint = product_registry_entry.active @ HalcyonError::ProductNotRegistered,
+    )]
+    pub product_registry_entry: Account<'info, ProductRegistryEntry>,
 
     #[account(
         init_if_needed,

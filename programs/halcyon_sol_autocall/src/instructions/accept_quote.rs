@@ -5,7 +5,10 @@
 //! product terms account, then finalizes the policy in the same transaction.
 
 use anchor_lang::prelude::*;
-use anchor_spl::token::{Mint, Token, TokenAccount};
+use anchor_spl::{
+    associated_token::get_associated_token_address,
+    token::{Mint, Token, TokenAccount},
+};
 use halcyon_common::{seeds, HalcyonError};
 use halcyon_kernel::{
     cpi::accounts::{FinalizePolicy, ReserveAndIssue},
@@ -62,10 +65,14 @@ pub struct AcceptQuote<'info> {
 
     pub usdc_mint: Box<Account<'info, Mint>>,
 
+    // L3-M4 — pin issuance source to the canonical ATA.
     #[account(
         mut,
         constraint = buyer_usdc.mint == usdc_mint.key(),
         constraint = buyer_usdc.owner == buyer.key(),
+        constraint = buyer_usdc.key()
+            == get_associated_token_address(&buyer.key(), &usdc_mint.key())
+            @ HalcyonError::ProductAuthorityMismatch,
     )]
     pub buyer_usdc: Box<Account<'info, TokenAccount>>,
 
@@ -114,12 +121,19 @@ pub struct AcceptQuote<'info> {
     #[account(mut, seeds = [seeds::FEE_LEDGER], bump)]
     pub fee_ledger: Box<Account<'info, halcyon_kernel::state::FeeLedger>>,
 
+    // M-6 — fail fast on the product side when the kernel registry has
+    // marked this product paused, instead of paying for the full quote
+    // recomputation and aborting at the kernel CPI.
     #[account(
         mut,
         seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
         bump,
         constraint = product_registry_entry.product_program_id == crate::ID
             @ halcyon_kernel::KernelError::ProductProgramMismatch,
+        constraint = product_registry_entry.active
+            @ halcyon_common::HalcyonError::ProductNotRegistered,
+        constraint = !product_registry_entry.paused
+            @ halcyon_common::HalcyonError::IssuancePausedPerProduct,
     )]
     pub product_registry_entry: Box<Account<'info, halcyon_kernel::state::ProductRegistryEntry>>,
 
@@ -190,6 +204,15 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
     let (autocall_barrier_s6, coupon_barrier_s6, ki_barrier_s6) =
         derive_barriers_from_entry(pyth.price_s6)?;
     let observation_schedule = build_observation_schedule(now)?;
+    let premium_vault_portion = ctx
+        .accounts
+        .protocol_config
+        .premium_vault_portion(quote.premium)
+        .ok_or(HalcyonError::Overflow)?;
+    let vault_deposit_amount = args
+        .notional_usdc
+        .checked_add(premium_vault_portion)
+        .ok_or(HalcyonError::Overflow)?;
 
     let terms = SolAutocallTerms {
         version: SolAutocallTerms::CURRENT_VERSION,
@@ -238,6 +261,7 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
             policy_id: args.policy_id,
             notional: args.notional_usdc,
             premium: quote.premium,
+            vault_deposit_amount,
             max_liability: quote.max_liability,
             terms_hash,
             engine_version: CURRENT_ENGINE_VERSION,

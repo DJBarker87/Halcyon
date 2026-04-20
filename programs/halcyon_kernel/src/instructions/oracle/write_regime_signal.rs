@@ -3,6 +3,8 @@ use halcyon_common::{seeds, HalcyonError};
 
 use crate::state::*;
 
+const REGIME_WRITE_MIN_GAP_SECS: i64 = 18 * 60 * 60;
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct WriteRegimeSignalArgs {
     pub product_program_id: Pubkey,
@@ -64,16 +66,11 @@ pub fn handler(ctx: Context<WriteRegimeSignal>, args: WriteRegimeSignalArgs) -> 
             now > signal.last_update_ts,
             HalcyonError::OracleTimestampNotMonotonic
         );
-        // Regime keeper is daily (per L3 plan §3.5). Enforce a minimum-gap
-        // rate limit of `regime_staleness_cap_secs / 3` — anything more
-        // frequent than that is a compromised keeper.
-        let min_gap = ctx
-            .accounts
-            .protocol_config
-            .regime_staleness_cap_secs
-            .saturating_div(3);
+        // L3 spec: reject writes if the previous signal is younger than
+        // eighteen hours, regardless of the broader freshness cap products use
+        // at quote time.
         require!(
-            now.saturating_sub(signal.last_update_ts) >= min_gap,
+            now.saturating_sub(signal.last_update_ts) >= REGIME_WRITE_MIN_GAP_SECS,
             HalcyonError::OracleRateLimited
         );
     }

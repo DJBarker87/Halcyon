@@ -13,6 +13,8 @@ anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
 anchor-spl = "=0.32.1"
 base64 = "0.22"
 halcyon_common = { path = "../halcyon_common" }
+halcyon_flagship_autocall = { path = "../../programs/halcyon_flagship_autocall", features = ["cpi"] }
+halcyon_il_protection = { path = "../../programs/halcyon_il_protection", features = ["cpi"] }
 halcyon_kernel = { path = "../../programs/halcyon_kernel", features = ["cpi"] }
 halcyon_oracles = { path = "../halcyon_oracles" }
 halcyon_sol_autocall = { path = "../../programs/halcyon_sol_autocall", features = ["cpi"] }

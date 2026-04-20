@@ -13,9 +13,22 @@ pub struct Args {
     pub usdc_mint: String,
     #[arg(long)]
     pub pyth_sol: String,
+    /// M-3 — relaxed ceiling on the upfront `premium` charged at issuance,
+    /// applied as a multiplicative bps tolerance above the previewed
+    /// premium. SOL Autocall v1 previews a zero premium, so this flag is
+    /// effectively a cushion for future upgrades. Default 50 bps.
     #[arg(long, default_value_t = 50)]
-    pub slippage_bps: u16,
-    #[arg(long, default_value_t = 32)]
+    pub premium_slippage_bps: u16,
+    /// M-3 — reduction of `min_max_liability` below previewed value (bps).
+    /// Default 50 bps: accept up to 0.5% lower liability cover.
+    #[arg(long, default_value_t = 50)]
+    pub max_liability_floor_bps: u16,
+    /// M-3 — maximum drift in the Pyth-sampled entry price between preview
+    /// and accept, in bps. Tight by default because entry-price drift
+    /// reshapes the autocall / coupon / KI barriers. Default 25 bps.
+    #[arg(long, default_value_t = 25)]
+    pub entry_drift_bps: u16,
+    #[arg(long, default_value_t = 150)]
     pub max_quote_slot_delta: u64,
     #[arg(long, default_value_t = 30)]
     pub max_expiry_delta_secs: i64,
@@ -42,10 +55,10 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
         Some(policy_id) => CliContext::parse_pubkey("policy_id", policy_id)?,
         None => Pubkey::new_unique(),
     };
-    let max_premium = apply_bps_ceil(preview.premium, args.slippage_bps)?;
+    let max_premium = apply_bps_ceil(preview.premium, args.premium_slippage_bps)?;
     let min_max_liability = apply_bps_floor(
         preview.max_liability,
-        10_000u16.saturating_sub(args.slippage_bps),
+        10_000u16.saturating_sub(args.max_liability_floor_bps),
     )?;
     let ix = sol_autocall::accept_quote_ix(
         &buyer.pubkey(),
@@ -60,7 +73,7 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
             preview_quote_slot: preview.quote_slot,
             max_quote_slot_delta: args.max_quote_slot_delta,
             preview_entry_price_s6: preview.entry_price_s6,
-            max_entry_price_deviation_bps: args.slippage_bps,
+            max_entry_price_deviation_bps: args.entry_drift_bps,
             preview_expiry_ts: preview.expiry_ts,
             max_expiry_delta_secs: args.max_expiry_delta_secs,
         },
@@ -91,7 +104,9 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
         preview.offered_coupon_bps_s6
     );
     println!("  max_quote_slot_delta={}", args.max_quote_slot_delta);
-    println!("  max_entry_price_deviation_bps={}", args.slippage_bps);
+    println!("  max_entry_price_deviation_bps={}", args.entry_drift_bps);
+    println!("  premium_slippage_bps={}", args.premium_slippage_bps);
+    println!("  max_liability_floor_bps={}", args.max_liability_floor_bps);
     println!("  max_expiry_delta_secs={}", args.max_expiry_delta_secs);
     Ok(())
 }

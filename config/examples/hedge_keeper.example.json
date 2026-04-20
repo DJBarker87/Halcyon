@@ -1,0 +1,18 @@
+{
+  "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+  "keypair_path": "/secure/halcyon/hedge_keeper.json",
+  "kernel_program_id": "H71FxCTuVGL13PkzXeVxeTn89xZreFm4AwLu3iZeVtdF",
+  "sol_autocall_program_id": "6DfpE7MEx1K1CeiQuw8Q61Empamcuknv9Tc79xtJKae8",
+  "usdc_mint": "REPLACE_MAINNET_USDC_MINT",
+  "pyth_sol": "REPLACE_PYTH_SOL_ACCOUNT",
+  "jupiter_base_url": "https://api.jup.ag/swap/v1",
+  "jupiter_api_key": "REPLACE_OR_USE_ENV",
+  "dry_run": false,
+  "allowed_jupiter_program_ids": [
+    "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+  ],
+  "allow_intraperiod_checks": true,
+  "scan_interval_secs": 60,
+  "backoff_cap_secs": 60,
+  "failure_budget": 5
+}

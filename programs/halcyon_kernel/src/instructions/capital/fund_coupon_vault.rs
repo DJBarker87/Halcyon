@@ -90,10 +90,11 @@ pub fn handler(
         product_program_id,
         crate::KernelError::ProductProgramMismatch
     );
-    coupon_vault.usdc_balance = coupon_vault
-        .usdc_balance
-        .checked_add(amount)
-        .ok_or(HalcyonError::Overflow)?;
+    // L-4 — resync against the canonical ATA balance so direct-donation
+    // drift does not silently accumulate. `amount` is the intentional
+    // contribution; the ATA balance is the authoritative number.
+    ctx.accounts.coupon_vault_usdc.reload()?;
+    coupon_vault.usdc_balance = ctx.accounts.coupon_vault_usdc.amount;
     coupon_vault.last_update_ts = now;
     Ok(())
 }

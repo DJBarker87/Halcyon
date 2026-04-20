@@ -52,13 +52,24 @@ pub async fn list_policy_headers_for_product(
     rpc: &RpcClient,
     product_program_id: &Pubkey,
 ) -> Result<Vec<(Pubkey, halcyon_kernel::state::PolicyHeader)>> {
+    // L-5 — `PolicyHeader` layout: [discriminator (8)][version u8][product_program_id Pubkey][…].
+    // Byte offset of `product_program_id` is therefore 8 + 1 = 9. This
+    // assertion makes the memcmp offset a compile-time fact so any future
+    // field insertion before `product_program_id` fails here rather than
+    // silently returning an empty account list (which would cause the
+    // hedge keeper to operate on a stale — empty — policy set).
+    const PRODUCT_PROGRAM_ID_OFFSET: usize = 8 + 1;
+    const _: () = assert!(
+        PRODUCT_PROGRAM_ID_OFFSET == 9,
+        "PolicyHeader product_program_id offset must stay at 9"
+    );
     let filters = vec![
         RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
             0,
             halcyon_kernel::state::PolicyHeader::DISCRIMINATOR.to_vec(),
         )),
         RpcFilterType::Memcmp(Memcmp::new_raw_bytes(
-            9,
+            PRODUCT_PROGRAM_ID_OFFSET,
             product_program_id.to_bytes().to_vec(),
         )),
     ];

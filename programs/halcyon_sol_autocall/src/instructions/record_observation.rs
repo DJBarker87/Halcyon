@@ -106,10 +106,16 @@ pub struct RecordObservation<'info> {
     #[account(seeds = [seeds::VAULT_AUTHORITY], bump)]
     pub vault_authority: UncheckedAccount<'info>,
 
+    /// M-1 — canonical-ATA equality: a compromised observation keeper cannot
+    /// route coupons or autocall principal to a non-ATA USDC account the
+    /// buyer happens to own.
     #[account(
         mut,
         constraint = buyer_usdc.mint == usdc_mint.key(),
         constraint = buyer_usdc.owner == policy_header.owner @ HalcyonError::ProductAuthorityMismatch,
+        constraint = buyer_usdc.key()
+            == get_associated_token_address(&policy_header.owner, &usdc_mint.key())
+            @ HalcyonError::ProductAuthorityMismatch,
     )]
     pub buyer_usdc: Box<Account<'info, TokenAccount>>,
 

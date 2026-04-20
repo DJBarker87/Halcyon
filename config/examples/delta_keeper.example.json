@@ -1,0 +1,11 @@
+{
+  "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+  "keypair_path": "/secure/halcyon/delta_keeper.json",
+  "pyth_spy": "REPLACE_PYTH_SPY_ACCOUNT",
+  "pyth_qqq": "REPLACE_PYTH_QQQ_ACCOUNT",
+  "pyth_iwm": "REPLACE_PYTH_IWM_ACCOUNT",
+  "merkle_output_path": "/var/lib/halcyon/flagship_delta.json",
+  "scan_interval_secs": 30,
+  "backoff_cap_secs": 60,
+  "failure_budget": 5
+}

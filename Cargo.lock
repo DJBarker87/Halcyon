@@ -1094,6 +1094,23 @@ dependencies = [
 [[package]]
 name = "delta_keeper"
 version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anyhow",
+ "clap",
+ "halcyon_client_sdk",
+ "halcyon_flagship_autocall",
+ "halcyon_kernel",
+ "halcyon_oracles",
+ "pyth-solana-receiver-sdk",
+ "serde",
+ "serde_json",
+ "solana-rpc-client",
+ "solana-sdk",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "derivation-path"
@@ -1491,8 +1508,11 @@ dependencies = [
  "anyhow",
  "clap",
  "halcyon_client_sdk",
+ "halcyon_il_protection",
+ "halcyon_il_quote",
  "halcyon_kernel",
  "halcyon_sol_autocall",
+ "reqwest",
  "serde",
  "serde_json",
  "solana-account-decoder",
@@ -1511,6 +1531,8 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "halcyon_common",
+ "halcyon_flagship_autocall",
+ "halcyon_il_protection",
  "halcyon_kernel",
  "halcyon_oracles",
  "halcyon_sol_autocall",
@@ -1533,8 +1555,13 @@ name = "halcyon_flagship_autocall"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "anchor-spl",
  "halcyon_common",
  "halcyon_flagship_quote",
+ "halcyon_kernel",
+ "halcyon_oracles",
+ "solana-sha256-hasher",
+ "solmath-core",
 ]
 
 [[package]]
@@ -1552,8 +1579,13 @@ name = "halcyon_il_protection"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "anchor-spl",
  "halcyon_common",
  "halcyon_il_quote",
+ "halcyon_kernel",
+ "halcyon_oracles",
+ "solana-sha256-hasher",
+ "solmath-core",
 ]
 
 [[package]]
@@ -2939,10 +2971,45 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 [[package]]
 name = "regime_keeper"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "halcyon_client_sdk",
+ "halcyon_il_protection",
+ "halcyon_il_quote",
+ "halcyon_kernel",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "solana-rpc-client",
+ "solana-sdk",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "regression_keeper"
 version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anyhow",
+ "clap",
+ "halcyon_client_sdk",
+ "halcyon_flagship_autocall",
+ "halcyon_kernel",
+ "halcyon_oracles",
+ "nalgebra",
+ "pyth-solana-receiver-sdk",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "solana-rpc-client",
+ "solana-sdk",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "reqwest"

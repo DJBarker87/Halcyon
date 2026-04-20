@@ -5,7 +5,8 @@ use crate::pda;
 
 pub use halcyon_kernel::{
     ApplySettlementArgs, InitializeProtocolArgs, PrepareHedgeSwapArgs, RecordHedgeTradeArgs,
-    RegisterProductArgs, SettlementReason,
+    RegisterProductArgs, SettlementReason, WriteAggregateDeltaArgs, WriteRegimeSignalArgs,
+    WriteRegressionArgs,
 };
 
 pub fn initialize_protocol_ix(
@@ -62,6 +63,87 @@ pub fn register_sol_autocall_ix(
         global_risk_cap,
         engine_version: halcyon_sol_autocall::state::CURRENT_ENGINE_VERSION,
         init_terms_discriminator,
+        // SOL Autocall is principal-backed: buyer escrows notional on issuance.
+        requires_principal_escrow: true,
+    };
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::RegisterProduct {
+            admin: *admin,
+            protocol_config,
+            product_registry_entry,
+            vault_sigma,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::RegisterProduct { args }.data(),
+    }
+}
+
+pub fn register_il_protection_ix(
+    admin: &Pubkey,
+    per_policy_risk_cap: u64,
+    global_risk_cap: u64,
+) -> Instruction {
+    use anchor_lang::Discriminator;
+    use halcyon_il_protection::state::IlProtectionTerms;
+
+    let (protocol_config, _) = pda::protocol_config();
+    let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_il_protection::ID);
+    let (vault_sigma, _) = pda::vault_sigma(&halcyon_il_protection::ID);
+    let (product_authority, _) = pda::product_authority_for(&halcyon_il_protection::ID);
+    let mut init_terms_discriminator = [0u8; 8];
+    init_terms_discriminator.copy_from_slice(IlProtectionTerms::DISCRIMINATOR);
+    let args = RegisterProductArgs {
+        product_program_id: halcyon_il_protection::ID,
+        expected_authority: product_authority,
+        oracle_feed_id: halcyon_oracles::feed_ids::SOL_USD,
+        per_policy_risk_cap,
+        global_risk_cap,
+        engine_version: halcyon_il_protection::state::CURRENT_ENGINE_VERSION,
+        init_terms_discriminator,
+        // IL Protection is synthetic: buyer pays premium only; coverage
+        // comes from senior+junior tranche capital, not buyer principal.
+        requires_principal_escrow: false,
+    };
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::RegisterProduct {
+            admin: *admin,
+            protocol_config,
+            product_registry_entry,
+            vault_sigma,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::RegisterProduct { args }.data(),
+    }
+}
+
+pub fn register_flagship_autocall_ix(
+    admin: &Pubkey,
+    per_policy_risk_cap: u64,
+    global_risk_cap: u64,
+) -> Instruction {
+    use anchor_lang::Discriminator;
+    use halcyon_flagship_autocall::state::FlagshipAutocallTerms;
+
+    let (protocol_config, _) = pda::protocol_config();
+    let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_flagship_autocall::ID);
+    let (vault_sigma, _) = pda::vault_sigma(&halcyon_flagship_autocall::ID);
+    let (product_authority, _) = pda::product_authority_for(&halcyon_flagship_autocall::ID);
+    let mut init_terms_discriminator = [0u8; 8];
+    init_terms_discriminator.copy_from_slice(FlagshipAutocallTerms::DISCRIMINATOR);
+    let args = RegisterProductArgs {
+        product_program_id: halcyon_flagship_autocall::ID,
+        expected_authority: product_authority,
+        oracle_feed_id: halcyon_oracles::feed_ids::SPY_USD,
+        per_policy_risk_cap,
+        global_risk_cap,
+        engine_version: halcyon_flagship_autocall::state::CURRENT_ENGINE_VERSION,
+        init_terms_discriminator,
+        // Flagship autocall is principal-backed: buyer escrows notional.
+        requires_principal_escrow: true,
     };
     Instruction {
         program_id: halcyon_kernel::ID,
@@ -93,6 +175,76 @@ pub fn rotate_keeper_ix(admin: &Pubkey, role: u8, new_authority: Pubkey) -> Inst
             new_authority,
         }
         .data(),
+    }
+}
+
+pub fn write_regime_signal_ix(
+    keeper: &Pubkey,
+    payer: &Pubkey,
+    product_program_id: &Pubkey,
+    args: WriteRegimeSignalArgs,
+) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    let (keeper_registry, _) = pda::keeper_registry();
+    let (regime_signal, _) = pda::regime_signal(product_program_id);
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::WriteRegimeSignal {
+            keeper: *keeper,
+            protocol_config,
+            keeper_registry,
+            regime_signal,
+            payer: *payer,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::WriteRegimeSignal { args }.data(),
+    }
+}
+
+pub fn write_regression_ix(
+    keeper: &Pubkey,
+    payer: &Pubkey,
+    args: WriteRegressionArgs,
+) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    let (keeper_registry, _) = pda::keeper_registry();
+    let (regression, _) = pda::regression();
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::WriteRegression {
+            keeper: *keeper,
+            protocol_config,
+            keeper_registry,
+            regression,
+            payer: *payer,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::WriteRegression { args }.data(),
+    }
+}
+
+pub fn write_aggregate_delta_ix(
+    keeper: &Pubkey,
+    payer: &Pubkey,
+    args: WriteAggregateDeltaArgs,
+) -> Instruction {
+    let (keeper_registry, _) = pda::keeper_registry();
+    let (product_registry_entry, _) = pda::product_registry_entry(&args.product_program_id);
+    let (aggregate_delta, _) = pda::aggregate_delta(&args.product_program_id);
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::WriteAggregateDelta {
+            keeper: *keeper,
+            keeper_registry,
+            product_registry_entry,
+            aggregate_delta,
+            payer: *payer,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::WriteAggregateDelta { args }.data(),
     }
 }
 
@@ -216,12 +368,12 @@ pub fn defund_hedge_sleeve_ix(
     admin: &Pubkey,
     usdc_mint: &Pubkey,
     product_program_id: &Pubkey,
+    destination_usdc: &Pubkey,
     amount: u64,
 ) -> Instruction {
     let (protocol_config, _) = pda::protocol_config();
     let (product_registry_entry, _) = pda::product_registry_entry(product_program_id);
     let (hedge_sleeve, _) = pda::hedge_sleeve(product_program_id);
-    let admin_usdc = pda::associated_token_account(admin, usdc_mint);
     let hedge_sleeve_usdc = pda::hedge_sleeve_usdc(product_program_id, usdc_mint);
     Instruction {
         program_id: halcyon_kernel::ID,
@@ -232,7 +384,7 @@ pub fn defund_hedge_sleeve_ix(
             product_registry_entry,
             hedge_sleeve,
             hedge_sleeve_usdc,
-            admin_usdc,
+            destination_usdc: *destination_usdc,
             token_program: anchor_spl::token::ID,
         }
         .to_account_metas(None),

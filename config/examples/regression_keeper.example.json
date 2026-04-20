@@ -1,0 +1,13 @@
+{
+  "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+  "keypair_path": "/secure/halcyon/regression_keeper.json",
+  "pyth_spy": "REPLACE_PYTH_SPY_ACCOUNT",
+  "pyth_qqq": "REPLACE_PYTH_QQQ_ACCOUNT",
+  "pyth_iwm": "REPLACE_PYTH_IWM_ACCOUNT",
+  "spy_history_url": "https://stooq.com/q/d/l/?s=spy.us&i=d",
+  "qqq_history_url": "https://stooq.com/q/d/l/?s=qqq.us&i=d",
+  "iwm_history_url": "https://stooq.com/q/d/l/?s=iwm.us&i=d",
+  "scan_interval_secs": 86400,
+  "backoff_cap_secs": 900,
+  "failure_budget": 5
+}

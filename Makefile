@@ -7,9 +7,9 @@ APP_PORT ?= 8787
 BASELINE_DATE ?= $(shell date +%F)
 BASELINE_OUT ?= research/precision_baseline_$(BASELINE_DATE).json
 PRECISION_BASELINE ?= research/precision_baseline_2026-04-19.json
-L2_CARGO_EXCLUDES = --exclude halcyon-wasm --exclude halcyon_flagship_quote --exclude halcyon_flagship_autocall --exclude halcyon_il_quote --exclude halcyon_il_protection
-L2_ANCHOR_PROGRAMS = halcyon_kernel halcyon_stub_product halcyon_sol_autocall
-.PHONY: bootstrap test check l2-cargo-check l2-cargo-test audit-check l2-gate il-hedge sol-autocall fmt-check app app-wasm anchor-build anchor-build-l2 localnet clean layouts-check anchor-test anchor-test-l2 precision-baseline precision-baseline-check
+L2_CARGO_EXCLUDES = --exclude halcyon-wasm --exclude halcyon_flagship_quote --exclude halcyon_flagship_autocall
+L2_ANCHOR_PROGRAMS = halcyon_kernel halcyon_stub_product halcyon_sol_autocall halcyon_il_protection
+.PHONY: bootstrap test check l2-cargo-check l2-cargo-test l4-cargo-check l4-cargo-test audit-check l2-gate l4-gate l5-gate il-hedge sol-autocall fmt-check app app-wasm anchor-build anchor-build-l2 localnet clean layouts-check anchor-test anchor-test-l2 precision-baseline precision-baseline-check mainnet-guards-check frontend-build frontend-e2e
 
 # L0 entry point: fresh clone → `make bootstrap` should leave the repo at the
 # L0 exit criterion (every crate compiles, backtest replay passes).
@@ -33,6 +33,13 @@ l2-cargo-check:
 l2-cargo-test:
 	cargo test --workspace $(L2_CARGO_EXCLUDES)
 
+# L4 slice: flagship program + shared client wiring + new keepers.
+l4-cargo-check:
+	cargo check -p halcyon_flagship_autocall -p halcyon_client_sdk -p regression_keeper -p delta_keeper
+
+l4-cargo-test:
+	cargo test -p halcyon_flagship_autocall --lib
+
 audit-check:
 	test -f security/cargo_audit_waivers.md
 	@echo "cargo audit waivers are documented in security/cargo_audit_waivers.md"
@@ -43,6 +50,12 @@ il-hedge:
 
 sol-autocall:
 	cargo run -p halcyon_sol_autocall_quote --bin sol_autocall_product -- $(SOL_INPUT) $(SOL_OUTPUT)
+
+frontend-build:
+	cd frontend && npm run build
+
+frontend-e2e:
+	cd frontend && npm run test:e2e
 
 fmt-check:
 	cargo fmt --check
@@ -96,6 +109,18 @@ l1-gate: cpi-seeds-check layouts-check
 l2-gate: l2-cargo-check l2-cargo-test audit-check cpi-seeds-check anchor-build-l2 precision-baseline-check
 	@scripts/check_layouts.sh
 	anchor test --skip-lint
+
+l4-gate: l4-cargo-check l4-cargo-test
+	@echo "l4-gate: flagship L4 foundation slice compiles and unit tests pass"
+
+l5-gate: frontend-build frontend-e2e
+	@echo "l5-gate: frontend build and browser smoke coverage are green"
+
+# M-5 — release-build invariant: the kernel must bake in `mainnet-guards`
+# for any non-localnet deployment so `register_product` refuses the known
+# test-only stub ID. Run this before cutting a release artifact.
+mainnet-guards-check:
+	cargo check -p halcyon_kernel --features mainnet-guards
 
 precision-baseline:
 	cargo test -p solmath-core --features full i64_trig_ -- --nocapture

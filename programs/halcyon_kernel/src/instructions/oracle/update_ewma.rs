@@ -4,6 +4,13 @@ use solmath_core::{ln_fixed_i, SCALE};
 
 use crate::state::*;
 
+/// L-1 — `update_ewma` is intentionally permissionless. The authenticity
+/// gate is the full Pyth read (`read_pyth_price`: owner check, feed-id
+/// match, full-verification level, staleness cap) combined with the
+/// per-product `ewma_rate_limit_secs` throttle and the strict monotonicity
+/// on `publish_ts` / `publish_slot`. Any caller paying a rent-free tx may
+/// advance the EWMA; no signer is required because no signer could bypass
+/// these checks anyway.
 #[derive(Accounts)]
 pub struct UpdateEwma<'info> {
     #[account(seeds = [seeds::PROTOCOL_CONFIG], bump)]

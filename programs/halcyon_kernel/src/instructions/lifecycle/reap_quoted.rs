@@ -1,5 +1,5 @@
 use anchor_lang::prelude::*;
-use halcyon_common::HalcyonError;
+use halcyon_common::{seeds, HalcyonError};
 
 use crate::state::*;
 
@@ -27,10 +27,14 @@ pub struct ReapQuoted<'info> {
     #[account(mut)]
     pub rent_destination: SystemAccount<'info>,
 
-    #[account(mut)]
+    #[account(mut, seeds = [seeds::VAULT_STATE], bump)]
     pub vault_state: Account<'info, VaultState>,
 
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [seeds::PRODUCT_REGISTRY, policy_header.product_program_id.as_ref()],
+        bump,
+    )]
     pub product_registry_entry: Account<'info, ProductRegistryEntry>,
 
     #[account(

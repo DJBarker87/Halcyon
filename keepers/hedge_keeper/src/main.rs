@@ -1076,6 +1076,44 @@ async fn execute_target_swap(
             (exact_position_raw, exact_position_raw)
         }
     };
+    // H-2 — bound `approved_input_amount` against a keeper-local sizing
+    // ceiling instead of forwarding Jupiter's untrusted `inAmount` verbatim.
+    // On-chain `prepare_hedge_swap` applies a Pyth-derived ceiling too, but
+    // computing the same ceiling here lets the keeper fail fast with a
+    // clear message instead of eating a kernel error at submission time,
+    // and closes the corridor where a malicious Jupiter endpoint inflates
+    // `inAmount` to approve more sleeve capital than sizing actually needs.
+    let approved_input_amount = match planned.direction {
+        TradeDirection::BuyWsol => {
+            let desired_out_raw = abs_i64_to_u64(desired_trade_raw, "desired_trade_raw")?;
+            let base_notional_usdc_raw =
+                reference_notional_usdc_raw(desired_out_raw, spot_price_s6)?;
+            let ceiling = u128::from(base_notional_usdc_raw)
+                .checked_mul(10_000u128.saturating_add(u128::from(JUPITER_PRICE_SANITY_BPS)))
+                .context("H-2 ceiling multiply overflow")?
+                / 10_000u128;
+            let ceiling = u64::try_from(ceiling).context("H-2 ceiling u64 overflow")?;
+            anyhow::ensure!(
+                planned.quoted_in_raw <= ceiling,
+                "Jupiter inAmount {} exceeds local sizing ceiling {} for buy hedge",
+                planned.quoted_in_raw,
+                ceiling
+            );
+            planned.quoted_in_raw
+        }
+        TradeDirection::SellWsol => {
+            // Sell: source is WSOL; keeper already clamps requested_input
+            // to abs(desired_trade_raw).min(sleeve_wsol_balance). Tight.
+            let trade_abs = abs_i64_to_u64(desired_trade_raw, "desired_trade_raw")?;
+            anyhow::ensure!(
+                planned.quoted_in_raw <= trade_abs,
+                "Jupiter sell inAmount {} exceeds |Δposition| {} for sell hedge",
+                planned.quoted_in_raw,
+                trade_abs
+            );
+            planned.quoted_in_raw
+        }
+    };
     let prepare_ix = halcyon_client_sdk::kernel::prepare_hedge_swap_ix(
         &client.signer.pubkey(),
         &client.signer.pubkey(),
@@ -1089,7 +1127,7 @@ async fn execute_target_swap(
             target_position_raw,
             min_position_raw,
             max_position_raw,
-            approved_input_amount: planned.quoted_in_raw,
+            approved_input_amount,
             max_slippage_bps: JUPITER_PRICE_SANITY_BPS as u16,
             sequence,
         },

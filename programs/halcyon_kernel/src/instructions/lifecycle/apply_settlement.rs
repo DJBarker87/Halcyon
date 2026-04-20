@@ -1,5 +1,8 @@
 use anchor_lang::prelude::*;
-use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+use anchor_spl::{
+    associated_token::get_associated_token_address,
+    token::{self, Mint, Token, TokenAccount, Transfer},
+};
 use halcyon_common::{events::PolicySettled, seeds, HalcyonError};
 
 use crate::{state::*, KernelError};
@@ -61,10 +64,17 @@ pub struct ApplySettlement<'info> {
     /// K3 — payout destination is pinned to the policy's on-chain owner. A
     /// compromised product authority cannot redirect settlement to an
     /// arbitrary USDC account.
+    ///
+    /// M-1 — also pinned to the canonical ATA for `(policy_header.owner,
+    /// usdc_mint)`. A non-ATA token account the buyer also owns cannot be
+    /// substituted by a compromised keeper or a settle caller.
     #[account(
         mut,
         constraint = buyer_usdc.mint == usdc_mint.key(),
         constraint = buyer_usdc.owner == policy_header.owner @ HalcyonError::ProductAuthorityMismatch,
+        constraint = buyer_usdc.key()
+            == get_associated_token_address(&policy_header.owner, &usdc_mint.key())
+            @ HalcyonError::ProductAuthorityMismatch,
     )]
     pub buyer_usdc: Account<'info, TokenAccount>,
 

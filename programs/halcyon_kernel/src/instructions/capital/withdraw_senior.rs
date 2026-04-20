@@ -11,7 +11,14 @@ pub struct WithdrawSenior<'info> {
 
     pub usdc_mint: Account<'info, Mint>,
 
-    #[account(mut, constraint = depositor_usdc.mint == usdc_mint.key())]
+    // L-2 — consistency with `deposit_senior`: the destination must be owned
+    // by the signing depositor. The depositor is signing, so this is a UX
+    // safety rail, not an authorization check.
+    #[account(
+        mut,
+        constraint = depositor_usdc.mint == usdc_mint.key(),
+        constraint = depositor_usdc.owner == depositor.key(),
+    )]
     pub depositor_usdc: Account<'info, TokenAccount>,
 
     #[account(

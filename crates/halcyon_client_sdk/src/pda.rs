@@ -96,6 +96,17 @@ pub fn regime_signal(product_program_id: &Pubkey) -> (Pubkey, u8) {
     )
 }
 
+pub fn regression() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[seeds::REGRESSION], &halcyon_kernel::ID)
+}
+
+pub fn aggregate_delta(product_program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[seeds::AGGREGATE_DELTA, product_program_id.as_ref()],
+        &halcyon_kernel::ID,
+    )
+}
+
 pub fn hedge_book(product_program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[seeds::HEDGE_BOOK, product_program_id.as_ref()],
@@ -114,15 +125,20 @@ pub fn policy(policy_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seeds::POLICY, policy_id.as_ref()], &halcyon_kernel::ID)
 }
 
+pub fn terms_for(product_program_id: &Pubkey, policy_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[seeds::TERMS, policy_id.as_ref()], product_program_id)
+}
+
 pub fn terms(policy_id: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(
-        &[seeds::TERMS, policy_id.as_ref()],
-        &halcyon_sol_autocall::ID,
-    )
+    terms_for(&halcyon_sol_autocall::ID, policy_id)
+}
+
+pub fn product_authority_for(product_program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[seeds::PRODUCT_AUTHORITY], product_program_id)
 }
 
 pub fn product_authority() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[seeds::PRODUCT_AUTHORITY], &halcyon_sol_autocall::ID)
+    product_authority_for(&halcyon_sol_autocall::ID)
 }
 
 pub fn associated_token_account(owner: &Pubkey, mint: &Pubkey) -> Pubkey {

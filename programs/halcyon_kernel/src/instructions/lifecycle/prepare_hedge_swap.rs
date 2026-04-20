@@ -12,7 +12,9 @@ use anchor_spl::{
 use halcyon_common::{seeds, HalcyonError};
 
 use crate::{
-    instructions::lifecycle::record_hedge_trade::{RecordHedgeTradeArgs, JUPITER_V6_PROGRAM_ID},
+    instructions::lifecycle::record_hedge_trade::{
+        reference_notional_usdc_raw, RecordHedgeTradeArgs, HEDGE_RAW_SCALE, JUPITER_V6_PROGRAM_ID,
+    },
     state::*,
     KernelError,
 };
@@ -127,6 +129,14 @@ pub fn handler(ctx: Context<PrepareHedgeSwap>, args: PrepareHedgeSwapArgs) -> Re
     require!(
         args.approved_input_amount > 0,
         HalcyonError::BelowMinimumTrade
+    );
+    // H-1: keeper-supplied slippage must sit under the protocol cap. A
+    // compromised keeper key cannot widen slippage beyond
+    // `ProtocolConfig.hedge_max_slippage_bps_cap`.
+    require!(
+        ctx.accounts.protocol_config.hedge_max_slippage_bps_cap > 0
+            && args.max_slippage_bps <= ctx.accounts.protocol_config.hedge_max_slippage_bps_cap,
+        HalcyonError::SlippageExceeded
     );
     let desired_trade_delta_raw = args
         .target_position_raw
@@ -260,6 +270,41 @@ pub fn handler(ctx: Context<PrepareHedgeSwap>, args: PrepareHedgeSwapArgs) -> Re
         source_balance_before >= args.approved_input_amount,
         KernelError::InsufficientHedgeSleeveBalance
     );
+
+    // H-1: bound `approved_input_amount` by the kernel-computed notional
+    // envelope for the declared trade delta. A compromised keeper cannot
+    // approve more sleeve capital than the declared `target - old`
+    // movement requires at `spot × (1 + max_slippage_bps)` pricing, even if
+    // the sleeve balance is larger. The envelope is derived from Pyth spot,
+    // the kernel's authoritative clock, and the (already-capped)
+    // `max_slippage_bps`. We add 1 atomic unit to avoid rounding
+    // false-negatives when the declared delta is tiny.
+    let trade_abs_raw: u64 = desired_trade_delta_raw.unsigned_abs();
+    let approved_ceiling: u64 = if source_is_wsol {
+        // Selling SOL: source is WSOL. Max input is |Δposition|.
+        trade_abs_raw
+    } else {
+        // Buying SOL: source is USDC. Max input ≈ |Δposition| × spot × (1+slip).
+        let base_notional_raw = reference_notional_usdc_raw(trade_abs_raw, pyth.price_s6)?;
+        let slip_num = 10_000u128
+            .checked_add(u128::from(args.max_slippage_bps))
+            .ok_or(HalcyonError::Overflow)?;
+        let ceiling = u128::from(base_notional_raw)
+            .checked_mul(slip_num)
+            .ok_or(HalcyonError::Overflow)?
+            .checked_div(10_000u128)
+            .ok_or(HalcyonError::Overflow)?
+            .checked_add(1u128)
+            .ok_or(HalcyonError::Overflow)?;
+        u64::try_from(ceiling).map_err(|_| error!(HalcyonError::Overflow))?
+    };
+    require!(
+        args.approved_input_amount <= approved_ceiling,
+        KernelError::InvalidHedgeExecutionBounds
+    );
+    // Suppress unused-warning on the reserved raw-scale constant; consumers of
+    // this module reference it through `reference_notional_usdc_raw`.
+    let _ = HEDGE_RAW_SCALE;
 
     let bump = ctx.bumps.hedge_sleeve;
     let signer_seeds: &[&[&[u8]]] = &[&[

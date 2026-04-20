@@ -18,7 +18,8 @@
 //! interpolation on the cumulative-factor axis.
 
 use crate::worst_of_c1_fast::{
-    build_triple_correction_pre, C1FastConfig, C1FastQuote, TripleCorrectionPre,
+    build_triple_correction_pre, c1_fast_quote_from_components, C1FastConfig, C1FastQuote,
+    TripleCorrectionPre, CF_ALPHA_S12, CF_BETA_S12, CF_DELTA_SCALE_S12, CF_GAMMA_S12, S12,
 };
 use crate::worst_of_c1_filter_gradients::{
     FrozenMomentTables, FROZEN_TABLES_K12, FROZEN_TABLES_K15, FROZEN_TABLES_K9,
@@ -66,13 +67,8 @@ const EXP_NEG15_TABLE: [i64; 61] = [
     778_801, 798_516, 818_731, 839_457, 860_708, 882_497, 904_837, 927_743, 951_229, 975_310,
     1_000_000,
 ];
-const S12: i128 = 1_000_000_000_000;
 const SQRT2_S12: i128 = 1_414_213_562_373;
 const FIRST_STEP_STD_RATIO_S6: i64 = 500_000; // sqrt(63 / 252) = 0.5
-const CF_ALPHA_S12: i128 = 30_369_787_684_189;
-const CF_BETA_S12: i128 = -4_253_775_293_079;
-const CF_GAMMA_S12: i128 = 30_070_407_375_669;
-const CF_DELTA_SCALE_S12: i128 = 116_985_997_577;
 const TRIANGLE_PAIR_RHO_63: [i64; 3] = [8_070, -509_610, -864_483];
 const TRIANGLE_PAIR_INV_SQRT_1MRHO2_63: [i64; 3] = [1_000_033, 1_162_243, 1_989_410];
 type Phi2Table = [[i32; 64]; 64];
@@ -349,6 +345,7 @@ pub struct C1FilterTrace {
     pub k_retained: usize,
 }
 
+#[cfg(not(target_os = "solana"))]
 #[derive(Debug, Clone, Copy)]
 pub struct QuoteWithDelta {
     pub fc_bps: f64,
@@ -969,6 +966,28 @@ fn compute_dmu_ds(cfg: &C1FastConfig, spots_s6: [i64; 3]) -> [(i64, i64, i64); 3
             (cfg.loadings[2] as i128 * S6 as i128 / spots_s6[2].max(1) as i128) as i64,
         ),
     ]
+}
+
+#[cfg(not(target_os = "solana"))]
+fn spot_shift_bundle_live(cfg: &C1FastConfig, spots_s6: [i64; 3]) -> (i64, i64, i64) {
+    let log_spy = (spots_s6[0] as f64 / S6 as f64).ln();
+    let log_qqq = (spots_s6[1] as f64 / S6 as f64).ln();
+    let log_iwm = (spots_s6[2] as f64 / S6 as f64).ln();
+    let mu_u = ((log_qqq - log_spy) * S6 as f64).round() as i64;
+    let mu_v = ((log_iwm - log_spy) * S6 as f64).round() as i64;
+    let mu_c = (cfg.loadings[0] as f64 * log_spy
+        + cfg.loadings[1] as f64 * log_qqq
+        + cfg.loadings[2] as f64 * log_iwm)
+        .round() as i64;
+    (mu_u, mu_v, mu_c)
+}
+
+#[cfg(not(target_os = "solana"))]
+fn shifted_origin_state(mu_u_shift: i64, mu_v_shift: i64) -> FilterState {
+    let mut state = FilterState::singleton_origin();
+    state.nodes[0].mean_u = mu_u_shift;
+    state.nodes[0].mean_v = mu_v_shift;
+    state
 }
 
 #[inline(always)]
@@ -5574,13 +5593,14 @@ pub fn quote_c1_filter_rect_live(
         0
     };
 
-    C1FastQuote {
-        fair_coupon_bps: fair_coupon as f64 * 100.0 / S6 as f64,
-        zero_coupon_pv: redemption_pv as f64 / cfg.notional as f64,
-        coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-        knock_in_rate: total_ki as f64 / S6 as f64,
-        autocall_rate: total_ac as f64 / S6 as f64,
-    }
+    c1_fast_quote_from_components(
+        cfg.notional,
+        fair_coupon,
+        redemption_pv,
+        coupon_annuity,
+        total_ki,
+        total_ac,
+    )
 }
 
 /// Phase A revision (uniform K=12 rect): like `quote_c1_filter_rect_live`
@@ -5685,13 +5705,14 @@ pub fn quote_c1_filter_rect_u12_live(
         0
     };
 
-    C1FastQuote {
-        fair_coupon_bps: fair_coupon as f64 * 100.0 / S6 as f64,
-        zero_coupon_pv: redemption_pv as f64 / cfg.notional as f64,
-        coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-        knock_in_rate: total_ki as f64 / S6 as f64,
-        autocall_rate: total_ac as f64 / S6 as f64,
-    }
+    c1_fast_quote_from_components(
+        cfg.notional,
+        fair_coupon,
+        redemption_pv,
+        coupon_annuity,
+        total_ki,
+        total_ac,
+    )
 }
 
 #[inline(never)]
@@ -6035,15 +6056,17 @@ pub fn quote_c1_filter(
     };
 
     c1_filter_cu_diag(b"quote_done");
-    C1FastQuote {
-        fair_coupon_bps: fair_coupon as f64 * 10000.0 / NOTIONAL as f64,
-        zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-        coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-        knock_in_rate: total_ki as f64 / S6 as f64,
-        autocall_rate: total_ac as f64 / S6 as f64,
-    }
+    c1_fast_quote_from_components(
+        NOTIONAL,
+        fair_coupon,
+        redemption_pv,
+        coupon_annuity,
+        total_ki,
+        total_ac,
+    )
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn quote_c1_filter_with_delta(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -6234,6 +6257,157 @@ pub fn quote_c1_filter_with_delta(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
+pub fn quote_c1_filter_with_delta_live(
+    cfg: &C1FastConfig,
+    sigma_s6: i64,
+    drift_diffs: [i64; 2],
+    drift_shift_63: i64,
+    k_retained: usize,
+    spots_s6: [i64; 3],
+    remaining_observations: usize,
+    ki_latched: bool,
+) -> QuoteWithDelta {
+    let remaining_observations = remaining_observations.min(N_OBS);
+    if remaining_observations == 0 {
+        return QuoteWithDelta {
+            fc_bps: 0.0,
+            delta_spy: 0.0,
+            delta_qqq: 0.0,
+            delta_iwm: 0.0,
+        };
+    }
+
+    let k_retained = k_retained.clamp(1, MAX_K);
+    let k_knocked = ANALYTIC_DELTA_K_KNOCKED;
+    let transition = build_factor_transition(cfg, sigma_s6, drift_diffs);
+    let triple_pre_by_obs = build_triple_pre_by_obs(cfg);
+    let frozen_grids: [Option<crate::frozen_predict_tables::FrozenPredictGrid>; 5] =
+        core::array::from_fn(|obs_rel| {
+            crate::frozen_predict_tables::frozen_predict_grid_lookup(sigma_s6, obs_rel, k_retained)
+        });
+    let dmu_ds = compute_dmu_ds(cfg, spots_s6);
+    let dmu_c = dmu_c_only(&dmu_ds);
+    let (mu_u_shift, mu_v_shift, mu_c_shift) = spot_shift_bundle_live(cfg, spots_s6);
+    let shifted_origin = shifted_origin_state(mu_u_shift, mu_v_shift);
+
+    let mut safe_state = if ki_latched {
+        FilterState::default()
+    } else {
+        shifted_origin
+    };
+    let mut safe_grad = seed_state_mean_grad(&safe_state, &dmu_ds);
+    let mut knocked_state = if ki_latched {
+        shifted_origin
+    } else {
+        FilterState::default()
+    };
+    let mut knocked_grad = seed_state_mean_grad(&knocked_state, &dmu_ds);
+    let mut redemption_prob = 0i64;
+    let mut coupon_annuity = 0i64;
+    let mut d_redemption_prob = [0i64; 3];
+    let mut d_coupon_annuity = [0i64; 3];
+
+    for obs_idx in 0..remaining_observations {
+        let is_maturity = obs_idx + 1 == remaining_observations;
+        let coupon_count = (obs_idx + 1) as i64;
+        let drift_shift_total = (obs_idx as i64 + 1) * drift_shift_63 + mu_c_shift;
+        let tp = observation_probability_triple_pre(obs_idx, triple_pre_by_obs[obs_idx].as_ref());
+        let frozen_grid = if obs_idx == 0 {
+            None
+        } else {
+            frozen_grids[obs_idx - 1].as_ref()
+        };
+
+        if is_maturity {
+            let (maturity, maturity_grad) = run_maturity_step_grad(
+                &safe_state,
+                &safe_grad,
+                &knocked_state,
+                &knocked_grad,
+                &transition,
+                cfg,
+                obs_idx,
+                drift_shift_total,
+                k_retained,
+                tp,
+                frozen_grid,
+                &dmu_c,
+            );
+            let maturity_redemption = maturity.safe_principal
+                + maturity.knock_in_redemption_safe
+                + maturity.knocked_redemption;
+            redemption_prob += maturity_redemption;
+            coupon_annuity += coupon_count * maturity.coupon_hit;
+            for asset in 0..3 {
+                d_redemption_prob[asset] += maturity_grad.safe_principal[asset]
+                    + maturity_grad.knock_in_redemption_safe[asset]
+                    + maturity_grad.knocked_redemption[asset];
+                d_coupon_annuity[asset] += coupon_count * maturity_grad.coupon_hit[asset];
+            }
+            continue;
+        }
+
+        let step = run_observation_step_grad(
+            &safe_state,
+            &safe_grad,
+            &knocked_state,
+            &knocked_grad,
+            &transition,
+            cfg,
+            obs_idx,
+            drift_shift_total,
+            k_retained,
+            k_knocked,
+            tp,
+            frozen_grid,
+            &dmu_c,
+        );
+        redemption_prob += step.first_hit;
+        coupon_annuity += coupon_count * step.first_hit;
+        for asset in 0..3 {
+            d_redemption_prob[asset] += step.first_hit_grad[asset];
+            d_coupon_annuity[asset] += coupon_count * step.first_hit_grad[asset];
+        }
+        safe_state = step.next_safe;
+        safe_grad = step.next_safe_grad;
+        knocked_state = step.next_knocked;
+        knocked_grad = step.next_knocked_grad;
+    }
+
+    let loss_prob = (S6 - redemption_prob).max(0);
+    let fair_coupon_grad = if coupon_annuity > 100 && loss_prob > 0 {
+        core::array::from_fn(|asset| {
+            conditional_mean_grad(
+                coupon_annuity,
+                loss_prob,
+                d_coupon_annuity[asset],
+                -d_redemption_prob[asset],
+            )
+        })
+    } else {
+        [0; 3]
+    };
+    let fair_coupon_s6 = if coupon_annuity > 100 {
+        loss_prob * S6 / coupon_annuity
+    } else {
+        0
+    };
+    let mut fc_bps = fair_coupon_s6 as f64 * 10000.0 / S6 as f64;
+    if k_retained == 9 {
+        fc_bps += crate::k9_correction::k9_correction_lookup(sigma_s6) as f64 / 1_000_000.0;
+    } else if k_retained == 12 {
+        fc_bps += crate::k12_correction::k12_correction_lookup(sigma_s6) as f64 / 1_000_000.0;
+    }
+
+    QuoteWithDelta {
+        fc_bps,
+        delta_spy: fair_coupon_grad[0] as f64 / S6 as f64,
+        delta_qqq: fair_coupon_grad[1] as f64 / S6 as f64,
+        delta_iwm: fair_coupon_grad[2] as f64 / S6 as f64,
+    }
+}
+
 fn run_observation_step_grad(
     safe_state: &FilterState,
     safe_state_grad: &FilterStateGrad,
@@ -6358,6 +6532,7 @@ fn run_observation_step_grad(
 
 /// Date-varying K quote: uses a K schedule [obs2, obs3, obs4, obs5, maturity]
 /// to trade accuracy at early observations for CU savings at later ones.
+#[cfg(not(target_os = "solana"))]
 pub fn quote_c1_filter_tapered(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -6471,13 +6646,14 @@ pub fn quote_c1_filter_tapered(
     };
 
     c1_filter_cu_diag(b"quote_done");
-    C1FastQuote {
-        fair_coupon_bps: fair_coupon as f64 * 10000.0 / NOTIONAL as f64,
-        zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-        coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-        knock_in_rate: total_ki as f64 / S6 as f64,
-        autocall_rate: total_ac as f64 / S6 as f64,
-    }
+    c1_fast_quote_from_components(
+        NOTIONAL,
+        fair_coupon,
+        redemption_pv,
+        coupon_annuity,
+        total_ki,
+        total_ac,
+    )
 }
 
 #[cfg(not(target_os = "solana"))]
@@ -6570,13 +6746,14 @@ pub fn quote_c1_filter_live(
         0
     };
 
-    C1FastQuote {
-        fair_coupon_bps: fair_coupon as f64 * 10000.0 / cfg.notional as f64,
-        zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-        coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-        knock_in_rate: total_ki as f64 / S6 as f64,
-        autocall_rate: total_ac as f64 / S6 as f64,
-    }
+    c1_fast_quote_from_components(
+        cfg.notional,
+        fair_coupon,
+        redemption_pv,
+        coupon_annuity,
+        total_ki,
+        total_ac,
+    )
 }
 
 #[cfg(not(target_os = "solana"))]
@@ -6728,13 +6905,14 @@ pub fn quote_c1_filter_trace(
     };
 
     C1FilterTrace {
-        quote: C1FastQuote {
-            fair_coupon_bps: fair_coupon as f64 * 10000.0 / cfg.notional as f64,
-            zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-            coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-            knock_in_rate: total_ki as f64 / S6 as f64,
-            autocall_rate: total_ac as f64 / S6 as f64,
-        },
+        quote: c1_fast_quote_from_components(
+            cfg.notional,
+            fair_coupon,
+            redemption_pv,
+            coupon_annuity,
+            total_ki,
+            total_ac,
+        ),
         observation_survival,
         observation_autocall_first_hit,
         observation_first_knock_in,
@@ -6866,13 +7044,14 @@ pub fn quote_c1_filter_trace_live(
     };
 
     C1FilterTrace {
-        quote: C1FastQuote {
-            fair_coupon_bps: fair_coupon as f64 * 10000.0 / cfg.notional as f64,
-            zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-            coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-            knock_in_rate: total_ki as f64 / S6 as f64,
-            autocall_rate: total_ac as f64 / S6 as f64,
-        },
+        quote: c1_fast_quote_from_components(
+            cfg.notional,
+            fair_coupon,
+            redemption_pv,
+            coupon_annuity,
+            total_ki,
+            total_ac,
+        ),
         observation_survival,
         observation_autocall_first_hit,
         observation_first_knock_in,
@@ -7749,10 +7928,10 @@ pub fn frozen_gradient_validation(
 
         out.push(FrozenGradientValidation {
             sigma_common,
-            live_fair_coupon_bps: live_trace.quote.fair_coupon_bps,
-            frozen_fair_coupon_bps: frozen_trace.quote.fair_coupon_bps,
-            fair_coupon_diff_bps: frozen_trace.quote.fair_coupon_bps
-                - live_trace.quote.fair_coupon_bps,
+            live_fair_coupon_bps: live_trace.quote.fair_coupon_bps_f64(),
+            frozen_fair_coupon_bps: frozen_trace.quote.fair_coupon_bps_f64(),
+            fair_coupon_diff_bps: frozen_trace.quote.fair_coupon_bps_f64()
+                - live_trace.quote.fair_coupon_bps_f64(),
             live_obs2_first_hit: live_trace.observation_autocall_first_hit[1] as f64 / S6 as f64,
             frozen_obs2_first_hit: frozen_trace.observation_autocall_first_hit[1] as f64
                 / S6 as f64,
@@ -7776,6 +7955,7 @@ pub fn frozen_gradient_validation(
     out
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_prediction_step(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -7801,6 +7981,7 @@ pub fn bench_prediction_step(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_observation_step(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -7870,6 +8051,7 @@ pub fn bench_observation_step(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 pub fn bench_prepare_observation_obs2(
     cfg: &C1FastConfig,
@@ -7922,6 +8104,7 @@ pub fn bench_prepare_observation_obs2(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_observation_from_prepared(
     cfg: &C1FastConfig,
     prepared: &ObservationBenchState,
@@ -7958,6 +8141,7 @@ pub fn bench_observation_from_prepared(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_prepare_coupon_only_obs2(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -8020,6 +8204,7 @@ pub fn bench_prepare_coupon_only_obs2(
     })
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_coupon_only_from_prepared(
     cfg: &C1FastConfig,
     prepared: &CouponOnlyBenchState,
@@ -8065,6 +8250,7 @@ pub fn bench_coupon_only_from_prepared(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_triangle_gradient_single(cfg: &C1FastConfig) -> TriangleGradientBenchSummary {
     let obs = &cfg.obs[0];
     let triple_pre = cholesky6(obs.cov_uu, obs.cov_uv, obs.cov_vv)
@@ -8090,6 +8276,7 @@ pub fn bench_triangle_gradient_single(cfg: &C1FastConfig) -> TriangleGradientBen
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_triangle_gradient_batch(
     cfg: &C1FastConfig,
     repeats: usize,
@@ -8325,6 +8512,7 @@ pub fn obs1_projected_state(
     Some((safe_proj, knocked_proj, raw.first_hit, raw.first_knock_in))
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_prepare_obs1_seed(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -8351,6 +8539,7 @@ pub fn bench_prepare_obs1_seed(
     })
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 pub fn bench_prepare_maturity_state(
     cfg: &C1FastConfig,
@@ -8426,6 +8615,7 @@ pub fn bench_prepare_maturity_state(
     })
 }
 
+#[cfg(not(target_os = "solana"))]
 pub fn bench_maturity_from_prepared(
     cfg: &C1FastConfig,
     prepared: &MaturityBenchState,
@@ -8469,6 +8659,7 @@ pub fn bench_maturity_from_prepared(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn bench_observation_gradient_summary(
     cfg: &C1FastConfig,
@@ -8544,6 +8735,7 @@ fn bench_observation_gradient_summary(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn canned_observation_gradient_state() -> FilterState {
     let mut state = FilterState::default();
@@ -8575,6 +8767,7 @@ fn canned_observation_gradient_state() -> FilterState {
     state
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn boxed_canned_maturity_safe_gradient_state() -> Box<FilterState> {
     let mut state = Box::new(FilterState::default());
@@ -8600,6 +8793,7 @@ fn boxed_canned_maturity_safe_gradient_state() -> Box<FilterState> {
     state
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn boxed_canned_maturity_knocked_gradient_state() -> Box<FilterState> {
     let mut state = Box::new(FilterState::default());
@@ -8613,6 +8807,7 @@ fn boxed_canned_maturity_knocked_gradient_state() -> Box<FilterState> {
     state
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn checksum_filter_state_pair(lhs: &FilterState, rhs: &FilterState) -> i64 {
     lhs.nodes
@@ -8623,6 +8818,7 @@ fn checksum_filter_state_pair(lhs: &FilterState, rhs: &FilterState) -> i64 {
         })
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn bench_maturity_triple_pre(cfg: &C1FastConfig, obs_idx: usize) -> Option<TripleCorrectionPre> {
     let mat_obs = &cfg.obs[obs_idx];
@@ -8631,6 +8827,7 @@ fn bench_maturity_triple_pre(cfg: &C1FastConfig, obs_idx: usize) -> Option<Tripl
         .map(|(l11, l21, l22)| build_triple_correction_pre(l11, l21, l22, &cfg.au, &cfg.av))
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn boxed_factor_transition(
     cfg: &C1FastConfig,
@@ -8655,6 +8852,7 @@ fn boxed_factor_transition(
     transition
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn run_canned_maturity_safe_gradient_summary(
     call: &MaturityBenchCall<'_>,
@@ -8718,6 +8916,7 @@ fn run_canned_maturity_safe_gradient_summary(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn run_canned_maturity_knocked_gradient_summary(
     call: &MaturityBenchCall<'_>,
@@ -8762,6 +8961,7 @@ fn run_canned_maturity_knocked_gradient_summary(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 fn bench_maturity_gradient_summary(
     cfg: &C1FastConfig,
@@ -8812,6 +9012,7 @@ fn bench_maturity_gradient_summary(
     summary
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 pub fn bench_gradient_pipeline(
     cfg: &C1FastConfig,
@@ -8845,6 +9046,7 @@ pub fn bench_gradient_pipeline(
     }
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 pub fn bench_gradient_pipeline_checksum(
     cfg: &C1FastConfig,
@@ -8870,6 +9072,7 @@ pub fn bench_gradient_pipeline_checksum(
         + maturity.knocked_redemption
 }
 
+#[cfg(not(target_os = "solana"))]
 #[inline(never)]
 pub fn bench_maturity_knocked_gradient_only(
     cfg: &C1FastConfig,
@@ -9094,7 +9297,9 @@ pub fn extract_predict_grid_geometry_tapered(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worst_of_c1_fast::{quote_c1_fast, spy_qqq_iwm_c1_config};
+    use crate::worst_of_c1_fast::{
+        quote_c1_fast, spy_qqq_iwm_c1_config, spy_qqq_iwm_step_drift_inputs_s6,
+    };
     use crate::worst_of_factored::FactoredWorstOfModel;
 
     fn filter_inputs(sigma_common: f64) -> (C1FastConfig, i64, [i64; 2], i64) {
@@ -9111,6 +9316,71 @@ mod tests {
             .round() as i64;
         let sigma_s6 = (sigma_common * S6 as f64).round() as i64;
         (cfg, sigma_s6, drift_diffs, drift_shift_63)
+    }
+
+    #[test]
+    fn fixed_point_drift_coupon_matches_legacy_f64_reference_sweep() {
+        let mut max_abs_bps = 0.0f64;
+        let mut max_rel_err = 0.0f64;
+        let mut worst_sigma = 0.0f64;
+        let mut worst_legacy_bps = 0.0f64;
+        let mut worst_fixed_bps = 0.0f64;
+        let mut worst_legacy_drift_diffs = [0i64; 2];
+        let mut worst_fixed_drift_diffs = [0i64; 2];
+        let mut worst_legacy_shift = 0i64;
+        let mut worst_fixed_shift = 0i64;
+
+        for idx in 0..=18 {
+            let sigma = 0.08 + idx as f64 * 0.04;
+            let (cfg, sigma_s6, legacy_drift_diffs, legacy_drift_shift_63) = filter_inputs(sigma);
+            let (fixed_drift_diffs, fixed_drift_shift_63) =
+                spy_qqq_iwm_step_drift_inputs_s6(&cfg, sigma_s6, 63).unwrap();
+
+            let legacy_bps = quote_c1_filter(
+                &cfg,
+                sigma_s6,
+                legacy_drift_diffs,
+                legacy_drift_shift_63,
+                12,
+            )
+            .fair_coupon_bps_f64()
+                + crate::k12_correction::k12_correction_lookup(sigma_s6) as f64 / 1_000_000.0
+                + crate::daily_ki_correction::daily_ki_correction_lookup(sigma_s6) as f64
+                    / 1_000_000.0;
+            let fixed_bps =
+                quote_c1_filter(&cfg, sigma_s6, fixed_drift_diffs, fixed_drift_shift_63, 12)
+                    .fair_coupon_bps_f64()
+                    + crate::k12_correction::k12_correction_lookup(sigma_s6) as f64 / 1_000_000.0
+                    + crate::daily_ki_correction::daily_ki_correction_lookup(sigma_s6) as f64
+                        / 1_000_000.0;
+
+            let abs_err = (fixed_bps - legacy_bps).abs();
+            let rel_err = abs_err / legacy_bps.abs().max(1.0);
+            if abs_err > max_abs_bps {
+                max_abs_bps = abs_err;
+                max_rel_err = rel_err;
+                worst_sigma = sigma;
+                worst_legacy_bps = legacy_bps;
+                worst_fixed_bps = fixed_bps;
+                worst_legacy_drift_diffs = legacy_drift_diffs;
+                worst_fixed_drift_diffs = fixed_drift_diffs;
+                worst_legacy_shift = legacy_drift_shift_63;
+                worst_fixed_shift = fixed_drift_shift_63;
+            }
+        }
+
+        println!(
+            "fixed-point drift coupon sweep: max_abs_bps={max_abs_bps:.6} max_rel_err={max_rel_err:.6} sigma={worst_sigma:.4} legacy_bps={worst_legacy_bps:.6} fixed_bps={worst_fixed_bps:.6} legacy_dd={:?} fixed_dd={:?} legacy_shift={} fixed_shift={}",
+            worst_legacy_drift_diffs,
+            worst_fixed_drift_diffs,
+            worst_legacy_shift,
+            worst_fixed_shift,
+        );
+
+        assert!(
+            max_abs_bps < 10.0,
+            "fixed-point drift regression too large: max_abs_bps={max_abs_bps:.6} max_rel_err={max_rel_err:.6} sigma={worst_sigma:.4}"
+        );
     }
 
     fn spot_shift_bundle(cfg: &C1FastConfig, spots_s6: [i64; 3]) -> (i64, i64, i64) {
@@ -9660,7 +9930,10 @@ mod tests {
             );
             eprintln!(
                 "K12_frozen σ={sigma:.4}  fc={:.6} bps  v0={:.6}  ki={:.6}  ac={:.6}",
-                q.fair_coupon_bps, q.zero_coupon_pv, q.knock_in_rate, q.autocall_rate,
+                q.fair_coupon_bps_f64(),
+                q.zero_coupon_pv_f64(),
+                q.knock_in_rate_f64(),
+                q.autocall_rate_f64(),
             );
         }
     }
@@ -9697,12 +9970,16 @@ mod tests {
                 drift_shift_63,
                 12,
             );
-            let gap_15 = (k15.fair_coupon_bps - exact.fair_coupon_bps).abs();
-            let gap_12 = (k12.fair_coupon_bps - exact.fair_coupon_bps).abs();
+            let gap_15 = (k15.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs();
+            let gap_12 = (k12.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs();
             max_gap = max_gap.max(gap_15);
             eprintln!(
                 "σ={sigma:.4}  k15={:.4}  k12={:.4}  exact={:.4}  k15_gap={:.4}  k12_gap={:.4}",
-                k15.fair_coupon_bps, k12.fair_coupon_bps, exact.fair_coupon_bps, gap_15, gap_12,
+                k15.fair_coupon_bps_f64(),
+                k12.fair_coupon_bps_f64(),
+                exact.fair_coupon_bps,
+                gap_15,
+                gap_12,
             );
         }
         eprintln!("\nmax K15 gap to exact: {:.4} bps", max_gap);
@@ -9726,14 +10003,18 @@ mod tests {
             let rect = quote_c1_filter_rect_live(&cfg, sigma_s6, drift_diffs, drift_shift_63);
             let live_uniform =
                 quote_c1_filter_live(&cfg, sigma_s6, drift_diffs, drift_shift_63, 12);
-            let gap = (rect.fair_coupon_bps - exact.fair_coupon_bps).abs();
-            let live_gap = (live_uniform.fair_coupon_bps - exact.fair_coupon_bps).abs();
+            let gap = (rect.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs();
+            let live_gap = (live_uniform.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs();
             max_gap_bps = max_gap_bps.max(gap);
             use std::fmt::Write as _;
             let _ = writeln!(
                 &mut report,
                 "sigma={sigma:.2}  rect_bps={:.4}  liveK12_bps={:.4}  exact_bps={:.4}  rect_gap={:.4}  liveK12_gap={:.4}",
-                rect.fair_coupon_bps, live_uniform.fair_coupon_bps, exact.fair_coupon_bps, gap, live_gap,
+                rect.fair_coupon_bps_f64(),
+                live_uniform.fair_coupon_bps_f64(),
+                exact.fair_coupon_bps,
+                gap,
+                live_gap,
             );
         }
         // Print results for human review (always, since this is the scaffold gate).
@@ -10328,7 +10609,7 @@ mod tests {
         let shipped = quote_c1_filter(&cfg, sigma_s6, drift_diffs, drift_shift_63, 12);
         let with_delta =
             quote_c1_filter_with_delta(&cfg, sigma_s6, drift_diffs, drift_shift_63, 12);
-        let expected_bps = shipped.fair_coupon_bps
+        let expected_bps = shipped.fair_coupon_bps_f64()
             + crate::k12_correction::k12_correction_lookup(sigma_s6) as f64 / 1_000_000.0;
         assert!(
             (with_delta.fc_bps - expected_bps).abs() < 1.0e-9,
@@ -10561,11 +10842,11 @@ mod tests {
             obs2
         );
         assert!(
-            (trace.quote.fair_coupon_bps - exact.fair_coupon_bps).abs()
-                < (fast.fair_coupon_bps - exact.fair_coupon_bps).abs(),
+            (trace.quote.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs()
+                < (fast.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs(),
             "filter_bps={} fast_bps={} exact_bps={}",
-            trace.quote.fair_coupon_bps,
-            fast.fair_coupon_bps,
+            trace.quote.fair_coupon_bps_f64(),
+            fast.fair_coupon_bps_f64(),
             exact.fair_coupon_bps
         );
     }
@@ -10583,12 +10864,12 @@ mod tests {
             let fast = quote_c1_fast(&cfg, sigma_s6, drift_diffs, drift_shift_63);
             let trace = quote_c1_filter_trace(&cfg, sigma_s6, drift_diffs, drift_shift_63, 9);
             assert!(
-                (trace.quote.fair_coupon_bps - exact.fair_coupon_bps).abs()
-                    < (fast.fair_coupon_bps - exact.fair_coupon_bps).abs(),
+                (trace.quote.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs()
+                    < (fast.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs(),
                 "sigma={} filter_bps={} fast_bps={} exact_bps={}",
                 sigma,
-                trace.quote.fair_coupon_bps,
-                fast.fair_coupon_bps,
+                trace.quote.fair_coupon_bps_f64(),
+                fast.fair_coupon_bps_f64(),
                 exact.fair_coupon_bps
             );
         }
@@ -10606,10 +10887,10 @@ mod tests {
             let (cfg, sigma_s6, drift_diffs, drift_shift_63) = filter_inputs(sigma);
             let trace = quote_c1_filter_trace(&cfg, sigma_s6, drift_diffs, drift_shift_63, 15);
             assert!(
-                (trace.quote.fair_coupon_bps - exact.fair_coupon_bps).abs() < 40.0,
+                (trace.quote.fair_coupon_bps_f64() - exact.fair_coupon_bps).abs() < 40.0,
                 "sigma={} filter_bps={} exact_bps={}",
                 sigma,
-                trace.quote.fair_coupon_bps,
+                trace.quote.fair_coupon_bps_f64(),
                 exact.fair_coupon_bps
             );
         }
@@ -10635,13 +10916,13 @@ mod tests {
                 .round() as i64;
             let quote = quote_c1_filter(&cfg, sigma_s6, drift_diffs, drift_shift_63, 9);
             assert!(
-                quote.fair_coupon_bps + 0.1 >= prev,
+                quote.fair_coupon_bps_f64() + 0.1 >= prev,
                 "monotonicity violation at sigma={} prev={} next={}",
                 sigma,
                 prev,
-                quote.fair_coupon_bps
+                quote.fair_coupon_bps_f64()
             );
-            prev = quote.fair_coupon_bps;
+            prev = quote.fair_coupon_bps_f64();
         }
     }
 
@@ -10687,12 +10968,12 @@ mod tests {
                 let trace = quote_c1_filter_trace(&cfg, sigma_s6, drift_diffs, drift_shift_63, k);
                 println!(
                     "  k={k:>2} fair_bps={:.6} err={:+.3} obs1={:.9} obs2={:.9} ki={:.9} ac={:.9}",
-                    trace.quote.fair_coupon_bps,
-                    trace.quote.fair_coupon_bps - exact.fair_coupon_bps,
+                    trace.quote.fair_coupon_bps_f64(),
+                    trace.quote.fair_coupon_bps_f64() - exact.fair_coupon_bps,
                     trace.observation_autocall_first_hit[0] as f64 / S6 as f64,
                     trace.observation_autocall_first_hit[1] as f64 / S6 as f64,
-                    trace.quote.knock_in_rate,
-                    trace.quote.autocall_rate,
+                    trace.quote.knock_in_rate_f64(),
+                    trace.quote.autocall_rate_f64(),
                 );
             }
         }
@@ -10719,10 +11000,10 @@ mod tests {
                     + (cfg.loadings[2] as f64 * drifts[2]))
                     .round() as i64;
                 let quote = quote_c1_filter(&cfg, sigma_s6, drift_diffs, drift_shift_63, k);
-                if quote.fair_coupon_bps + 0.1 < prev {
+                if quote.fair_coupon_bps_f64() + 0.1 < prev {
                     violations += 1;
                 }
-                prev = quote.fair_coupon_bps;
+                prev = quote.fair_coupon_bps_f64();
             }
             println!("k={k} monotonic_violations={violations}");
         }
@@ -10925,10 +11206,10 @@ mod tests {
                 let q = quote_c1_filter(&cfg, sigma_s6, drift_diffs, drift_shift_63, k);
                 println!(
                     "  k_safe={k:>2} fc_bps={:.6} err={:+.3} ki={:.6} ac={:.6}",
-                    q.fair_coupon_bps,
-                    q.fair_coupon_bps - exact.fair_coupon_bps,
-                    q.knock_in_rate,
-                    q.autocall_rate,
+                    q.fair_coupon_bps_f64(),
+                    q.fair_coupon_bps_f64() - exact.fair_coupon_bps,
+                    q.knock_in_rate_f64(),
+                    q.autocall_rate_f64(),
                 );
             }
         }
@@ -11022,13 +11303,14 @@ mod tests {
         } else {
             0
         };
-        C1FastQuote {
-            fair_coupon_bps: fair_coupon as f64 * 10000.0 / cfg.notional as f64,
-            zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-            coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-            knock_in_rate: total_ki as f64 / S6 as f64,
-            autocall_rate: total_ac as f64 / S6 as f64,
-        }
+        c1_fast_quote_from_components(
+            cfg.notional,
+            fair_coupon,
+            redemption_pv,
+            coupon_annuity,
+            total_ki,
+            total_ac,
+        )
     }
 
     /// Validate frozen-grid predict_state matches on-chain live predict_state.
@@ -11050,14 +11332,15 @@ mod tests {
                 let no_frozen =
                     quote_c1_filter_no_frozen(&cfg, sigma_s6, drift_diffs, drift_shift_63, k);
 
-                let diff = (frozen.fair_coupon_bps - no_frozen.fair_coupon_bps).abs();
+                let diff = (frozen.fair_coupon_bps_f64() - no_frozen.fair_coupon_bps_f64()).abs();
                 if diff > max_diff_bps {
                     max_diff_bps = diff;
                     worst_sigma = sigma;
                 }
                 println!(
                     "K={k} sigma={sigma:.3} frozen={:.4} no_frozen={:.4} diff={diff:.4} bps",
-                    frozen.fair_coupon_bps, no_frozen.fair_coupon_bps,
+                    frozen.fair_coupon_bps_f64(),
+                    no_frozen.fair_coupon_bps_f64(),
                 );
             }
         }
@@ -11145,14 +11428,15 @@ mod tests {
             let (cfg2, ss, dd, ds) = filter_inputs(sigma);
             let k9c = quote_c1_filter(&cfg2, ss, dd, ds, 9);
             let ref15 = quote_c1_filter_live(&cfg2, ss, dd, ds, 15);
-            let err = (k9c.fair_coupon_bps - ref15.fair_coupon_bps).abs();
+            let err = (k9c.fair_coupon_bps_f64() - ref15.fair_coupon_bps_f64()).abs();
             if err > max_err {
                 max_err = err;
                 max_err_sigma = sigma;
             }
             println!(
                 "  sweep sigma={sigma:.3} k9c={:.2} ref={:.2} err={err:.2}",
-                k9c.fair_coupon_bps, ref15.fair_coupon_bps
+                k9c.fair_coupon_bps_f64(),
+                ref15.fair_coupon_bps_f64()
             );
         }
         println!("K=9 corrected max error: {max_err:.2} bps at sigma={max_err_sigma:.3}");
@@ -11177,16 +11461,37 @@ mod tests {
             let k15 = quote_c1_filter(&cfg, sigma_s6, drift_diffs, drift_shift_63, 15);
 
             println!("sigma={sigma:.3}:");
-            println!("  live K=15:         fc={:.2} bps", live.fair_coupon_bps);
-            println!("  uniform K=15:      fc={:.2} bps", k15.fair_coupon_bps);
-            println!("  uniform K=12:      fc={:.2} bps", k12.fair_coupon_bps);
-            println!("  uniform K=9:       fc={:.2} bps", k9.fair_coupon_bps);
-            println!("  uniform K=7:       fc={:.2} bps", k7.fair_coupon_bps);
-            println!("  tapered [9,7,5,3]: fc={:.2} bps", t1.fair_coupon_bps);
-            println!("  tapered [15,9,5,3]:fc={:.2} bps", t2.fair_coupon_bps);
+            println!(
+                "  live K=15:         fc={:.2} bps",
+                live.fair_coupon_bps_f64()
+            );
+            println!(
+                "  uniform K=15:      fc={:.2} bps",
+                k15.fair_coupon_bps_f64()
+            );
+            println!(
+                "  uniform K=12:      fc={:.2} bps",
+                k12.fair_coupon_bps_f64()
+            );
+            println!(
+                "  uniform K=9:       fc={:.2} bps",
+                k9.fair_coupon_bps_f64()
+            );
+            println!(
+                "  uniform K=7:       fc={:.2} bps",
+                k7.fair_coupon_bps_f64()
+            );
+            println!(
+                "  tapered [9,7,5,3]: fc={:.2} bps",
+                t1.fair_coupon_bps_f64()
+            );
+            println!(
+                "  tapered [15,9,5,3]:fc={:.2} bps",
+                t2.fair_coupon_bps_f64()
+            );
 
-            assert!(t2.fair_coupon_bps > 0.0);
-            assert!(t2.fair_coupon_bps < 5000.0);
+            assert!(t2.fair_coupon_bps_f64() > 0.0);
+            assert!(t2.fair_coupon_bps_f64() < 5000.0);
         }
     }
 }

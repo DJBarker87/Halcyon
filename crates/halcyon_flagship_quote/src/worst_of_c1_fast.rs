@@ -10,17 +10,145 @@ use solmath_core::PHI2_RESID_QQQ_IWM;
 use solmath_core::PHI2_RESID_SPY_IWM;
 use solmath_core::PHI2_RESID_SPY_QQQ;
 use solmath_core::{
-    bvn_cdf_i64, norm_cdf_i64, norm_pdf_i64, triangle_probability_i64, RegionMoment6, TrianglePre64,
+    bvn_cdf_i64, fp_div_i, fp_mul_i, fp_sqrt, norm_cdf_i64, norm_pdf_i64, triangle_probability_i64,
+    RegionMoment6, SolMathError, TrianglePre64,
 };
 
 const S6: i64 = 1_000_000;
+pub(crate) const S12: i128 = 1_000_000_000_000;
 const SQRT2_S6: i64 = 1_414_214;
+pub(crate) const CF_ALPHA_S12: i128 = 30_369_787_684_189;
+pub(crate) const CF_BETA_S12: i128 = -4_253_775_293_079;
+pub(crate) const CF_GAMMA_S12: i128 = 30_070_407_375_669;
+pub(crate) const CF_DELTA_SCALE_S12: i128 = 116_985_997_577;
 const N_OBS: usize = 6;
+const FAIR_COUPON_BPS_S6_SCALE: i128 = 10_000_000_000;
+const S12_TO_S6_DIVISOR: i128 = 1_000_000;
+const SPY_QQQ_IWM_RESIDUAL_VARIANCE_DIAG_DAILY_S12: [i128; 3] =
+    [8_222_389, 19_862_760, 21_036_297];
 
 /// i64 multiply at SCALE_6. Product fits i64 for |a|,|b| ≤ ~3e6.
 #[inline(always)]
 fn m6r(a: i64, b: i64) -> i64 {
     a * b / 1_000_000
+}
+
+#[inline(always)]
+fn round_div_i128(value: i128, divisor: i128) -> Result<i64, SolMathError> {
+    if divisor == 0 {
+        return Err(SolMathError::DivisionByZero);
+    }
+    let half = divisor / 2;
+    let adjusted = if value >= 0 {
+        value.checked_add(half).ok_or(SolMathError::Overflow)?
+    } else {
+        value.checked_sub(half).ok_or(SolMathError::Overflow)?
+    };
+    i64::try_from(adjusted / divisor).map_err(|_| SolMathError::Overflow)
+}
+
+#[inline(always)]
+pub(crate) fn c1_fast_quote_from_components(
+    notional_s6: i64,
+    fair_coupon_s6: i64,
+    redemption_pv_s6: i64,
+    coupon_annuity_pv_s6: i64,
+    knock_in_rate_s6: i64,
+    autocall_rate_s6: i64,
+) -> C1FastQuote {
+    let fair_coupon_bps_s6 =
+        ((fair_coupon_s6 as i128) * FAIR_COUPON_BPS_S6_SCALE / notional_s6 as i128) as i64;
+    C1FastQuote {
+        fair_coupon_bps_s6,
+        zero_coupon_pv_s6: redemption_pv_s6,
+        coupon_annuity_pv_s6: coupon_annuity_pv_s6,
+        knock_in_rate_s6,
+        autocall_rate_s6,
+    }
+}
+
+pub fn spy_qqq_iwm_step_drift_inputs_s6(
+    cfg: &C1FastConfig,
+    sigma_s6: i64,
+    step_days: u32,
+) -> Result<([i64; 2], i64), SolMathError> {
+    if sigma_s6 <= 0 || step_days == 0 {
+        return Err(SolMathError::DomainError);
+    }
+
+    let sigma_s6_i128 = sigma_s6 as i128;
+    let sigma_sq_s12 = sigma_s6_i128
+        .checked_mul(sigma_s6_i128)
+        .ok_or(SolMathError::Overflow)?;
+    let delta_scale_step = CF_DELTA_SCALE_S12
+        .checked_mul(step_days as i128)
+        .ok_or(SolMathError::Overflow)?;
+    let delta_s12 = fp_mul_i(sigma_sq_s12, delta_scale_step)?;
+    let drift_location_s12 = fp_div_i(fp_mul_i(delta_s12, -CF_BETA_S12)?, CF_GAMMA_S12)?;
+
+    let alpha_sq_s12 = fp_mul_i(CF_ALPHA_S12, CF_ALPHA_S12)?;
+    let mut drifts_s12 = [0i128; 3];
+    for index in 0..3 {
+        let loading_s12 = (cfg.loadings[index] as i128)
+            .checked_mul(S12_TO_S6_DIVISOR)
+            .ok_or(SolMathError::Overflow)?;
+        let beta_plus_loading_s12 = CF_BETA_S12
+            .checked_add(loading_s12)
+            .ok_or(SolMathError::Overflow)?;
+        let shifted_sq_s12 = alpha_sq_s12
+            .checked_sub(fp_mul_i(beta_plus_loading_s12, beta_plus_loading_s12)?)
+            .ok_or(SolMathError::Overflow)?;
+        if shifted_sq_s12 <= 0 {
+            return Err(SolMathError::DomainError);
+        }
+        let shifted_sqrt_s12 = fp_sqrt(shifted_sq_s12 as u128)? as i128;
+        let common_term_s12 = fp_mul_i(drift_location_s12, loading_s12)?
+            .checked_add(fp_mul_i(
+                delta_s12,
+                CF_GAMMA_S12
+                    .checked_sub(shifted_sqrt_s12)
+                    .ok_or(SolMathError::Overflow)?,
+            )?)
+            .ok_or(SolMathError::Overflow)?;
+        let gaussian_term_s12 = SPY_QQQ_IWM_RESIDUAL_VARIANCE_DIAG_DAILY_S12[index]
+            .checked_mul(step_days as i128)
+            .ok_or(SolMathError::Overflow)?
+            / 2;
+        drifts_s12[index] = common_term_s12
+            .checked_add(gaussian_term_s12)
+            .ok_or(SolMathError::Overflow)?
+            .checked_neg()
+            .ok_or(SolMathError::Overflow)?;
+    }
+
+    let drift_diffs = [
+        round_div_i128(
+            drifts_s12[1]
+                .checked_sub(drifts_s12[0])
+                .ok_or(SolMathError::Overflow)?,
+            S12_TO_S6_DIVISOR,
+        )?,
+        round_div_i128(
+            drifts_s12[2]
+                .checked_sub(drifts_s12[0])
+                .ok_or(SolMathError::Overflow)?,
+            S12_TO_S6_DIVISOR,
+        )?,
+    ];
+    let drift_shift_s18 = cfg.loadings.iter().zip(drifts_s12.iter()).try_fold(
+        0i128,
+        |acc, (loading_s6, drift_s12)| {
+            acc.checked_add(
+                (*loading_s6 as i128)
+                    .checked_mul(*drift_s12)
+                    .ok_or(SolMathError::Overflow)?,
+            )
+            .ok_or(SolMathError::Overflow)
+        },
+    )?;
+    let drift_shift_63 = round_div_i128(drift_shift_s18, S12)?;
+
+    Ok((drift_diffs, drift_shift_63))
 }
 
 /// Precomputed Cholesky-based geometry for the GH3 triple-complement correction.
@@ -343,11 +471,39 @@ pub struct C1FastConfig {
 
 #[derive(Debug, Clone, Copy)]
 pub struct C1FastQuote {
-    pub fair_coupon_bps: f64,
-    pub zero_coupon_pv: f64,
-    pub coupon_annuity_pv: f64,
-    pub knock_in_rate: f64,
-    pub autocall_rate: f64,
+    pub fair_coupon_bps_s6: i64,
+    pub zero_coupon_pv_s6: i64,
+    pub coupon_annuity_pv_s6: i64,
+    pub knock_in_rate_s6: i64,
+    pub autocall_rate_s6: i64,
+}
+
+#[cfg(any(test, not(target_os = "solana")))]
+impl C1FastQuote {
+    #[inline(always)]
+    pub fn fair_coupon_bps_f64(self) -> f64 {
+        self.fair_coupon_bps_s6 as f64 / S6 as f64
+    }
+
+    #[inline(always)]
+    pub fn zero_coupon_pv_f64(self) -> f64 {
+        self.zero_coupon_pv_s6 as f64 / S6 as f64
+    }
+
+    #[inline(always)]
+    pub fn coupon_annuity_pv_f64(self) -> f64 {
+        self.coupon_annuity_pv_s6 as f64 / S6 as f64
+    }
+
+    #[inline(always)]
+    pub fn knock_in_rate_f64(self) -> f64 {
+        self.knock_in_rate_s6 as f64 / S6 as f64
+    }
+
+    #[inline(always)]
+    pub fn autocall_rate_f64(self) -> f64 {
+        self.autocall_rate_s6 as f64 / S6 as f64
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -541,15 +697,14 @@ fn quote_c1_fast_trace(
     } else {
         0
     };
-    let fair_bps = fair_coupon as f64 * 10000.0 / cfg.notional as f64;
-
-    let quote = C1FastQuote {
-        fair_coupon_bps: fair_bps,
-        zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-        coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-        knock_in_rate: total_ki as f64 / S6 as f64,
-        autocall_rate: total_ac as f64 / S6 as f64,
-    };
+    let quote = c1_fast_quote_from_components(
+        cfg.notional,
+        fair_coupon,
+        redemption_pv,
+        coupon_annuity,
+        total_ki,
+        total_ac,
+    );
 
     C1FastTrace {
         quote,
@@ -805,13 +960,14 @@ mod tests {
             0
         };
         C1FastTrace {
-            quote: C1FastQuote {
-                fair_coupon_bps: fair_coupon as f64 * 10000.0 / cfg.notional as f64,
-                zero_coupon_pv: redemption_pv as f64 / S6 as f64,
-                coupon_annuity_pv: coupon_annuity as f64 / S6 as f64,
-                knock_in_rate: total_ki as f64 / S6 as f64,
-                autocall_rate: total_ac as f64 / S6 as f64,
-            },
+            quote: c1_fast_quote_from_components(
+                cfg.notional,
+                fair_coupon,
+                redemption_pv,
+                coupon_annuity,
+                total_ki,
+                total_ac,
+            ),
             observation_survival,
             observation_autocall_first_hit,
         }
@@ -834,13 +990,13 @@ mod tests {
             println!(
                 "sigma={sigma_common:.15} exact_bps={:.6} scalar_bps={:.6} node_bps={:.6} node_err_bps={:.6} node_v0={:.9} node_u0={:.9} node_ki={:.9} node_ac={:.9} scalar_obs1_ac={:.9} node_obs1_ac={:.9} scalar_obs2_ac={:.9} node_obs2_ac={:.9} scalar_obs2_surv={:.9} node_obs2_surv={:.9}",
                 exact.fair_coupon_bps,
-                scalar.quote.fair_coupon_bps,
-                node.quote.fair_coupon_bps,
-                node.quote.fair_coupon_bps - exact.fair_coupon_bps,
-                node.quote.zero_coupon_pv,
-                node.quote.coupon_annuity_pv,
-                node.quote.knock_in_rate,
-                node.quote.autocall_rate,
+                scalar.quote.fair_coupon_bps_f64(),
+                node.quote.fair_coupon_bps_f64(),
+                node.quote.fair_coupon_bps_f64() - exact.fair_coupon_bps,
+                node.quote.zero_coupon_pv_f64(),
+                node.quote.coupon_annuity_pv_f64(),
+                node.quote.knock_in_rate_f64(),
+                node.quote.autocall_rate_f64(),
                 scalar.observation_autocall_first_hit[0] as f64 / S6 as f64,
                 node.observation_autocall_first_hit[0] as f64 / S6 as f64,
                 scalar.observation_autocall_first_hit[1] as f64 / S6 as f64,

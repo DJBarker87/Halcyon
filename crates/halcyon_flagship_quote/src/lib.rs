@@ -21,5 +21,7 @@ pub mod obs1_seed_tables;
 pub mod worst_of_c1_fast;
 pub mod worst_of_c1_filter;
 pub mod worst_of_c1_filter_gradients;
+#[cfg(not(target_os = "solana"))]
 pub mod worst_of_c1_lookup;
+#[cfg(not(target_os = "solana"))]
 pub mod worst_of_factored;

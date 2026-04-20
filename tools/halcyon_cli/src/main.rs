@@ -5,7 +5,8 @@
 //!   Admin bring-up        : init-protocol, register-sol-autocall, rotate-keeper
 //!   Capital               : senior-deposit, seed-junior, fund-coupon-vault, fund-sleeve, defund-sleeve, sweep-fees
 //!   Product (SOL Autocall): preview, buy, settle
-//!   Keepers               : keepers fire-observation
+//!   Product (IL Protect.) : preview-il, buy-il, settle-il, regime-status
+//!   Keepers               : keepers fire-observation, keepers fire-regime
 //!   Ops                   : status
 
 mod client;
@@ -38,6 +39,9 @@ enum Command {
     /// Register the SOL Autocall product with the kernel. Admin-only.
     RegisterSolAutocall(commands::register::Args),
 
+    /// Register the IL Protection product with the kernel. Admin-only.
+    RegisterIlProtection(commands::register_il_protection::Args),
+
     /// Rotate a keeper role's authority. Admin-only.
     RotateKeeper(commands::rotate_keeper::Args),
 
@@ -64,11 +68,23 @@ enum Command {
     /// Simulate `preview_quote` and decode the Anchor return data.
     Preview(commands::preview::Args),
 
+    /// Simulate IL Protection `preview_quote` and decode the Anchor return data.
+    PreviewIl(commands::preview_il::Args),
+
     /// Issue a SOL Autocall policy.
     Buy(commands::buy::Args),
 
+    /// Issue an IL Protection policy.
+    BuyIl(commands::buy_il::Args),
+
     /// Trigger settlement on a matured or auto-called policy.
     Settle(commands::settle::Args),
+
+    /// Trigger IL Protection settlement on a matured policy.
+    SettleIl(commands::settle_il::Args),
+
+    /// Show the current IL Protection regime signal.
+    RegimeStatus,
 
     /// Keeper force-firing utilities (localnet / ops).
     Keepers {
@@ -88,6 +104,7 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::InitProtocol(a) => commands::init_protocol::run(&ctx, a).await,
         Command::RegisterSolAutocall(a) => commands::register::run(&ctx, a).await,
+        Command::RegisterIlProtection(a) => commands::register_il_protection::run(&ctx, a).await,
         Command::RotateKeeper(a) => commands::rotate_keeper::run(&ctx, a).await,
         Command::SeniorDeposit(a) => commands::senior_deposit::run(&ctx, a).await,
         Command::SeedJunior(a) => commands::seed_junior::run(&ctx, a).await,
@@ -96,8 +113,12 @@ async fn main() -> Result<()> {
         Command::DefundSleeve(a) => commands::defund_hedge_sleeve::run(&ctx, a).await,
         Command::SweepFees(a) => commands::sweep_fees::run(&ctx, a).await,
         Command::Preview(a) => commands::preview::run(&ctx, a).await,
+        Command::PreviewIl(a) => commands::preview_il::run(&ctx, a).await,
         Command::Buy(a) => commands::buy::run(&ctx, a).await,
+        Command::BuyIl(a) => commands::buy_il::run(&ctx, a).await,
         Command::Settle(a) => commands::settle::run(&ctx, a).await,
+        Command::SettleIl(a) => commands::settle_il::run(&ctx, a).await,
+        Command::RegimeStatus => commands::regime_status::run(&ctx).await,
         Command::Keepers { cmd } => commands::keepers::run(&ctx, cmd).await,
         Command::Status => commands::status::run(&ctx).await,
     }

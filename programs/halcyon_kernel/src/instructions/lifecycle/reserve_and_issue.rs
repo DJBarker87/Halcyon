@@ -9,6 +9,7 @@ pub struct ReserveAndIssueArgs {
     pub policy_id: Pubkey,
     pub notional: u64,
     pub premium: u64,
+    pub vault_deposit_amount: u64,
     pub max_liability: u64,
     pub terms_hash: [u8; 32],
     pub engine_version: u16,
@@ -121,11 +122,11 @@ pub fn handler(ctx: Context<ReserveAndIssue>, args: ReserveAndIssueArgs) -> Resu
         .ok_or(HalcyonError::Overflow)?;
 
     // --- 3. Cash movement on issuance:
-    //        * buyer principal always escrows into `vault_usdc`
-    //        * any explicit premium is then split between vault/treasury
-    //          according to the protocol config
-    //        SOL Autocall v1 currently prices upfront premium at zero, but
-    //        the kernel keeps the generic split path for other products.
+    //        * product chooses how much of the buyer payment lands in
+    //          `vault_usdc` via `vault_deposit_amount`
+    //        * the premium's treasury share always routes to `treasury_usdc`
+    //        This lets principal-backed products escrow notional while
+    //        synthetic products like IL Protection pay premium-only.
     require!(args.notional > 0, HalcyonError::BelowMinimumTrade);
     let cfg = &ctx.accounts.protocol_config;
     // K12 — splits must sum to 10_000 on every issuance, not only at
@@ -155,14 +156,24 @@ pub fn handler(ctx: Context<ReserveAndIssue>, args: ReserveAndIssueArgs) -> Resu
     let premium_vault_portion = senior_share
         .checked_add(junior_share)
         .ok_or(HalcyonError::Overflow)?;
-    let vault_deposit = args
-        .notional
-        .checked_add(premium_vault_portion)
-        .ok_or(HalcyonError::Overflow)?;
     require!(
-        args.max_liability <= vault_deposit,
-        crate::KernelError::PolicyEscrowInsufficient
+        args.vault_deposit_amount >= premium_vault_portion,
+        crate::KernelError::VaultDepositBelowPremiumPortion
     );
+    // L3-H1 — principal-backed products must escrow the full notional
+    // into `vault_usdc`. Synthetic products (requires_principal_escrow =
+    // false) are backed by tranche capital; the kernel only demands the
+    // premium-vault share for them.
+    if ctx
+        .accounts
+        .product_registry_entry
+        .requires_principal_escrow
+    {
+        require!(
+            args.vault_deposit_amount >= args.notional,
+            crate::KernelError::PolicyEscrowInsufficient
+        );
+    }
 
     // --- 4. Capacity ---
     let vault = &ctx.accounts.vault_state;
@@ -201,7 +212,7 @@ pub fn handler(ctx: Context<ReserveAndIssue>, args: ReserveAndIssueArgs) -> Resu
         HalcyonError::GlobalRiskCapExceeded
     );
 
-    if vault_deposit > 0 {
+    if args.vault_deposit_amount > 0 {
         token::transfer(
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
@@ -211,7 +222,7 @@ pub fn handler(ctx: Context<ReserveAndIssue>, args: ReserveAndIssueArgs) -> Resu
                     authority: ctx.accounts.buyer.to_account_info(),
                 },
             ),
-            vault_deposit,
+            args.vault_deposit_amount,
         )?;
     }
 

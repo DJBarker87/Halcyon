@@ -16,9 +16,17 @@ pub struct ProductRegistryEntry {
     /// holding a reservation (Quoted or Active). Increased by `reserve_and_issue`
     /// and decreased by `apply_settlement` / `reap_quoted`. Gates `global_risk_cap`.
     pub total_reserved: u64,
+    /// L3-H1 — when `true` the kernel requires every issuance to escrow at
+    /// least `notional` into `vault_usdc` (principal-backed products such
+    /// as SOL Autocall). When `false` the product is synthetic (backed by
+    /// tranche capital, not buyer principal) and the kernel only demands
+    /// the premium-vault share — IL Protection is the first such product.
+    /// Set at `register_product` and not mutable via
+    /// `update_product_registry`.
+    pub requires_principal_escrow: bool,
     pub last_update_ts: i64,
 }
 
 impl ProductRegistryEntry {
-    pub const CURRENT_VERSION: u8 = 1;
+    pub const CURRENT_VERSION: u8 = 2;
 }

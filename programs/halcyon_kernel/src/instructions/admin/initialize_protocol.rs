@@ -24,6 +24,12 @@ pub struct InitializeProtocolArgs {
     /// USDC token account the admin is permitted to sweep fees into. Must be a
     /// USDC account; ownership is enforced at `sweep_fees` time.
     pub treasury_destination: Pubkey,
+    /// Protocol-level cap on hedge-swap slippage (bps). See
+    /// `ProtocolConfig::hedge_max_slippage_bps_cap`. Must be > 0 and ≤ 10_000.
+    pub hedge_max_slippage_bps_cap: u16,
+    /// USDC token account `defund_hedge_sleeve` may route to. Non-default;
+    /// ownership is enforced at `defund_hedge_sleeve` time.
+    pub hedge_defund_destination: Pubkey,
 }
 
 #[derive(Accounts)]
@@ -124,6 +130,8 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
     config.k12_correction_sha256 = [0u8; 32];
     config.daily_ki_correction_sha256 = [0u8; 32];
     config.treasury_destination = args.treasury_destination;
+    config.hedge_max_slippage_bps_cap = args.hedge_max_slippage_bps_cap;
+    config.hedge_defund_destination = args.hedge_defund_destination;
     config.last_update_ts = clock.unix_timestamp;
 
     require!(
@@ -177,6 +185,15 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
         config.treasury_destination,
         Pubkey::default(),
         HalcyonError::DestinationNotAllowed
+    );
+    require_keys_neq!(
+        config.hedge_defund_destination,
+        Pubkey::default(),
+        HalcyonError::DestinationNotAllowed
+    );
+    require!(
+        config.hedge_max_slippage_bps_cap_valid(),
+        crate::KernelError::BadConfig
     );
 
     let vault = &mut ctx.accounts.vault_state;

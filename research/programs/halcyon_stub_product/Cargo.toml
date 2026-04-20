@@ -9,7 +9,16 @@ crate-type = ["cdylib", "lib"]
 name = "halcyon_stub_product"
 
 [features]
-default = []
+# L3-M3 — `localnet-override` enables the `vault_deposit_amount_override`
+# escape hatch that the localnet anchor tests use to drive the kernel's
+# VaultDepositBelowPremiumPortion / PolicyEscrowInsufficient paths. It is
+# ON by default so `anchor test` continues to work without extra flags;
+# release/CI builds that deploy the stub binary (shouldn't happen — the
+# stub is already denied at register_product via the mainnet-guards
+# feature) must pass `--no-default-features` to compile the stub with the
+# override gone from its on-chain ABI.
+default = ["localnet-override"]
+localnet-override = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []

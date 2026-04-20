@@ -12,6 +12,8 @@ pub enum KernelError {
     LookupTableRegistryFull,
     #[msg("lookup table index out of range")]
     LookupTableIndexOutOfRange,
+    #[msg("lookup table account is invalid")]
+    InvalidLookupTableAccount,
     #[msg("invalid keeper role tag")]
     InvalidKeeperRole,
     #[msg("fee ledger has no bucket for this product")]
@@ -60,7 +62,9 @@ pub enum KernelError {
     InsufficientHedgeSleeveBalance,
     #[msg("treasury balance is below requested sweep amount")]
     InsufficientTreasuryBalance,
-    #[msg("reserved max_liability exceeds escrow deposited into the underwriting vault")]
+    #[msg("vault deposit amount is below the premium portion that must remain in the underwriting vault")]
+    VaultDepositBelowPremiumPortion,
+    #[msg("vault deposit amount is below the required principal escrow for this product")]
     PolicyEscrowInsufficient,
     #[msg("direct kernel Jupiter CPI execution is disabled; use prepare_hedge_swap + record_hedge_trade")]
     DeprecatedHedgeExecutionPath,

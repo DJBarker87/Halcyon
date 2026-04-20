@@ -7,11 +7,11 @@
 use anchor_lang::prelude::*;
 use anchor_lang::Discriminator;
 use anchor_spl::token::{Mint, Token, TokenAccount};
-use halcyon_common::seeds;
+use halcyon_common::{seeds, HalcyonError};
 use halcyon_kernel::{
     cpi::accounts::{FinalizePolicy, ReserveAndIssue},
     instructions::lifecycle::apply_settlement::SettlementReason,
-    state::ProductRegistryEntry,
+    state::{ProductRegistryEntry, ProtocolConfig},
     ReserveAndIssueArgs,
 };
 use solana_sha256_hasher::hashv;
@@ -38,6 +38,8 @@ pub mod halcyon_stub_product {
         let bump = ctx.bumps.product_authority;
         let seeds_refs: &[&[u8]] = &[seeds::PRODUCT_AUTHORITY, &[bump]];
         let signer_seeds: &[&[&[u8]]] = &[seeds_refs];
+        let vault_deposit_amount =
+            resolve_vault_deposit_amount(&ctx.accounts.protocol_config, &args)?;
 
         halcyon_kernel::cpi::reserve_and_issue(
             CpiContext::new_with_signer(
@@ -64,6 +66,7 @@ pub mod halcyon_stub_product {
                 policy_id: args.policy_id,
                 notional: args.notional,
                 premium: args.premium,
+                vault_deposit_amount,
                 max_liability: args.max_liability,
                 terms_hash,
                 engine_version: 1,
@@ -101,6 +104,8 @@ pub mod halcyon_stub_product {
         let bump = ctx.bumps.product_authority;
         let seeds_refs: &[&[u8]] = &[seeds::PRODUCT_AUTHORITY, &[bump]];
         let signer_seeds: &[&[&[u8]]] = &[seeds_refs];
+        let vault_deposit_amount =
+            resolve_vault_deposit_amount(&ctx.accounts.protocol_config, &args)?;
 
         halcyon_kernel::cpi::reserve_and_issue(
             CpiContext::new_with_signer(
@@ -127,6 +132,7 @@ pub mod halcyon_stub_product {
                 policy_id: args.policy_id,
                 notional: args.notional,
                 premium: args.premium,
+                vault_deposit_amount,
                 max_liability: args.max_liability,
                 terms_hash: [0u8; 32],
                 engine_version: 1,
@@ -145,6 +151,8 @@ pub mod halcyon_stub_product {
         let bump = ctx.bumps.product_authority;
         let seeds_refs: &[&[u8]] = &[seeds::PRODUCT_AUTHORITY, &[bump]];
         let signer_seeds: &[&[&[u8]]] = &[seeds_refs];
+        let vault_deposit_amount =
+            resolve_vault_deposit_amount(&ctx.accounts.protocol_config, &args)?;
 
         halcyon_kernel::cpi::reserve_and_issue(
             CpiContext::new_with_signer(
@@ -171,6 +179,7 @@ pub mod halcyon_stub_product {
                 policy_id: args.policy_id,
                 notional: args.notional,
                 premium: args.premium,
+                vault_deposit_amount,
                 max_liability: args.max_liability,
                 terms_hash,
                 engine_version: 1,
@@ -257,11 +266,37 @@ pub mod halcyon_stub_product {
     }
 }
 
+fn resolve_vault_deposit_amount(
+    protocol_config: &ProtocolConfig,
+    args: &StubAcceptArgs,
+) -> Result<u64> {
+    // L3-M3 — the override path only exists when the `localnet-override`
+    // feature is compiled in. Release / mainnet-guards builds cannot
+    // honor an override even if someone maliciously reconstructs the
+    // instruction data.
+    #[cfg(feature = "localnet-override")]
+    if let Some(vault_deposit_amount_override) = args.vault_deposit_amount_override {
+        return Ok(vault_deposit_amount_override);
+    }
+    let premium_vault_portion = protocol_config
+        .premium_vault_portion(args.premium)
+        .ok_or(HalcyonError::Overflow)?;
+
+    args.notional
+        .checked_add(premium_vault_portion)
+        .ok_or_else(|| error!(HalcyonError::Overflow))
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct StubAcceptArgs {
     pub policy_id: Pubkey,
     pub notional: u64,
     pub premium: u64,
+    /// L3-M3 — only honored when the stub is compiled with the
+    /// `localnet-override` cargo feature. Field is kept in the ABI so TS
+    /// tests keep serializing without branching; a release build ignores
+    /// the value inside `resolve_vault_deposit_amount`.
+    pub vault_deposit_amount_override: Option<u64>,
     pub max_liability: u64,
     pub expiry_ts: i64,
     pub magic: u64,
@@ -299,9 +334,8 @@ pub struct AcceptQuoteStub<'info> {
     /// CHECK: kernel PDA authority.
     pub vault_authority: UncheckedAccount<'info>,
 
-    /// CHECK: kernel PDA.
     #[account(mut)]
-    pub protocol_config: UncheckedAccount<'info>,
+    pub protocol_config: Account<'info, ProtocolConfig>,
 
     /// CHECK: kernel PDA.
     #[account(mut)]
@@ -359,9 +393,8 @@ pub struct QuoteOnlyStub<'info> {
     /// CHECK: kernel PDA authority.
     pub vault_authority: UncheckedAccount<'info>,
 
-    /// CHECK: kernel PDA.
     #[account(mut)]
-    pub protocol_config: UncheckedAccount<'info>,
+    pub protocol_config: Account<'info, ProtocolConfig>,
 
     /// CHECK: kernel PDA.
     #[account(mut)]
@@ -401,8 +434,7 @@ pub struct FinalizeOnlyStub<'info> {
 
     pub product_registry_entry: Account<'info, ProductRegistryEntry>,
 
-    /// CHECK: kernel PDA.
-    pub protocol_config: UncheckedAccount<'info>,
+    pub protocol_config: Account<'info, ProtocolConfig>,
 
     /// CHECK: kernel-owned policy header.
     #[account(mut)]
@@ -430,8 +462,7 @@ pub struct SettleStub<'info> {
     #[account(mut)]
     pub product_registry_entry: Account<'info, ProductRegistryEntry>,
 
-    /// CHECK: kernel PDA.
-    pub protocol_config: UncheckedAccount<'info>,
+    pub protocol_config: Account<'info, ProtocolConfig>,
 
     /// CHECK: kernel PDA.
     #[account(mut)]

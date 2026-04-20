@@ -33,6 +33,8 @@ pub struct SetProtocolConfigArgs {
     pub premium_splits_bps: Option<PremiumSplitsBps>,
     pub sol_autocall_quote_config_bps: Option<SolAutocallQuoteConfigBps>,
     pub treasury_destination: Option<Pubkey>,
+    pub hedge_max_slippage_bps_cap: Option<u16>,
+    pub hedge_defund_destination: Option<Pubkey>,
 }
 
 #[derive(Accounts)]
@@ -105,6 +107,13 @@ pub fn handler(ctx: Context<SetProtocolConfig>, args: SetProtocolConfigArgs) -> 
         require_keys_neq!(dst, Pubkey::default(), HalcyonError::DestinationNotAllowed);
         cfg.treasury_destination = dst;
     }
+    if let Some(cap) = args.hedge_max_slippage_bps_cap {
+        cfg.hedge_max_slippage_bps_cap = cap;
+    }
+    if let Some(dst) = args.hedge_defund_destination {
+        require_keys_neq!(dst, Pubkey::default(), HalcyonError::DestinationNotAllowed);
+        cfg.hedge_defund_destination = dst;
+    }
 
     require!(cfg.utilization_cap_bps <= 10_000, KernelError::BadConfig);
     require!(cfg.senior_cooldown_secs >= 0, KernelError::BadConfig);
@@ -127,6 +136,10 @@ pub fn handler(ctx: Context<SetProtocolConfig>, args: SetProtocolConfigArgs) -> 
     require!(cfg.sigma_floor_annualised_s6 > 0, KernelError::BadConfig);
     require!(
         cfg.sol_autocall_quote_config_valid(),
+        KernelError::BadConfig
+    );
+    require!(
+        cfg.hedge_max_slippage_bps_cap_valid(),
         KernelError::BadConfig
     );
 

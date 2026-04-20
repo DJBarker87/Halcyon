@@ -4382,6 +4382,7 @@ impl FactoredWorstOfModel {
         })
     }
 
+    #[cfg(not(target_os = "solana"))]
     pub fn onchain_v1_replay_diagnostic(
         &self,
         sigma_common: f64,

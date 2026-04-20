@@ -43,13 +43,20 @@ Every struct has `u8 version` at offset 0 for in-place upgrade migration.
 | k12_correction_sha256            | [u8; 32] | 32    | 125    |
 | daily_ki_correction_sha256       | [u8; 32] | 32    | 157    |
 | treasury_destination             | Pubkey   | 32    | 189    |
-| last_update_ts                   | i64      | 8     | 221    |
-| **TOTAL**                        |          | **229** |      |
+| hedge_max_slippage_bps_cap       | u16      | 2     | 221    |
+| hedge_defund_destination         | Pubkey   | 32    | 223    |
+| last_update_ts                   | i64      | 8     | 255    |
+| **TOTAL**                        |          | **263** |      |
 
 `treasury_destination` is the only USDC account `sweep_fees` is allowed to
-route to — K5 allowlist. Admin rotates via `set_protocol_config`; each
+route to — K5 allowlist. `hedge_defund_destination` plays the same role for
+`defund_hedge_sleeve`. Admin rotates each via `set_protocol_config`; every
 rotation emits `ConfigUpdated` so a compromised admin cannot exfiltrate in
 one observable state change.
+
+`hedge_max_slippage_bps_cap` is the protocol-level ceiling on keeper-supplied
+`PrepareHedgeSwapArgs.max_slippage_bps`. Bounds the blast radius of a
+compromised hedge-keeper key.
 
 ## ProductRegistryEntry — one per registered product
 
@@ -65,12 +72,19 @@ one observable state change.
 | engine_version            | u16     | 2     | 83     |
 | init_terms_discriminator  | [u8; 8] | 8     | 85     |
 | total_reserved            | u64     | 8     | 93     |
-| last_update_ts            | i64     | 8     | 101    |
-| **TOTAL**                 |         | **109** |      |
+| requires_principal_escrow | bool    | 1     | 101    |
+| last_update_ts            | i64     | 8     | 102    |
+| **TOTAL**                 |         | **110** |      |
 
 `total_reserved` is the running per-product sum of `max_liability` across
 Quoted-or-Active policies. `reserve_and_issue` increments, `apply_settlement`
 and `reap_quoted` decrement. Gates `global_risk_cap` — K9 fix.
+
+`requires_principal_escrow` (L3-H1) is set at `register_product` and
+determines whether `reserve_and_issue` demands `vault_deposit_amount ≥
+notional` (principal-backed: SOL Autocall) or only `≥ premium_vault_portion`
+(synthetic: IL Protection). Immutable after registration — admin must
+re-register to change.
 
 ## VaultState — singleton
 

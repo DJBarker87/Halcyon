@@ -47,12 +47,18 @@ pub struct DefundHedgeSleeve<'info> {
     )]
     pub hedge_sleeve_usdc: Account<'info, TokenAccount>,
 
+    /// M-2 — destination is pinned to `protocol_config.hedge_defund_destination`.
+    /// A compromised admin signature cannot route sleeve capital to an
+    /// arbitrary address in one instruction; the admin must first rotate the
+    /// destination via `set_protocol_config` (emits `ConfigUpdated`) and only
+    /// then defund — two observable state changes, not one.
     #[account(
         mut,
-        constraint = admin_usdc.mint == usdc_mint.key(),
-        constraint = admin_usdc.owner == admin.key(),
+        constraint = destination_usdc.mint == usdc_mint.key(),
+        constraint = destination_usdc.key() == protocol_config.hedge_defund_destination
+            @ HalcyonError::DestinationNotAllowed,
     )]
-    pub admin_usdc: Account<'info, TokenAccount>,
+    pub destination_usdc: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
 }
@@ -64,14 +70,18 @@ pub fn handler(
 ) -> Result<()> {
     require!(amount > 0, HalcyonError::BelowMinimumTrade);
 
+    // M-2 — cooldown applies to every call, including the first. A compromised
+    // admin key cannot drain the sleeve in one transaction immediately after
+    // funding; at least `HEDGE_SLEEVE_DEFUND_COOLDOWN_SECS` must elapse since
+    // the more recent of the last fund or last defund.
     let now = Clock::get()?.unix_timestamp;
-    let last_defunded_ts = ctx.accounts.hedge_sleeve.last_defunded_ts;
-    if last_defunded_ts != 0 {
-        require!(
-            now.saturating_sub(last_defunded_ts) >= HEDGE_SLEEVE_DEFUND_COOLDOWN_SECS,
-            HalcyonError::CooldownNotElapsed
-        );
-    }
+    let last_defund_ts = ctx.accounts.hedge_sleeve.last_defunded_ts;
+    let last_fund_ts = ctx.accounts.hedge_sleeve.last_funded_ts;
+    let gate_ts = last_defund_ts.max(last_fund_ts);
+    require!(
+        gate_ts > 0 && now.saturating_sub(gate_ts) >= HEDGE_SLEEVE_DEFUND_COOLDOWN_SECS,
+        HalcyonError::CooldownNotElapsed
+    );
 
     let bump = ctx.bumps.hedge_sleeve;
     let signer_seeds: &[&[&[u8]]] = &[&[seeds::HEDGE_SLEEVE, product_program_id.as_ref(), &[bump]]];
@@ -80,7 +90,7 @@ pub fn handler(
             ctx.accounts.token_program.to_account_info(),
             Transfer {
                 from: ctx.accounts.hedge_sleeve_usdc.to_account_info(),
-                to: ctx.accounts.admin_usdc.to_account_info(),
+                to: ctx.accounts.destination_usdc.to_account_info(),
                 authority: ctx.accounts.hedge_sleeve.to_account_info(),
             },
             signer_seeds,

@@ -46,6 +46,14 @@ pub struct Args {
     pub sol_autocall_issuer_margin_bps: u16,
     #[arg(long)]
     pub treasury_destination: Option<String>,
+    /// H-1 — protocol-level cap on keeper-supplied hedge slippage (bps).
+    /// Must be > 0 and ≤ 10_000. Default 100 bps = 1%.
+    #[arg(long, default_value_t = 100)]
+    pub hedge_max_slippage_bps_cap: u16,
+    /// M-2 — destination USDC ATA for `defund_hedge_sleeve`. Defaults to
+    /// the admin's canonical USDC ATA, matching the pre-fix behavior.
+    #[arg(long)]
+    pub hedge_defund_destination: Option<String>,
 }
 
 pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
@@ -65,6 +73,10 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
 
     let treasury_destination = match args.treasury_destination.as_deref() {
         Some(dest) => CliContext::parse_pubkey("treasury_destination", dest)?,
+        None => pda::associated_token_account(&admin.pubkey(), &usdc_mint),
+    };
+    let hedge_defund_destination = match args.hedge_defund_destination.as_deref() {
+        Some(dest) => CliContext::parse_pubkey("hedge_defund_destination", dest)?,
         None => pda::associated_token_account(&admin.pubkey(), &usdc_mint),
     };
     let ix = kernel::initialize_protocol_ix(
@@ -87,6 +99,8 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
             sol_autocall_quote_share_bps: args.sol_autocall_quote_share_bps,
             sol_autocall_issuer_margin_bps: args.sol_autocall_issuer_margin_bps,
             treasury_destination,
+            hedge_max_slippage_bps_cap: args.hedge_max_slippage_bps_cap,
+            hedge_defund_destination,
         },
     );
     let signature = tx::send_instructions(ctx.rpc.as_ref(), admin, vec![ix]).await?;
@@ -97,5 +111,10 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     println!("  vault_usdc={vault_usdc}");
     println!("  treasury_usdc={treasury_usdc}");
     println!("  treasury_destination={treasury_destination}");
+    println!(
+        "  hedge_max_slippage_bps_cap={}",
+        args.hedge_max_slippage_bps_cap
+    );
+    println!("  hedge_defund_destination={hedge_defund_destination}");
     Ok(())
 }

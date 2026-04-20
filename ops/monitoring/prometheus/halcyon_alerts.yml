@@ -1,0 +1,47 @@
+groups:
+  - name: halcyon-layer5
+    rules:
+      - alert: HalcyonRpcEndpointDown
+        expr: probe_success{job="halcyon-rpc"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Halcyon RPC endpoint probe failed"
+          description: "A keeper RPC endpoint has been unreachable for more than 2 minutes."
+
+      - alert: HalcyonKeeperHeartbeatStale
+        expr: time() - halcyon_keeper_last_success_timestamp_seconds > (halcyon_keeper_expected_cadence_seconds * 2)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Keeper heartbeat stale"
+          description: "A Halcyon keeper has not reported a successful run within 2x its expected cadence."
+
+      - alert: HalcyonPythFeedStale
+        expr: halcyon_pyth_feed_age_seconds > halcyon_pyth_feed_staleness_cap_seconds
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pyth feed stale"
+          description: "A Halcyon oracle feed has exceeded its configured staleness cap."
+
+      - alert: HalcyonVaultUtilizationHigh
+        expr: halcyon_vault_utilization_ratio > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Vault utilization above 85%"
+          description: "Reserved liability is above the launch warning threshold."
+
+      - alert: HalcyonApplySettlementFailure
+        expr: increase(halcyon_apply_settlement_failures_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Settlement failure detected"
+          description: "At least one settlement path has failed within the last 5 minutes."

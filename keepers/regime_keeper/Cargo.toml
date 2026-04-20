@@ -4,4 +4,25 @@ version = "0.1.0"
 edition = "2021"
 description = "fvol regime signal keeper for IL Protection. Logic lands in L3."
 
+[lib]
+doctest = false
+
+[[bin]]
+name = "regime_keeper"
+path = "src/main.rs"
+
 [dependencies]
+tokio = { version = "1.47", features = ["full"] }
+solana-sdk = "=2.3.1"
+solana-rpc-client = "=2.3.1"
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+halcyon_client_sdk = { path = "../../crates/halcyon_client_sdk" }
+halcyon_il_protection = { path = "../../programs/halcyon_il_protection", features = ["cpi"] }
+halcyon_il_quote = { path = "../../crates/halcyon_il_quote" }
+halcyon_kernel = { path = "../../programs/halcyon_kernel", features = ["cpi"] }

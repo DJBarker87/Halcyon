@@ -98,6 +98,22 @@ pub mod feed_ids {
     pub const SOL_USD: [u8; 32] =
         hex_literal("ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d");
 
+    /// USDC / USD.
+    pub const USDC_USD: [u8; 32] =
+        hex_literal("eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a");
+
+    /// SPY / USD.
+    pub const SPY_USD: [u8; 32] =
+        hex_literal("19e09bb805456ada3979a7d1cbb4b6d63babc3a0f8e8a9509f68afa5c4c11cd5");
+
+    /// QQQ / USD.
+    pub const QQQ_USD: [u8; 32] =
+        hex_literal("9695e2b96ea7b3859da9ed25b7a46a920a776e2fdae19a7bcfdf2b219230452d");
+
+    /// IWM / USD.
+    pub const IWM_USD: [u8; 32] =
+        hex_literal("eff690a187797aa225723345d4612abec0bf0cec1ae62347c0e7b1905d730879");
+
     const fn hex_literal(input: &str) -> [u8; 32] {
         let bytes = input.as_bytes();
         assert!(bytes.len() == 64, "feed id hex must be 64 chars");

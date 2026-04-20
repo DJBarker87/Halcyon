@@ -20,7 +20,16 @@ pub mod pricing;
 pub mod state;
 
 pub use errors::SolAutocallError;
-pub use instructions::{accept_quote::*, preview_quote::*, record_observation::*, settle::*};
+// L-7 — same Anchor macro-expansion constraint as in the kernel's
+// `instructions/*` mod.rs files. See notes there.
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::accept_quote::*;
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::preview_quote::*;
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::record_observation::*;
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::settle::*;
 pub use state::*;
 
 declare_id!("6DfpE7MEx1K1CeiQuw8Q61Empamcuknv9Tc79xtJKae8");

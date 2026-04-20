@@ -46,10 +46,15 @@ pub struct PayCoupon<'info> {
     )]
     pub coupon_vault_usdc: Account<'info, TokenAccount>,
 
+    /// M-1 — canonical-ATA equality in addition to owner match. Pins coupon
+    /// payouts to the policy owner's canonical USDC ATA.
     #[account(
         mut,
         constraint = buyer_usdc.mint == usdc_mint.key(),
         constraint = buyer_usdc.owner == policy_header.owner @ HalcyonError::ProductAuthorityMismatch,
+        constraint = buyer_usdc.key()
+            == get_associated_token_address(&policy_header.owner, &usdc_mint.key())
+            @ HalcyonError::ProductAuthorityMismatch,
     )]
     pub buyer_usdc: Account<'info, TokenAccount>,
 

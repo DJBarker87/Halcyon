@@ -226,21 +226,31 @@ consumes and clears it.
 
 ## AggregateDelta — flagship only
 
-| Field                 | Type     | Bytes | Offset |
-|-----------------------|----------|-------|--------|
-| version               | u8       | 1     | 0      |
-| product_program_id    | Pubkey   | 32    | 1      |
-| delta_spy_s6          | i64      | 8     | 33     |
-| delta_qqq_s6          | i64      | 8     | 41     |
-| delta_iwm_s6          | i64      | 8     | 49     |
-| merkle_root           | [u8; 32] | 32    | 57     |
-| spot_spy_s6           | i64      | 8     | 89     |
-| spot_qqq_s6           | i64      | 8     | 97     |
-| spot_iwm_s6           | i64      | 8     | 105    |
-| live_note_count       | u32      | 4     | 113    |
-| last_update_slot      | u64      | 8     | 117    |
-| last_update_ts        | i64      | 8     | 125    |
-| **TOTAL**             |          | **133** |      |
+v2 (audit L5 remediation, findings F2/F4a/F4b): added `pyth_publish_times`
+(per-feed monotonic write guard), `sequence` (replay-defeating counter),
+`keeper_signature` (on-chain Ed25519 verification of the canonical
+signed bytes), and `publication_cid` (IPFS pointer to the off-chain
+per-note artifact whose Merkle root matches `merkle_root`).
+
+| Field                 | Type      | Bytes | Offset |
+|-----------------------|-----------|-------|--------|
+| version               | u8        | 1     | 0      |
+| product_program_id    | Pubkey    | 32    | 1      |
+| delta_spy_s6          | i64       | 8     | 33     |
+| delta_qqq_s6          | i64       | 8     | 41     |
+| delta_iwm_s6          | i64       | 8     | 49     |
+| merkle_root           | [u8; 32]  | 32    | 57     |
+| spot_spy_s6           | i64       | 8     | 89     |
+| spot_qqq_s6           | i64       | 8     | 97     |
+| spot_iwm_s6           | i64       | 8     | 105    |
+| live_note_count       | u32       | 4     | 113    |
+| last_update_slot      | u64       | 8     | 117    |
+| last_update_ts        | i64       | 8     | 125    |
+| pyth_publish_times    | [i64; 3]  | 24    | 133    |
+| sequence              | u64       | 8     | 157    |
+| keeper_signature      | [u8; 64]  | 64    | 165    |
+| publication_cid       | [u8; 64]  | 64    | 229    |
+| **TOTAL**             |           | **293** |      |
 
 ## Regression — flagship only
 

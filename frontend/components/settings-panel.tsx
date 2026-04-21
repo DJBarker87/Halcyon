@@ -1,88 +1,26 @@
 "use client";
 
 import { useEffect } from "react";
-import { RotateCcw, X } from "lucide-react";
+import { CheckCircle2, ShieldCheck, X } from "lucide-react";
 
+import { READ_ONLY_DISPLAY_FIELDS } from "@/lib/allowed-configs";
 import { cn } from "@/lib/format";
 import { useRuntimeConfig } from "@/lib/runtime-config";
-import { isFieldLocked as fieldLockedForCluster } from "@/lib/runtime-config-schema";
-import type { ClusterConfig, ClusterId } from "@/lib/types";
+import type { ClusterId } from "@/lib/types";
 
 interface SettingsPanelProps {
   open: boolean;
   onClose: () => void;
 }
 
-const CLUSTERS: ClusterId[] = ["localnet", "devnet", "mainnet"];
-
-const GENERAL_FIELDS: Array<{ key: keyof ClusterConfig; label: string; placeholder?: string }> = [
-  { key: "rpcUrl", label: "RPC URL", placeholder: "https://api.devnet.solana.com" },
-  { key: "kernelProgramId", label: "Kernel program" },
-];
-
-const PRODUCT_FIELDS: Array<{
-  title: string;
-  fields: Array<{ key: keyof ClusterConfig; label: string }>;
-}> = [
-  {
-    title: "Programs",
-    fields: [
-      { key: "flagshipProgramId", label: "Flagship program" },
-      { key: "ilProtectionProgramId", label: "IL Protection program" },
-      { key: "solAutocallProgramId", label: "SOL Autocall program" },
-    ],
-  },
-  {
-    title: "Pyth / oracle accounts",
-    fields: [
-      { key: "pythSpy", label: "SPY price account" },
-      { key: "pythQqq", label: "QQQ price account" },
-      { key: "pythIwm", label: "IWM price account" },
-      { key: "pythSol", label: "SOL price account" },
-      { key: "pythUsdc", label: "USDC price account" },
-    ],
-  },
-];
-
-function ConfigField({
-  label,
-  value,
-  placeholder,
-  disabled = false,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  placeholder?: string;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-}) {
-  const id = `config-${label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
-  return (
-    <div className="space-y-2">
-      <label htmlFor={id} className="field-label">
-        {label}
-      </label>
-      <input
-        id={id}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        autoComplete="off"
-        spellCheck={false}
-        disabled={disabled}
-        className={cn(
-          "field font-mono text-[12px]",
-          disabled && "cursor-not-allowed opacity-60",
-        )}
-      />
-    </div>
-  );
-}
-
 export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
-  const { cluster, setCluster, current, currentHasOverrides, updateCurrent, resetCurrent } =
-    useRuntimeConfig();
+  const {
+    cluster,
+    current,
+    allowedConfigs,
+    requestClusterChange,
+    genesisCheck,
+  } = useRuntimeConfig();
 
   useEffect(() => {
     if (!open) return;
@@ -101,7 +39,7 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
         type="button"
         aria-label="Close runtime config"
         onClick={onClose}
-        className="absolute inset-0 bg-background/80 backdrop-blur-sm"
+        className="absolute inset-0 bg-ink/40 backdrop-blur-sm"
       />
 
       <aside
@@ -115,13 +53,12 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
             <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
               Runtime Config
             </div>
-            <h2 className="mt-1 text-xl font-semibold text-foreground">Cluster and account wiring</h2>
+            <h2 className="mt-1 text-xl font-semibold text-foreground">Cluster selection</h2>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              Browser-local overrides stay visible in the shell. Mainnet only allows an RPC override here;
-              program IDs and oracle accounts stay pinned to the environment.
+              Program IDs and oracle accounts are pinned to the build and cannot be changed
+              in-browser. Switching cluster loads the allowlisted wiring for that target.
             </p>
           </div>
-
           <button
             type="button"
             onClick={onClose}
@@ -132,81 +69,89 @@ export function SettingsPanel({ open, onClose }: SettingsPanelProps) {
         </div>
 
         <div className="overflow-y-auto px-5 py-5">
-          <div className="flex flex-wrap gap-2">
-            {CLUSTERS.map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setCluster(value)}
-                className={cn(
-                  "inline-flex min-h-10 items-center rounded-md border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                  cluster === value
-                    ? "border-primary/30 bg-primary/10 text-foreground"
-                    : "border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground",
-                )}
-              >
-                {value}
-              </button>
-            ))}
-
-            <button
-              type="button"
-              onClick={resetCurrent}
-              className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          <section className="space-y-3">
+            <h3 className="text-sm font-semibold text-foreground">Cluster</h3>
+            <div
+              role="radiogroup"
+              aria-label="Cluster"
+              className="flex flex-wrap gap-2"
             >
-              <RotateCcw className="h-4 w-4" aria-hidden="true" />
-              Reset {cluster}
-            </button>
-          </div>
-
-          <section className="mt-6 space-y-4 border-b border-border pb-6">
-            {currentHasOverrides && (
-              <div className="rounded-md border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-foreground">
-                Browser-local overrides are active for this cluster. Review them before signing.
-              </div>
-            )}
-
-            {cluster === "mainnet" && (
-              <div className="rounded-md border border-border bg-background/70 p-4 text-sm text-muted-foreground">
-                Mainnet program and oracle IDs are locked to environment values. Only the RPC URL can be
-                overridden in-browser.
-              </div>
-            )}
-
-            <div>
-              <h3 className="text-sm font-semibold text-foreground">Core</h3>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                The RPC and kernel are required on every page. Product pages add their own program and feed
-                requirements.
-              </p>
+              {allowedConfigs.map((entry) => (
+                <button
+                  key={entry.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={cluster === entry.id}
+                  onClick={() => requestClusterChange(entry.id as ClusterId)}
+                  className={cn(
+                    "inline-flex min-h-10 items-center rounded-md border px-3 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                    cluster === entry.id
+                      ? "border-primary/30 bg-primary/10 text-foreground"
+                      : "border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground",
+                  )}
+                >
+                  {entry.label}
+                </button>
+              ))}
             </div>
-
-            {GENERAL_FIELDS.map((field) => (
-              <ConfigField
-                key={field.key}
-                label={field.label}
-                value={current[field.key]}
-                placeholder={field.placeholder}
-                disabled={fieldLockedForCluster(cluster, field.key)}
-                onChange={(value) => updateCurrent(field.key, value)}
-              />
-            ))}
           </section>
 
-          {PRODUCT_FIELDS.map((group) => (
-            <section key={group.title} className="space-y-4 border-b border-border py-6 last:border-b-0 last:pb-0">
-              <h3 className="text-sm font-semibold text-foreground">{group.title}</h3>
-              {group.fields.map((field) => (
-                <ConfigField
-                  key={field.key}
-                  label={field.label}
-                  value={current[field.key]}
-                  disabled={fieldLockedForCluster(cluster, field.key)}
-                  onChange={(value) => updateCurrent(field.key, value)}
-                />
-              ))}
-            </section>
-          ))}
+          <section className="mt-6 space-y-3 border-t border-border pt-6">
+            <h3 className="text-sm font-semibold text-foreground">Cluster integrity</h3>
+            <div
+              role="status"
+              className={cn(
+                "rounded-md border p-3 text-sm",
+                genesisCheck.status === "ok" &&
+                  "border-success-700/30 bg-success-50 text-success-700",
+                genesisCheck.status === "error" &&
+                  "border-error-500/40 bg-error-50 text-error-700",
+                genesisCheck.status === "pending" &&
+                  "border-border bg-n-50 text-muted-foreground",
+                genesisCheck.status === "skipped" &&
+                  "border-border bg-n-50 text-muted-foreground",
+              )}
+            >
+              {genesisCheck.status === "ok" && (
+                <span className="inline-flex items-center gap-2">
+                  <CheckCircle2 className="h-4 w-4 text-success-700" aria-hidden="true" />
+                  RPC genesis matches the {current.id} cluster.
+                </span>
+              )}
+              {genesisCheck.status === "pending" && "Verifying RPC cluster…"}
+              {genesisCheck.status === "skipped" && `Genesis check skipped (${genesisCheck.reason}).`}
+              {genesisCheck.status === "error" && (
+                <span className="inline-flex items-start gap-2">
+                  <ShieldCheck className="mt-0.5 h-4 w-4 text-error-700" aria-hidden="true" />
+                  {genesisCheck.reason}
+                </span>
+              )}
+            </div>
+          </section>
+
+          <section className="mt-6 space-y-3 border-t border-border pt-6">
+            <h3 className="text-sm font-semibold text-foreground">Pinned wiring</h3>
+            <p className="text-sm leading-6 text-muted-foreground">
+              All values below are baked into this build. To change them, rebuild the frontend
+              with different <code className="rounded bg-secondary px-1">NEXT_PUBLIC_*</code> env
+              values.
+            </p>
+            <dl className="grid grid-cols-1 gap-3">
+              {READ_ONLY_DISPLAY_FIELDS.map(({ key, label }) => {
+                const value = current[key];
+                return (
+                  <div key={key} className="space-y-1">
+                    <dt className="text-xs uppercase tracking-[0.1em] text-muted-foreground">
+                      {label}
+                    </dt>
+                    <dd className="break-all rounded-md border border-border bg-background px-3 py-2 font-mono text-[12px] text-foreground">
+                      {value ? value : <span className="text-muted-foreground">not set</span>}
+                    </dd>
+                  </div>
+                );
+              })}
+            </dl>
+          </section>
         </div>
       </aside>
     </div>

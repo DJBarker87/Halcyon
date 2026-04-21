@@ -1,44 +1,53 @@
-# Colosseum Final
+# Halcyon
 
-Minimal Halcyon export for the two retained Colosseum runtime paths:
+**Quant math that fits on-chain.**
 
-- `IL Protection` on the Rust NIG European engine plus terminal settlement.
-- `SOL Autocall` on the hedged autocall quote and replay stack.
+On-chain structured products on Solana. Every coupon, every delta, every risk surface computed by a Rust program — not by an off-chain pricing service.
 
-Source-of-truth product docs carried into this repo:
+## The flagship product
 
-- `halcyon_whitepaper_colosseum.md`
-- `docs/halcyon_flagship_autocall_v1_spec.md`
-- `docs/il_hedge_challenger.md`
-- `docs/halcyon_sol_autocall_v1_spec.md`
+**Equity Autocall** — an 18-month worst-of-3 autocallable note on SPY, QQQ, and IWM (tokenized via Backed Finance). You buy it in USDC; the program pays you a monthly coupon targeting roughly 15% annualised while the worst performer stays above its entry level; the note calls you out early every quarter if the basket is healthy; at maturity you get your principal back unless the worst performer has fallen past a 20% knock-in barrier.
 
-## Workspace
+What's new: **the coupon you see is the coupon you get, and anyone can re-run the pricer.** No market-maker quote feed. No custodial oracle. No trust.
 
-- `solmath-core`: fixed-point math dependency kept local.
-- `crates/halcyon-quote`: trimmed product runtime crate.
-- `samples/`: JSON payloads for both product CLIs.
-- `frontend/`: Layer 5 production frontend copy wired to Anchor IDLs and wallet adapter.
-- `app/`: legacy WASM demo kept for presentation-only use.
+Two companion products live in the same kernel:
 
-## Layer 5 artifacts
+- **IL Protection** — 30-day impermanent-loss cover for Raydium SOL/USDC LPs, priced with a NIG-distribution model.
+- **SOL Autocall** — 16-day principal-backed note on SOL with 8 observations.
 
-- `ARCHITECTURE.md`
-- `THREAT_MODEL.md`
-- `docs/audit/`
-- `docs/runbooks/`
-- `ops/monitoring/`
-- `config/examples/`
+All three share one underwriting vault and one kernel program.
+
+## Why this is different
+
+Every previous on-chain structured-products protocol — Ribbon, Cega, Friktion — died from the same failure mode: the pricing lived off-chain, buyers had to trust a quote oracle or a market-maker intent, and the mechanism collapsed the moment that trust evaporated. Halcyon's pricing runs *inside the Solana program* in fixed-point integer arithmetic, deterministic across every validator. You can verify any quote by calling `simulateTransaction` against the program yourself.
+
+See `halcyon_whitepaper_v9.md` for the model, `integration_architecture.md` for how it maps to programs and accounts, and `ARCHITECTURE.md` for the kernel shape.
+
+## Repo layout
+
+- `solmath-core/` — fixed-point math library (`ln`, `exp`, `sqrt`, Bessel K₁, bivariate normal CDF, NIG density).
+- `crates/halcyon_flagship_quote/`, `halcyon_il_quote/`, `halcyon_sol_autocall_quote/` — per-product pricing crates.
+- `programs/halcyon_kernel/` — shared vault, policy, and fee-ledger program.
+- `programs/halcyon_flagship_autocall/`, `halcyon_il_protection/`, `halcyon_sol_autocall/` — product programs.
+- `keepers/` — off-chain processes that write oracle / regression / aggregate-delta state and execute hedges.
+- `frontend/` — Next.js app; the surface Colosseum judges see.
+- `app/` — earlier WASM demo; useful as a wallet-free showcase.
+- `samples/` — JSON payloads for the CLI smoke tests.
+- `docs/` — audit notes, runbooks, product specs.
 
 ## Run
 
 ```bash
-make test
-make il-hedge
-make sol-autocall
-make frontend-build
-make frontend-e2e
+make test              # pricing-crate smoke tests
+make il-hedge          # run the IL CLI against a sample
+make sol-autocall      # run the SOL Autocall CLI against a sample
+make frontend-build    # build the Next.js app
+make frontend-e2e      # run Playwright tests
 ```
 
-The IL CLI writes a quote plus optional terminal settlement to an output JSON file.
+The IL and SOL Autocall CLIs each emit a JSON diagnostics file that includes the quote, the settlement path, and a replay result. These are the smallest end-to-end exercises of the on-chain pricing that don't require a running validator.
 
-The SOL autocall CLI writes quote diagnostics plus a replay result to an output JSON file.
+## Status
+
+- Devnet: deployed, demoable.
+- Mainnet: programs are audit-frozen; flagship stays paused to public issuance until the hedge keeper completes a successful devnet rebalance cycle end-to-end (see `docs/audit/OPEN_QUESTIONS.md`).

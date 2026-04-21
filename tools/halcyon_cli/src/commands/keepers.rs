@@ -110,9 +110,6 @@ async fn fire_regime(ctx: &CliContext, args: FireRegimeArgs) -> Result<()> {
         halcyon_kernel::WriteRegimeSignalArgs {
             product_program_id: halcyon_il_protection::ID,
             fvol_s6,
-            regime: regime.regime as u8,
-            sigma_multiplier_s6: regime.sigma_multiplier_s6,
-            sigma_floor_annualised_s6: regime.sigma_floor_annualised_s6,
         },
     );
     let signature = tx::send_instructions(ctx.rpc.as_ref(), keeper, vec![ix]).await?;

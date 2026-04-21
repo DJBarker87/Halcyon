@@ -90,6 +90,42 @@ pub fn read_pyth_price(
     }
 }
 
+/// Read a fully verified price update whose `publish_time` must fall inside a
+/// caller-specified observation window.
+///
+/// Unlike [`read_pyth_price`], this helper does not compare the update against
+/// the current clock. It exists for scheduled observations that must replay a
+/// specific close timestamp using a historical, fully verified price update.
+#[inline]
+pub fn read_pyth_price_in_range(
+    feed_account: &AccountInfo,
+    feed_id: &[u8; 32],
+    expected_owner: &Pubkey,
+    min_publish_ts: i64,
+    max_publish_ts: i64,
+) -> Result<PriceSnapshot> {
+    #[cfg(feature = "pyth-pull")]
+    {
+        pyth::read_pyth_price_in_range(
+            feed_account,
+            feed_id,
+            expected_owner,
+            min_publish_ts,
+            max_publish_ts,
+        )
+    }
+    #[cfg(feature = "mock-pyth")]
+    {
+        mock::read_pyth_price_in_range(
+            feed_account,
+            feed_id,
+            expected_owner,
+            min_publish_ts,
+            max_publish_ts,
+        )
+    }
+}
+
 /// Canonical Pyth feed ids used by Halcyon products. Mainnet feed ids per
 /// <https://www.pyth.network/developers/price-feed-ids>; devnet uses the same
 /// feed id under the devnet Pyth receiver.

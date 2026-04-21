@@ -1,0 +1,14 @@
+[Unit]
+Description=Halcyon keeper fleet
+Documentation=https://github.com/DJB8787/colosseumfinal/blob/main/docs/runbooks/keeper_hosting.md
+Wants=halcyon-delta-keeper.service \
+      halcyon-hedge-keeper.service \
+      halcyon-regression-keeper.service \
+      halcyon-regime-keeper.service \
+      halcyon-observation-keeper.service
+# flagship-hedge-keeper is intentionally omitted from Wants= until its
+# live-submit path lands. Add it here once unmasked and validated on
+# devnet end-to-end.
+
+[Install]
+WantedBy=multi-user.target

@@ -13,7 +13,6 @@ import {
   type Commitment,
   type GetProgramAccountsFilter,
 } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from "@solana/spl-token";
 import bs58 from "bs58";
 
 import flagshipIdlJson from "../../target/idl/halcyon_flagship_autocall.json";
@@ -21,8 +20,24 @@ import ilIdlJson from "../../target/idl/halcyon_il_protection.json";
 import kernelIdlJson from "../../target/idl/halcyon_kernel.json";
 import solIdlJson from "../../target/idl/halcyon_sol_autocall.json";
 import { enumTag, field, toNumber, toStringValue } from "@/lib/format";
-import { isValidRuntimeConfigValue } from "@/lib/runtime-config-schema";
 import type { ClusterConfig, ProductKind } from "@/lib/types";
+
+function isValidRuntimeConfigValue(key: keyof ClusterConfig, value: string): boolean {
+  if (key === "rpcUrl") {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+  try {
+    new PublicKey(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const flagshipIdl = flagshipIdlJson as Idl;
 const ilIdl = ilIdlJson as Idl;
@@ -70,6 +85,17 @@ const SEEDS = {
 };
 
 const CONFIRMED: Commitment = "confirmed";
+const TOKEN_PROGRAM_ID = new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey(
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+);
+
+function getAssociatedTokenAddressSync(mint: PublicKey, owner: PublicKey) {
+  return PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  )[0];
+}
 
 export interface ProtocolContext {
   kernelProgramId: PublicKey;

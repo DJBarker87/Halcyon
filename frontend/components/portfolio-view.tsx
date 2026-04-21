@@ -34,11 +34,12 @@ function productLabel(kind: ProductKind) {
 
 function statusTone(status: string) {
   const value = status.toLowerCase();
-  if (value === "active" || value === "observed") return "border-cyan-400/30 bg-cyan-400/10 text-cyan-200";
+  if (value === "active" || value === "observed")
+    return "border-halcyonBlue-300 bg-halcyonBlue-50 text-halcyonBlue-700";
   if (value === "settled" || value === "autocalled") {
-    return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
+    return "border-success-700/30 bg-success-50 text-success-700";
   }
-  return "border-border bg-background text-muted-foreground";
+  return "border-border bg-n-50 text-muted-foreground";
 }
 
 function missingPortfolioConfig(current: ReturnType<typeof useRuntimeConfig>["current"]) {
@@ -249,7 +250,7 @@ export function PortfolioView() {
                 {Array.from({ length: 4 }).map((_, index) => (
                   <div
                     key={index}
-                    className="h-24 rounded-md border border-border bg-background/70 motion-safe:animate-pulse"
+                    className="h-24 rounded-md border border-border bg-card motion-safe:animate-pulse"
                   />
                 ))}
               </div>
@@ -263,7 +264,7 @@ export function PortfolioView() {
             )}
 
             {!loading && !error && filtered.length === 0 && (
-              <div className="mt-6 rounded-md border border-border bg-background/70 p-5">
+              <div className="mt-6 rounded-md border border-border bg-card p-5">
                 <div className="text-lg font-semibold text-foreground">No policies found</div>
                 <p className="mt-2 text-sm leading-6 text-muted-foreground">
                   Issue a product from the new frontend pages, then refresh this wallet view.
@@ -274,7 +275,7 @@ export function PortfolioView() {
             {filtered.length > 0 && (
               <div className="mt-6 overflow-x-auto rounded-md border border-border">
                 <table className="min-w-full divide-y divide-border text-left text-sm">
-                  <thead className="bg-background/80 text-muted-foreground">
+                  <thead className="bg-n-50 text-muted-foreground">
                     <tr>
                       <th className="px-4 py-3 font-medium">Policy</th>
                       <th className="px-4 py-3 font-medium">Product</th>
@@ -286,7 +287,7 @@ export function PortfolioView() {
                       <th className="px-4 py-3 font-medium">Expiry</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-border bg-card/30">
+                  <tbody className="divide-y divide-border bg-card">
                     {filtered.map((entry) => (
                       <tr key={entry.policyAddress} className="align-top">
                         <td className="px-4 py-4">

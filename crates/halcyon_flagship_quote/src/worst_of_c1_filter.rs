@@ -5184,7 +5184,18 @@ fn build_triple_pre_by_obs(cfg: &C1FastConfig) -> [Option<TripleCorrectionPre>; 
 }
 
 #[inline(never)]
-fn run_observation_step(
+/// Out-parameter variant of the observation step. Computes the fresh
+/// `next_safe` / `next_knocked` states directly into the caller's slots,
+/// returning only `(first_hit, first_knock_in)`.
+///
+/// This is the frame-budget-friendly shape used by the on-chain
+/// `run_observation_step_inplace` wrapper: by eliminating the 992-byte
+/// sret tuple, the function fits under the SBF 4 KB per-frame cap.
+/// Off-chain callers continue to use the tuple-returning
+/// `run_observation_step` below, which now simply forwards.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn run_observation_step_mut_out(
     safe_state: &FilterState,
     knocked_state: &FilterState,
     transition: &FactorTransition,
@@ -5195,9 +5206,11 @@ fn run_observation_step(
     k_knocked: usize,
     triple_pre: Option<&TripleCorrectionPre>,
     frozen_grid: Option<&crate::frozen_predict_tables::FrozenPredictGrid>,
-) -> (FilterState, FilterState, i64, i64) {
+    out_next_safe: &mut FilterState,
+    out_next_knocked: &mut FilterState,
+) -> (i64, i64) {
     c1_filter_cu_diag(b"obs_safe_pred_start");
-    let (next_safe, new_knocked, safe_first_hit, first_knock_in) = {
+    let (new_knocked, safe_first_hit, first_knock_in) = {
         let safe_pred = if let Some(fg) = frozen_grid {
             predict_state_frozen(
                 safe_state,
@@ -5229,8 +5242,8 @@ fn run_observation_step(
             triple_pre,
         );
         c1_filter_cu_diag(b"obs_safe_update_done");
+        *out_next_safe = safe_update.next_safe;
         (
-            safe_update.next_safe,
             safe_update.new_knocked,
             safe_update.first_hit,
             safe_update.first_knock_in,
@@ -5259,14 +5272,43 @@ fn run_observation_step(
         (knocked_update.next_knocked, knocked_update.first_hit)
     };
     c1_filter_cu_diag(b"obs_merge_start");
-    let next_knocked = merge_states(&new_knocked, &continued_knocked, k_knocked);
+    *out_next_knocked = merge_states(&new_knocked, &continued_knocked, k_knocked);
     c1_filter_cu_diag(b"obs_merge_done");
-    (
-        next_safe,
-        next_knocked,
-        safe_first_hit + knocked_first_hit,
-        first_knock_in,
-    )
+    (safe_first_hit + knocked_first_hit, first_knock_in)
+}
+
+/// Tuple-returning wrapper preserved for off-chain bench/test callers.
+/// Delegates to the out-parameter variant so both paths run the same math.
+#[inline(never)]
+fn run_observation_step(
+    safe_state: &FilterState,
+    knocked_state: &FilterState,
+    transition: &FactorTransition,
+    cfg: &C1FastConfig,
+    obs_idx: usize,
+    drift_shift_total: i64,
+    k_safe: usize,
+    k_knocked: usize,
+    triple_pre: Option<&TripleCorrectionPre>,
+    frozen_grid: Option<&crate::frozen_predict_tables::FrozenPredictGrid>,
+) -> (FilterState, FilterState, i64, i64) {
+    let mut next_safe = FilterState::default();
+    let mut next_knocked = FilterState::default();
+    let (first_hit, first_knock_in) = run_observation_step_mut_out(
+        safe_state,
+        knocked_state,
+        transition,
+        cfg,
+        obs_idx,
+        drift_shift_total,
+        k_safe,
+        k_knocked,
+        triple_pre,
+        frozen_grid,
+        &mut next_safe,
+        &mut next_knocked,
+    );
+    (next_safe, next_knocked, first_hit, first_knock_in)
 }
 
 #[cfg(not(target_os = "solana"))]
@@ -5922,6 +5964,79 @@ fn run_first_observation_step_grad(
     })
 }
 
+/// Obs-1 seed → projected initial state, written through mutable out-params
+/// so the caller's frame doesn't have to hold the `(FilterState,
+/// FilterState, i64, i64)` tuple alongside its own running state.
+/// Returns `(first_hit, first_knock_in)`.
+#[inline(never)]
+fn init_obs1_into(
+    sigma_s6: i64,
+    k_retained: usize,
+    k_knocked: usize,
+    out_safe: &mut FilterState,
+    out_knocked: &mut FilterState,
+) -> (i64, i64) {
+    let (obs1_safe, obs1_knocked, obs1_fh, obs1_fki) = if k_retained >= 10 {
+        crate::obs1_seed_tables::obs1_projected_lookup_k15(sigma_s6)
+    } else {
+        crate::obs1_seed_tables::obs1_projected_lookup(sigma_s6)
+    };
+    if k_retained < 15 {
+        *out_safe = project_state(&obs1_safe, k_retained);
+    } else {
+        *out_safe = obs1_safe;
+    }
+    *out_knocked = project_state(&obs1_knocked, k_knocked);
+    (obs1_fh, obs1_fki)
+}
+
+/// Per-observation step, rewritten to mutate the caller's two FilterStates
+/// in place. The helper reads the current state into stack locals, calls
+/// `run_observation_step` (which materialises the 992-byte sret tuple in
+/// this helper's own frame), then writes the fresh FilterStates back
+/// through the `&mut` inputs.
+///
+/// Math is identical to calling `run_observation_step` directly; the point
+/// of the wrapper is that the 992-byte sret slot lives in *this* helper's
+/// 4 KB frame, not in `quote_c1_filter`'s already-crowded one.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn run_observation_step_inplace(
+    safe_state: &mut FilterState,
+    knocked_state: &mut FilterState,
+    transition: &FactorTransition,
+    cfg: &C1FastConfig,
+    obs_idx: usize,
+    drift_shift_total: i64,
+    k_safe: usize,
+    k_knocked: usize,
+    triple_pre: Option<&TripleCorrectionPre>,
+    frozen_grid: Option<&crate::frozen_predict_tables::FrozenPredictGrid>,
+) -> (i64, i64) {
+    // Copy the current state to local scratch so we can pass `&mut
+    // safe_state` as the out-param while still reading the pre-step
+    // value. The two FilterStates (488 B each) live only in this frame;
+    // the sret-less call into `run_observation_step_mut_out` means
+    // neither this frame nor the callee's frame holds the 992-byte
+    // tuple that the verifier used to flag.
+    let prev_safe = *safe_state;
+    let prev_knocked = *knocked_state;
+    run_observation_step_mut_out(
+        &prev_safe,
+        &prev_knocked,
+        transition,
+        cfg,
+        obs_idx,
+        drift_shift_total,
+        k_safe,
+        k_knocked,
+        triple_pre,
+        frozen_grid,
+        safe_state,
+        knocked_state,
+    )
+}
+
 pub fn quote_c1_filter(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -5938,11 +6053,16 @@ pub fn quote_c1_filter(
     let transition = build_factor_transition(cfg, sigma_s6, drift_diffs);
     c1_filter_cu_diag(b"after_nig_weights");
 
-    // Preload frozen predict grids for obs 1..5 (None if K unsupported)
-    let frozen_grids: [Option<crate::frozen_predict_tables::FrozenPredictGrid>; 5] =
-        core::array::from_fn(|obs_rel| {
+    // Preload frozen predict grids for obs 1..5 (None if K unsupported).
+    // Heap-allocated: the array is 5 × ~136 B = ~680 B, which combined with
+    // the two live `FilterState`s and `FactorTransition` pushes
+    // `quote_c1_filter`'s stack frame past the SBF 4 KB per-frame limit.
+    // Moving this to the heap keeps only an 8-byte pointer on the stack.
+    // One `Box::new` (~200 CU) cost; does not change the math.
+    let frozen_grids: Box<[Option<crate::frozen_predict_tables::FrozenPredictGrid>; 5]> =
+        Box::new(core::array::from_fn(|obs_rel| {
             crate::frozen_predict_tables::frozen_predict_grid_lookup(sigma_s6, obs_rel, k_retained)
-        });
+        }));
 
     let mut safe_state = FilterState::singleton_origin();
     let mut knocked_state = FilterState::default();
@@ -5957,21 +6077,20 @@ pub fn quote_c1_filter(
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
 
         if obs_idx == 0 {
-            let (obs1_safe, obs1_knocked, obs1_fh, obs1_fki) = if k_retained >= 10 {
-                crate::obs1_seed_tables::obs1_projected_lookup_k15(sigma_s6)
-            } else {
-                crate::obs1_seed_tables::obs1_projected_lookup(sigma_s6)
-            };
+            // `init_obs1_into` takes the two FilterState outs by `&mut`
+            // so the caller never has to materialise the obs1_safe /
+            // obs1_knocked tuple on its own stack. Same math, smaller frame.
+            let (obs1_fh, obs1_fki) = init_obs1_into(
+                sigma_s6,
+                k_retained,
+                k_knocked,
+                &mut safe_state,
+                &mut knocked_state,
+            );
             redemption_pv += m6r(NOTIONAL, obs1_fh);
             coupon_annuity += coupon_count * obs1_fh;
             total_ac += obs1_fh;
             total_ki += obs1_fki;
-            if k_retained < 15 {
-                safe_state = project_state(&obs1_safe, k_retained);
-            } else {
-                safe_state = obs1_safe;
-            }
-            knocked_state = project_state(&obs1_knocked, k_knocked);
             c1_filter_cu_diag(b"after_obs1_table");
             continue;
         }
@@ -6005,9 +6124,13 @@ pub fn quote_c1_filter(
             continue;
         }
 
-        let (next_safe, next_knocked, first_hit, first_knock_in) = run_observation_step(
-            &safe_state,
-            &knocked_state,
+        // In-place update: safe_state / knocked_state are read and
+        // re-written inside `run_observation_step_inplace`, which holds
+        // the 992-byte sret tuple in its own frame rather than this
+        // function's already-crowded one.
+        let (first_hit, first_knock_in) = run_observation_step_inplace(
+            &mut safe_state,
+            &mut knocked_state,
             &transition,
             cfg,
             obs_idx,
@@ -6021,8 +6144,6 @@ pub fn quote_c1_filter(
         coupon_annuity += coupon_count * first_hit;
         total_ac += first_hit;
         total_ki += first_knock_in;
-        safe_state = next_safe;
-        knocked_state = next_knocked;
         match obs_idx {
             1 => c1_filter_cu_diag(b"after_obs2"),
             2 => c1_filter_cu_diag(b"after_obs3"),

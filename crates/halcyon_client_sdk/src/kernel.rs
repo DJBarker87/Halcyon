@@ -232,6 +232,7 @@ pub fn write_aggregate_delta_ix(
 ) -> Instruction {
     let (keeper_registry, _) = pda::keeper_registry();
     let (product_registry_entry, _) = pda::product_registry_entry(&args.product_program_id);
+    let (protocol_config, _) = pda::protocol_config();
     let (aggregate_delta, _) = pda::aggregate_delta(&args.product_program_id);
     Instruction {
         program_id: halcyon_kernel::ID,
@@ -239,8 +240,10 @@ pub fn write_aggregate_delta_ix(
             keeper: *keeper,
             keeper_registry,
             product_registry_entry,
+            protocol_config,
             aggregate_delta,
             payer: *payer,
+            instructions_sysvar: anchor_lang::solana_program::sysvar::instructions::ID,
             system_program: system_program::ID,
         }
         .to_account_metas(None),

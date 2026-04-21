@@ -141,7 +141,7 @@ export function VaultView() {
               {Array.from({ length: 4 }).map((_, index) => (
                 <div
                   key={index}
-                  className="h-28 rounded-md border border-border bg-background/70 motion-safe:animate-pulse"
+                  className="h-28 rounded-md border border-border bg-card motion-safe:animate-pulse"
                 />
               ))}
             </div>
@@ -204,7 +204,7 @@ export function VaultView() {
 
                   <div className="mt-6 overflow-x-auto rounded-md border border-border">
                     <table className="min-w-full divide-y divide-border text-left text-sm">
-                      <thead className="bg-background/80 text-muted-foreground">
+                      <thead className="bg-n-50 text-muted-foreground">
                         <tr>
                           <th className="px-4 py-3 font-medium">Product</th>
                           <th className="px-4 py-3 font-medium">Registry active</th>
@@ -216,7 +216,7 @@ export function VaultView() {
                           <th className="px-4 py-3 font-medium">Policies</th>
                         </tr>
                       </thead>
-                      <tbody className="divide-y divide-border bg-card/30">
+                      <tbody className="divide-y divide-border bg-card">
                         {overview.productSummaries.map((summary) => (
                           <tr key={summary.kind}>
                             <td className="px-4 py-4 font-medium text-foreground">{productLabel(summary.kind)}</td>
@@ -282,13 +282,13 @@ export function VaultView() {
                   <section className="surface p-5">
                     <h2 className="text-lg font-semibold text-foreground">Keeper state</h2>
                     <div className="mt-4 space-y-3 text-sm text-muted-foreground">
-                      <div className="rounded-md border border-border bg-background/70 p-3">
+                      <div className="rounded-md border border-border bg-card p-3">
                         Keeper registry {overview.keeperRegistry ? "present" : "not initialized"}
                       </div>
-                      <div className="rounded-md border border-border bg-background/70 p-3">
+                      <div className="rounded-md border border-border bg-card p-3">
                         Lifetime premium received {formatUsdcBaseUnits(field(vaultState ?? {}, "lifetimePremiumReceived"))}
                       </div>
-                      <div className="rounded-md border border-border bg-background/70 p-3">
+                      <div className="rounded-md border border-border bg-card p-3">
                         Vault last update {formatUnix(field(vaultState ?? {}, "lastUpdateTs"))}
                       </div>
                     </div>

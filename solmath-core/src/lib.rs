@@ -49,8 +49,6 @@ mod bessel;
 #[cfg(feature = "transcendental")]
 mod bvn_cdf;
 #[cfg(feature = "transcendental")]
-mod bvn_cdf_ctable;
-#[cfg(feature = "transcendental")]
 mod bvn_cdf_fast;
 #[cfg(feature = "transcendental")]
 mod bvn_cdf_phi2table;
@@ -93,35 +91,9 @@ mod barrier;
 #[cfg(feature = "barrier")]
 mod il_thresholds;
 
-// NIG fat-tail pricing
-#[cfg(feature = "nig")]
-mod nig;
-
-// Heston stochastic volatility
-#[cfg(feature = "heston")]
-mod heston;
-#[cfg(feature = "heston")]
-mod i64_cf;
-
-// SABR stochastic volatility
-#[cfg(feature = "sabr")]
-mod sabr;
-
-// Pool math
-#[cfg(feature = "pool")]
-mod pool;
-
-// Insurance primitives (Gauss-Hermite, Curran, N=3 premium engine)
-#[cfg(feature = "insurance")]
-mod curran_premium;
-#[cfg(feature = "insurance")]
-mod fenton_wilkinson;
+// Insurance primitives (flagship equity-basket + IL Protection support)
 #[cfg(feature = "insurance")]
 pub mod gauss_hermite;
-#[cfg(feature = "insurance")]
-mod lognormal_call;
-#[cfg(feature = "insurance")]
-pub mod n3_cv_premium;
 #[cfg(feature = "insurance")]
 pub mod nig_weights_table;
 #[cfg(feature = "insurance")]
@@ -159,8 +131,6 @@ pub use trig::{cos_fixed, sin_fixed, sincos_fixed};
 
 #[cfg(feature = "transcendental")]
 pub use bvn_cdf::{bvn_cdf, bvn_cdf_hp};
-#[cfg(feature = "transcendental")]
-pub use bvn_cdf_ctable::{bvn_cdf_ctable, CTABLE_IWM_QQQ, CTABLE_IWM_SPY, CTABLE_QQQ_SPY};
 #[cfg(feature = "transcendental")]
 pub use bvn_cdf_fast::{
     bvn_cdf_fast, COEFFS_IWM_QQQ, COEFFS_IWM_SPY, COEFFS_QQQ_SPY, RHO_IWM_QQQ, RHO_IWM_SPY,
@@ -220,51 +190,10 @@ pub use barrier::{barrier_hit_probability, barrier_option, BarrierResult, Barrie
 #[cfg(feature = "barrier")]
 pub use il_thresholds::{compute_il, il_thresholds, verify_il_at_threshold};
 
-// NIG fat-tail pricing
-#[cfg(feature = "nig")]
-pub use nig::nig_call_price;
-
-// Heston stochastic volatility
-#[cfg(feature = "heston")]
-pub use heston::heston_price;
-
-// SABR stochastic volatility
-#[cfg(feature = "sabr")]
-pub use sabr::{
-    sabr_greeks, sabr_implied_vol, sabr_precompute, sabr_price, sabr_vol_at, sabr_z_over_chi_pade,
-    SabrSmile,
-};
-
-// Pool math
-#[cfg(feature = "pool")]
-pub use pool::{
-    fp_to_token_ceil, fp_to_token_floor, n_token_premium, token_to_fp, weighted_pool_swap,
-};
-
 // Insurance
-#[cfg(feature = "insurance")]
-pub use curran_premium::curran_premium;
-#[cfg(feature = "insurance")]
-pub use curran_premium::curran_premium_n3_with_nodes;
-#[cfg(feature = "insurance")]
-pub use curran_premium::curran_premium_n3_with_nodes_basis;
-#[cfg(feature = "insurance")]
-pub use fenton_wilkinson::fenton_wilkinson_fit;
 #[cfg(feature = "insurance")]
 pub use gauss_hermite::{
     GH10_NODES, GH10_WEIGHTS, GL5_NODES, GL5_WEIGHTS, GL7_NODES, GL7_WEIGHTS, INV_SQRT_PI,
-};
-#[cfg(feature = "insurance")]
-pub use lognormal_call::{
-    lognormal_call, lognormal_call_std, lognormal_spread_call, lognormal_spread_call_std,
-};
-#[cfg(feature = "insurance")]
-pub use n3_cv_premium::{
-    analytical_from_eigen, chi2_call, compute_n3_premium, compute_pool_constants,
-    eigendecompose_2x2, n3_cv_correction, n3_cv_premium, n3_cv_setup, n3_cv_setup_from_pda,
-    n3_cv_setup_no_spread, n3_noCV_premium, n3_nocv_777, n3_nocv_975, n3_nocv_shift, n3_tier2_tx1,
-    n3_tier2_tx2, n3_tx1_setup_and_correct, n3_tx2_analytical, spread_split, spread_split_3d_gl5,
-    spread_split_gl5, EigenFull, N3CvSetup, N3Tier2Tx1Result, N3Tx1Result, PoolConstants,
 };
 #[cfg(feature = "insurance")]
 pub use worst_of_ki::{
@@ -327,146 +256,6 @@ mod tests {
             implied_vol(i128::MAX as u128 + 1, SCALE, SCALE, 0, SCALE),
             Err(SolMathError::Overflow)
         );
-    }
-
-    #[test]
-    fn heston_rejects_values_above_i128_range() {
-        assert_eq!(
-            heston_price(
-                i128::MAX as u128 + 1,
-                SCALE,
-                0,
-                SCALE,
-                SCALE / 25,
-                SCALE,
-                SCALE / 25,
-                SCALE / 10,
-                0,
-            ),
-            Err(SolMathError::Overflow)
-        );
-    }
-
-    #[test]
-    fn heston_rejects_invalid_rho() {
-        assert_eq!(
-            heston_price(
-                100 * SCALE,
-                100 * SCALE,
-                SCALE / 20,
-                SCALE,
-                40_000_000_000,
-                2 * SCALE,
-                40_000_000_000,
-                SCALE / 2,
-                SCALE_I,
-            ),
-            Err(SolMathError::DomainError)
-        );
-        assert_eq!(
-            heston_price(
-                100 * SCALE,
-                100 * SCALE,
-                SCALE / 20,
-                SCALE,
-                40_000_000_000,
-                2 * SCALE,
-                40_000_000_000,
-                SCALE / 2,
-                -SCALE_I,
-            ),
-            Err(SolMathError::DomainError)
-        );
-    }
-
-    #[test]
-    fn heston_rejects_values_above_i64_cv_representable_range() {
-        assert_eq!(
-            heston_price(
-                1_000_000_000_000_000_000_000_000_000_000u128,
-                SCALE,
-                0,
-                SCALE,
-                40_000_000_000,
-                2 * SCALE,
-                40_000_000_000,
-                SCALE / 2,
-                -700_000_000_000,
-            ),
-            Err(SolMathError::Overflow)
-        );
-    }
-
-    #[test]
-    fn nig_rejects_values_above_i128_range() {
-        assert_eq!(
-            nig_call_price(i128::MAX as u128 + 1, SCALE, 0, SCALE, 10 * SCALE, 0, SCALE),
-            Err(SolMathError::Overflow)
-        );
-    }
-
-    #[test]
-    fn sabr_rejects_values_above_i128_range() {
-        assert_eq!(
-            sabr_implied_vol(
-                i128::MAX as u128 + 1,
-                SCALE,
-                SCALE,
-                SCALE / 5,
-                SCALE / 2,
-                0,
-                SCALE / 5
-            ),
-            Err(SolMathError::Overflow)
-        );
-    }
-
-    #[test]
-    fn sabr_rejects_beta_above_scale() {
-        assert_eq!(
-            sabr_implied_vol(SCALE, SCALE, SCALE, SCALE / 5, SCALE + 1, 0, SCALE / 5),
-            Err(SolMathError::DomainError)
-        );
-        assert!(matches!(
-            sabr_precompute(SCALE, SCALE, SCALE / 5, SCALE + 1, 0, SCALE / 5),
-            Err(SolMathError::DomainError)
-        ));
-    }
-
-    #[test]
-    fn sabr_rejects_invalid_rho() {
-        assert_eq!(
-            sabr_implied_vol(
-                SCALE,
-                SCALE,
-                SCALE,
-                SCALE / 5,
-                SCALE / 2,
-                SCALE_I,
-                SCALE / 5
-            ),
-            Err(SolMathError::DomainError)
-        );
-        assert_eq!(
-            sabr_implied_vol(
-                SCALE,
-                SCALE,
-                SCALE,
-                SCALE / 5,
-                SCALE / 2,
-                -SCALE_I,
-                SCALE / 5
-            ),
-            Err(SolMathError::DomainError)
-        );
-        assert!(matches!(
-            sabr_precompute(SCALE, SCALE, SCALE / 5, SCALE / 2, SCALE_I, SCALE / 5),
-            Err(SolMathError::DomainError)
-        ));
-        assert!(matches!(
-            sabr_precompute(SCALE, SCALE, SCALE / 5, SCALE / 2, -SCALE_I, SCALE / 5),
-            Err(SolMathError::DomainError)
-        ));
     }
 
     // ── Transcendental errors ──
@@ -1118,58 +907,6 @@ mod tests {
         );
     }
 
-    // ── NIG errors ──
-
-    #[test]
-    fn nig_zero_inputs_is_domain_error() {
-        assert!(nig_call_price(0, SCALE, 0, SCALE, 10 * SCALE, 0, SCALE).is_err());
-        assert!(nig_call_price(SCALE, 0, 0, SCALE, 10 * SCALE, 0, SCALE).is_err());
-    }
-
-    #[test]
-    fn nig_invalid_alpha_beta_is_domain_error() {
-        // alpha=1, beta=2 → α² < β², invalid
-        let s = 100 * SCALE;
-        let k = 100 * SCALE;
-        let alpha = SCALE;
-        let beta = 2 * SCALE_I;
-        let delta = SCALE;
-        assert_eq!(
-            nig_call_price(s, k, 0, SCALE, alpha, beta, delta),
-            Err(SolMathError::DomainError)
-        );
-    }
-
-    // ── Pool math errors ──
-
-    #[test]
-    fn pool_swap_zero_weight_out_is_division_by_zero() {
-        assert_eq!(
-            weighted_pool_swap(SCALE, SCALE, SCALE, 0, SCALE, 0),
-            Err(SolMathError::DivisionByZero)
-        );
-    }
-
-    #[test]
-    fn pool_swap_zero_balance_is_domain_error() {
-        assert_eq!(
-            weighted_pool_swap(0, SCALE, SCALE, SCALE, SCALE, 0),
-            Err(SolMathError::DomainError)
-        );
-        assert_eq!(
-            weighted_pool_swap(SCALE, 0, SCALE, SCALE, SCALE, 0),
-            Err(SolMathError::DomainError)
-        );
-    }
-
-    #[test]
-    fn pool_swap_zero_amount_is_ok_noop() {
-        assert_eq!(
-            weighted_pool_swap(SCALE, SCALE, SCALE, SCALE, 0, 0),
-            Ok((0, 0))
-        );
-    }
-
     // ── Complex errors ──
 
     #[test]
@@ -1225,20 +962,6 @@ mod tests {
         // i128::MAX * 2 should return Err(Overflow), not panic or saturate
         let result = fp_mul_i(i128::MAX, 2 * SCALE_I);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn token_roundtrip() {
-        // 1.5 USDC (6 decimals) = 1_500_000 lamports
-        let fp = token_to_fp(1_500_000, 6).unwrap();
-        assert_eq!(fp, 1_500_000_000_000); // 1.5 at SCALE
-        assert_eq!(fp_to_token_floor(fp, 6).unwrap(), 1_500_000);
-    }
-
-    #[test]
-    fn token_to_fp_truncates_for_decimals_above_scale_precision() {
-        assert_eq!(token_to_fp(1, 13).unwrap(), 0);
-        assert_eq!(token_to_fp(19, 13).unwrap(), 1);
     }
 
     // ── mul_div_floor / mul_div_ceil ──

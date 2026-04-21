@@ -40,6 +40,13 @@ l4-cargo-check:
 l4-cargo-test:
 	cargo test -p halcyon_flagship_autocall --lib
 
+# Audit F1 scaffold gate — flagship hedge keeper compiles and its unit
+# tests (2D composition math + rebalance triggers) pass. Live Jupiter
+# submission lands in a follow-up; this target covers the scaffold pass.
+l4-hedge-keeper-check:
+	cargo check -p flagship_hedge_keeper
+	cargo test -p flagship_hedge_keeper
+
 audit-check:
 	test -f security/cargo_audit_waivers.md
 	@echo "cargo audit waivers are documented in security/cargo_audit_waivers.md"
@@ -110,7 +117,7 @@ l2-gate: l2-cargo-check l2-cargo-test audit-check cpi-seeds-check anchor-build-l
 	@scripts/check_layouts.sh
 	anchor test --skip-lint
 
-l4-gate: l4-cargo-check l4-cargo-test
+l4-gate: l4-cargo-check l4-cargo-test l4-hedge-keeper-check
 	@echo "l4-gate: flagship L4 foundation slice compiles and unit tests pass"
 
 l5-gate: frontend-build frontend-e2e

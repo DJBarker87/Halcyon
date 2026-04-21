@@ -1,5 +1,6 @@
 //! Halcyon client SDK for CLI and keeper surfaces.
 
+pub mod aggregate_delta;
 pub mod decode;
 pub mod flagship_autocall;
 pub mod il_protection;

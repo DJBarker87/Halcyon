@@ -42,9 +42,6 @@ pub async fn run_once(client: &KeeperClient, cfg: &KeeperConfig) -> Result<()> {
         .send_write_regime_signal(halcyon_kernel::WriteRegimeSignalArgs {
             product_program_id: halcyon_il_protection::ID,
             fvol_s6,
-            regime: regime.regime as u8,
-            sigma_multiplier_s6: regime.sigma_multiplier_s6,
-            sigma_floor_annualised_s6: regime.sigma_floor_annualised_s6,
         })
         .await?;
     info!(

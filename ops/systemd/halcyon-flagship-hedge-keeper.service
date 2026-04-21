@@ -1,0 +1,47 @@
+[Unit]
+Description=Halcyon flagship worst-of-3 hedge keeper (scaffold — dry-run only)
+Documentation=file:///etc/halcyon/config/flagship_hedge_keeper.json
+Documentation=https://github.com/DJB8787/colosseumfinal/blob/main/docs/runbooks/keeper_hosting.md
+After=network-online.target
+Wants=network-online.target
+PartOf=halcyon-keepers.target
+
+# NOTE: ship this unit MASKED until the live-submit path lands. The
+# scaffold dry-runs and is safe to start, but emits logs that look like a
+# real hedge would — confusing during incident review. See
+# docs/audit/OPEN_QUESTIONS.md for the flagship unpause predicate.
+#   systemctl mask halcyon-flagship-hedge-keeper
+
+[Service]
+Type=simple
+User=halcyon
+Group=halcyon
+WorkingDirectory=/var/lib/halcyon
+EnvironmentFile=/etc/halcyon/env/flagship_hedge_keeper.env
+ExecStart=/opt/halcyon/bin/flagship_hedge_keeper --config /etc/halcyon/config/flagship_hedge_keeper.json --dry-run
+
+Restart=always
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/halcyon
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halcyon-flagship-hedge-keeper
+
+[Install]
+WantedBy=halcyon-keepers.target

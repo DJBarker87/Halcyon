@@ -6,6 +6,8 @@ pub enum OracleError {
     InvalidOwner,
     #[msg("Pyth feed id does not match the expected asset")]
     FeedIdMismatch,
+    #[msg("Pyth publish_time falls outside the required observation window")]
+    PublishTimeOutsideRange,
     #[msg("Pyth price exponent outside supported range")]
     ExponentOutOfRange,
     #[msg("Pyth price verification level insufficient")]

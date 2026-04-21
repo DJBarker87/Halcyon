@@ -56,3 +56,48 @@ pub fn read_pyth_price(
         update.posted_slot,
     )
 }
+
+pub fn read_pyth_price_in_range(
+    feed_account: &AccountInfo,
+    feed_id: &[u8; 32],
+    _expected_owner: &Pubkey,
+    min_publish_ts: i64,
+    max_publish_ts: i64,
+) -> Result<PriceSnapshot> {
+    require!(
+        min_publish_ts <= max_publish_ts,
+        OracleError::PublishTimeOutsideRange
+    );
+    require_keys_eq!(
+        *feed_account.owner,
+        pyth_solana_receiver_sdk::ID,
+        OracleError::InvalidOwner
+    );
+
+    let data = feed_account.try_borrow_data()?;
+    let mut slice: &[u8] = &data;
+    let update = PriceUpdateV2::try_deserialize(&mut slice)?;
+    require!(
+        update.price_message.feed_id == *feed_id,
+        OracleError::FeedIdMismatch
+    );
+    require!(
+        update.verification_level.gte(VerificationLevel::Full),
+        OracleError::InsufficientVerification
+    );
+    let price = update
+        .get_price_unchecked(feed_id)
+        .map_err(|_| error!(OracleError::FeedIdMismatch))?;
+    require!(
+        (min_publish_ts..=max_publish_ts).contains(&price.publish_time),
+        OracleError::PublishTimeOutsideRange
+    );
+
+    PriceSnapshot::from_raw(
+        price.price,
+        price.conf,
+        price.exponent,
+        price.publish_time,
+        update.posted_slot,
+    )
+}

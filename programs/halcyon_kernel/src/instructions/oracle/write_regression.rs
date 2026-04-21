@@ -1,7 +1,13 @@
 use anchor_lang::prelude::*;
 use halcyon_common::{seeds, HalcyonError};
 
-use crate::state::*;
+use crate::{state::*, KernelError};
+
+const MIN_REGRESSION_SAMPLE_COUNT: u32 = 60;
+const MIN_REGRESSION_BETA_S12: i128 = -2_000_000_000_000;
+const MAX_REGRESSION_BETA_S12: i128 = 3_000_000_000_000;
+const MAX_ABS_REGRESSION_ALPHA_S12: i128 = 5_000_000_000;
+const MAX_REGRESSION_R_SQUARED_S6: i64 = 1_000_000;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
 pub struct WriteRegressionArgs {
@@ -46,6 +52,7 @@ pub fn handler(ctx: Context<WriteRegression>, args: WriteRegressionArgs) -> Resu
         ctx.accounts.keeper_registry.regression,
         HalcyonError::KeeperAuthorityMismatch
     );
+    validate_regression_args(&args)?;
 
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
@@ -92,4 +99,110 @@ pub fn handler(ctx: Context<WriteRegression>, args: WriteRegressionArgs) -> Resu
     regression.last_update_slot = clock.slot;
     regression.last_update_ts = now;
     Ok(())
+}
+
+fn validate_regression_args(args: &WriteRegressionArgs) -> Result<()> {
+    require!(
+        (MIN_REGRESSION_BETA_S12..=MAX_REGRESSION_BETA_S12).contains(&args.beta_spy_s12),
+        KernelError::RegressionBetaOutOfRange
+    );
+    require!(
+        (MIN_REGRESSION_BETA_S12..=MAX_REGRESSION_BETA_S12).contains(&args.beta_qqq_s12),
+        KernelError::RegressionBetaOutOfRange
+    );
+    require!(
+        (-MAX_ABS_REGRESSION_ALPHA_S12..=MAX_ABS_REGRESSION_ALPHA_S12).contains(&args.alpha_s12),
+        KernelError::RegressionAlphaOutOfRange
+    );
+    require!(
+        (0..=MAX_REGRESSION_R_SQUARED_S6).contains(&args.r_squared_s6),
+        KernelError::RegressionRSquaredOutOfRange
+    );
+    require!(
+        args.residual_vol_s6 >= 0,
+        KernelError::RegressionResidualVolOutOfRange
+    );
+    require!(
+        args.sample_count >= MIN_REGRESSION_SAMPLE_COUNT,
+        KernelError::RegressionSampleCountTooLow
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_args() -> WriteRegressionArgs {
+        WriteRegressionArgs {
+            beta_spy_s12: 900_000_000_000,
+            beta_qqq_s12: 400_000_000_000,
+            alpha_s12: 50_000_000,
+            r_squared_s6: 650_000,
+            residual_vol_s6: 220_000,
+            window_start_ts: 1,
+            window_end_ts: 2,
+            sample_count: 90,
+        }
+    }
+
+    #[test]
+    fn rejects_beta_out_of_range() {
+        let mut args = base_args();
+        args.beta_spy_s12 = MAX_REGRESSION_BETA_S12 + 1;
+        let err = validate_regression_args(&args).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("RegressionBetaOutOfRange"),
+            "unexpected err: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_alpha_out_of_range() {
+        let mut args = base_args();
+        args.alpha_s12 = MAX_ABS_REGRESSION_ALPHA_S12 + 1;
+        let err = validate_regression_args(&args).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("RegressionAlphaOutOfRange"),
+            "unexpected err: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_r_squared_above_one() {
+        let mut args = base_args();
+        args.r_squared_s6 = MAX_REGRESSION_R_SQUARED_S6 + 1;
+        let err = validate_regression_args(&args).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("RegressionRSquaredOutOfRange"),
+            "unexpected err: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_negative_residual_vol() {
+        let mut args = base_args();
+        args.residual_vol_s6 = -1;
+        let err = validate_regression_args(&args).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("RegressionResidualVolOutOfRange"),
+            "unexpected err: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_too_few_samples() {
+        let mut args = base_args();
+        args.sample_count = MIN_REGRESSION_SAMPLE_COUNT - 1;
+        let err = validate_regression_args(&args).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("RegressionSampleCountTooLow"),
+            "unexpected err: {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_plausible_regression_snapshot() {
+        validate_regression_args(&base_args()).unwrap();
+    }
 }

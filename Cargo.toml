@@ -23,6 +23,7 @@ members = [
     "keepers/regression_keeper",
     "keepers/delta_keeper",
     "keepers/hedge_keeper",
+    "keepers/flagship_hedge_keeper",
     "keepers/regime_keeper",
     # Operator CLI
     "tools/halcyon_cli",

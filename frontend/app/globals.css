@@ -2,79 +2,170 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ============================================================
+   Halcyon — Design tokens (ported from app/tokens.css)
+   Light-mode only. Warm paper, kingfisher blue, rust accent.
+   ============================================================ */
 :root {
-  --background: 0 0% 100%;
-  --foreground: 240 10% 3.9%;
-  --card: 0 0% 100%;
-  --card-foreground: 240 10% 3.9%;
-  --primary: 240 5.9% 10%;
-  --primary-foreground: 0 0% 98%;
-  --secondary: 240 4.8% 95.9%;
-  --secondary-foreground: 240 5.9% 10%;
-  --muted: 240 4.8% 95.9%;
-  --muted-foreground: 240 3.8% 46.1%;
-  --accent: 240 4.8% 95.9%;
-  --accent-foreground: 240 5.9% 10%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 240 5.9% 90%;
-  --input: 240 5.9% 90%;
-  --ring: 240 5.9% 10%;
-}
+  /* ---------- Brand: Halcyon Blue (kingfisher back) ---------- */
+  --blue-50:  #EDF7FC;
+  --blue-100: #D4ECF7;
+  --blue-200: #A8D7EE;
+  --blue-300: #6FBCDF;
+  --blue-400: #3EA0CE;
+  --blue-500: #0E7BB8;
+  --blue-600: #0A66A0;
+  --blue-700: #085485;
+  --blue-800: #083F66;
+  --blue-900: #062E4C;
 
-.dark {
-  --background: 0 0% 3.9%;
-  --foreground: 0 0% 98%;
-  --card: 0 0% 7%;
-  --card-foreground: 0 0% 98%;
-  --primary: 0 0% 98%;
-  --primary-foreground: 240 5.9% 10%;
-  --secondary: 0 0% 10%;
-  --secondary-foreground: 0 0% 98%;
-  --muted: 0 0% 12%;
-  --muted-foreground: 240 5% 64.9%;
-  --accent: 0 0% 12%;
-  --accent-foreground: 0 0% 98%;
-  --destructive: 0 62.8% 48.8%;
-  --destructive-foreground: 0 0% 98%;
-  --border: 0 0% 15%;
-  --input: 0 0% 15%;
-  --ring: 0 0% 83%;
+  /* ---------- Accent: Halcyon Rust (kingfisher breast) ---------- */
+  --rust-50:  #FBF1EA;
+  --rust-100: #F5DCC8;
+  --rust-200: #ECB794;
+  --rust-300: #E09160;
+  --rust-400: #D27236;
+  --rust-500: #C15514;
+  --rust-600: #A6470F;
+  --rust-700: #883A0C;
+  --rust-800: #6A2D09;
+  --rust-900: #4C2006;
+
+  /* ---------- Neutral: Paper → Ink (warm) ---------- */
+  --paper:    #FAFAF7;
+  --n-50:     #F4F3EE;
+  --n-100:    #E8E6DE;
+  --n-200:    #D3D0C5;
+  --n-300:    #B0ACA0;
+  --n-400:    #8A8678;
+  --n-500:    #605D54;
+  --n-600:    #3F3D37;
+  --n-700:    #242832;
+  --n-800:    #141B25;
+  --ink:      #0A1420;
+
+  /* ---------- Semantic ---------- */
+  --success-50:  #ECF4EC;
+  --success-500: #3E7B3E;
+  --success-700: #2C5A2C;
+  --warning-50:  #FBF3DE;
+  --warning-500: #B5851B;
+  --warning-700: #7F5D11;
+  --error-50:    #F7E8E3;
+  --error-500:   #A8351F;
+  --error-700:   #7A2514;
+
+  /* ---------- Data-viz ---------- */
+  --d-c-1: #0E7BB8;
+  --d-c-2: #C15514;
+  --d-c-3: #4A8C5B;
+  --d-c-4: #8A5AA1;
+  --d-c-5: #B5851B;
+  --d-c-6: #3A6B8A;
+
+  /* ---------- Shadows (warm-tinted, sparing) ---------- */
+  --shadow-1: 0 1px 2px rgba(36, 40, 50, 0.04);
+  --shadow-2: 0 2px 8px rgba(36, 40, 50, 0.06), 0 1px 2px rgba(36, 40, 50, 0.04);
+  --shadow-3: 0 8px 24px rgba(36, 40, 50, 0.08), 0 2px 6px rgba(36, 40, 50, 0.05);
+  --shadow-4: 0 16px 48px rgba(36, 40, 50, 0.12), 0 4px 12px rgba(36, 40, 50, 0.06);
+
+  /* ---------- Motion ---------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 320ms;
+
+  /* ---------- Aliases for existing shadcn-style utilities ----------
+     These keep `bg-background`, `text-foreground`, `border-border`,
+     `bg-card`, `bg-primary`, etc. rendering Halcyon colours without
+     requiring every component to be rewritten. */
+  --background:           var(--paper);
+  --foreground:           var(--ink);
+  --card:                 #FFFFFF;
+  --card-foreground:      var(--ink);
+  --popover:              #FFFFFF;
+  --popover-foreground:   var(--ink);
+  --primary:              var(--blue-600);
+  --primary-foreground:   var(--paper);
+  --secondary:            var(--n-50);
+  --secondary-foreground: var(--ink);
+  --muted:                var(--n-50);
+  --muted-foreground:     var(--n-500);
+  --accent:               var(--rust-50);
+  --accent-foreground:    var(--rust-800);
+  --destructive:          var(--error-500);
+  --destructive-foreground: var(--paper);
+  --border:               var(--n-100);
+  --input:                var(--n-200);
+  --ring:                 var(--blue-500);
 }
 
 * {
-  @apply border-border;
+  border-color: var(--border);
 }
 
 html {
-  color-scheme: dark;
+  color-scheme: light;
 }
 
 body {
-  @apply min-h-screen bg-background text-foreground antialiased;
-  font-family: var(--font-sans), system-ui, sans-serif;
+  min-height: 100vh;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), 'Instrument Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
+/* Tabular numerals anywhere we're showing money or percentages. */
+.num, .mono, input[type="number"], .tabular {
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Selection — Halcyon Blue */
+::selection {
+  background: var(--blue-100);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--blue-500);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Solana wallet-adapter default button needs to inherit Halcyon colours. */
 .wallet-adapter-button {
-  @apply h-10 rounded-md border border-border bg-card px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
-  font-family: var(--font-sans), system-ui, sans-serif;
+  height: 40px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: 0 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--foreground);
+  transition: background var(--dur-fast);
+  font-family: var(--font-sans), 'Instrument Sans', sans-serif;
 }
-
 .wallet-adapter-button:not([disabled]):hover {
-  background: hsl(var(--secondary));
+  background: var(--n-50);
 }
-
 .wallet-adapter-modal-wrapper {
-  @apply rounded-lg border border-border bg-card text-card-foreground;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
 }
-
 .wallet-adapter-modal-title {
   letter-spacing: 0;
 }
 
 @layer utilities {
   .surface {
-    @apply rounded-lg border border-border bg-card/95 text-card-foreground shadow-sm;
+    @apply rounded-lg border border-border bg-card text-card-foreground shadow-sm;
   }
 
   .field {

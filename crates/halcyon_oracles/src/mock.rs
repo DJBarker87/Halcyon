@@ -81,6 +81,49 @@ pub fn read_pyth_price(
     })
 }
 
+pub fn read_pyth_price_in_range(
+    feed_account: &AccountInfo,
+    feed_id: &[u8; 32],
+    expected_owner: &Pubkey,
+    min_publish_ts: i64,
+    max_publish_ts: i64,
+) -> Result<PriceSnapshot> {
+    require!(
+        min_publish_ts <= max_publish_ts,
+        OracleError::PublishTimeOutsideRange
+    );
+    require_keys_eq!(
+        *feed_account.owner,
+        *expected_owner,
+        OracleError::InvalidOwner
+    );
+
+    let data = feed_account.try_borrow_data()?;
+    require!(
+        data.len() >= MockPriceAccount::SIZE,
+        OracleError::MockDiscriminatorMismatch
+    );
+    require!(
+        data[..8] == HALCYON_MOCK_PYTH_DISCRIMINATOR,
+        OracleError::MockDiscriminatorMismatch
+    );
+    let mut slice = &data[8..];
+    let acct = MockPriceAccount::deserialize(&mut slice)?;
+    require!(acct.feed_id == *feed_id, OracleError::FeedIdMismatch);
+    require!(
+        (min_publish_ts..=max_publish_ts).contains(&acct.publish_ts),
+        OracleError::PublishTimeOutsideRange
+    );
+
+    Ok(PriceSnapshot {
+        price_s6: acct.price_s6,
+        conf_s6: acct.conf_s6,
+        publish_slot: acct.publish_slot,
+        publish_ts: acct.publish_ts,
+        expo: acct.expo,
+    })
+}
+
 /// Encode a `MockPriceAccount` into its on-chain byte representation. Used by
 /// fixture generators and the CLI's `mock-pyth-write` helper.
 pub fn encode(acct: &MockPriceAccount) -> Vec<u8> {
@@ -150,5 +193,42 @@ mod tests {
 
         let err = read_pyth_price(&info, &feed_id, &expected_owner, &clock, 10).unwrap_err();
         assert_eq!(err, error!(OracleError::InvalidOwner));
+    }
+
+    #[test]
+    fn rejects_publish_time_outside_range() {
+        let feed_id = [0xee; 32];
+        let acct = MockPriceAccount {
+            feed_id,
+            price_s6: 123_000_000,
+            conf_s6: 1_000,
+            expo: -6,
+            publish_ts: 1_700_000_000,
+            publish_slot: 77,
+        };
+        let key = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let mut lamports = 0u64;
+        let mut data = encode(&acct);
+        let info = AccountInfo::new(
+            &key,
+            false,
+            false,
+            &mut lamports,
+            &mut data,
+            &owner,
+            false,
+            0,
+        );
+
+        let err = read_pyth_price_in_range(
+            &info,
+            &feed_id,
+            &owner,
+            acct.publish_ts + 1,
+            acct.publish_ts + 5,
+        )
+        .unwrap_err();
+        assert_eq!(err, error!(OracleError::PublishTimeOutsideRange));
     }
 }

@@ -1,0 +1,43 @@
+[Unit]
+Description=Halcyon flagship AggregateDelta keeper
+Documentation=file:///etc/halcyon/config/delta_keeper.json
+Documentation=https://github.com/DJB8787/colosseumfinal/blob/main/docs/runbooks/keeper_hosting.md
+After=network-online.target
+Wants=network-online.target
+PartOf=halcyon-keepers.target
+
+[Service]
+Type=simple
+User=halcyon
+Group=halcyon
+WorkingDirectory=/var/lib/halcyon
+EnvironmentFile=/etc/halcyon/env/delta_keeper.env
+ExecStart=/opt/halcyon/bin/delta_keeper --config /etc/halcyon/config/delta_keeper.json
+
+Restart=always
+RestartSec=5s
+# Backoff: if we fail 5 times in 5 min, stop and fire an alert.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/halcyon
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halcyon-delta-keeper
+
+[Install]
+WantedBy=halcyon-keepers.target

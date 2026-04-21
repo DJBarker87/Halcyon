@@ -5,18 +5,19 @@ use anchor_spl::{
 };
 use halcyon_common::{seeds, HalcyonError};
 use halcyon_kernel::{
-    cpi::accounts::{ApplySettlement, PayCoupon},
+    cpi::accounts::ApplySettlement,
     state::{
         CouponVault, PolicyHeader, PolicyStatus, ProductRegistryEntry, ProtocolConfig, VaultState,
     },
-    ApplySettlementArgs, KernelError, PayCouponArgs, SettlementReason,
+    ApplySettlementArgs, KernelError, SettlementReason,
 };
 
 use crate::errors::FlagshipAutocallError;
-use crate::pricing::{
-    coupon_due_with_memory_usdc, maturity_payout_usdc, ratio_meets_barrier,
-    require_correction_tables_match, worst_ratio_s6,
+use crate::observation::{
+    read_equity_observation_worst_ratio_s6, require_all_autocall_observations_reconciled,
+    require_all_coupon_observations_reconciled,
 };
+use crate::pricing::{maturity_payout_usdc, require_correction_tables_match};
 use crate::state::{FlagshipAutocallTerms, ProductStatus};
 
 #[derive(Accounts)]
@@ -122,6 +123,10 @@ pub fn handler(ctx: Context<Settle>) -> Result<()> {
         ctx.accounts.product_authority.key(),
         HalcyonError::ProductAuthorityMismatch
     );
+    require!(
+        !ctx.accounts.product_registry_entry.paused,
+        HalcyonError::IssuancePausedPerProduct
+    );
 
     let now = ctx.accounts.clock.unix_timestamp;
     require!(
@@ -129,92 +134,16 @@ pub fn handler(ctx: Context<Settle>) -> Result<()> {
         FlagshipAutocallError::PolicyNotExpired
     );
     require_correction_tables_match(&ctx.accounts.protocol_config)?;
+    require_all_coupon_observations_reconciled(&ctx.accounts.product_terms)?;
+    require_all_autocall_observations_reconciled(&ctx.accounts.product_terms)?;
 
-    let spy = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_spy.to_account_info(),
-        &halcyon_oracles::feed_ids::SPY_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
-    let qqq = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_qqq.to_account_info(),
-        &halcyon_oracles::feed_ids::QQQ_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
-    let iwm = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_iwm.to_account_info(),
-        &halcyon_oracles::feed_ids::IWM_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
-    let worst_ratio = worst_ratio_s6(
+    let worst_ratio = read_equity_observation_worst_ratio_s6(
         &ctx.accounts.product_terms,
-        spy.price_s6,
-        qqq.price_s6,
-        iwm.price_s6,
+        ctx.accounts.policy_header.expiry_ts,
+        &ctx.accounts.pyth_spy.to_account_info(),
+        &ctx.accounts.pyth_qqq.to_account_info(),
+        &ctx.accounts.pyth_iwm.to_account_info(),
     )?;
-
-    if (ctx.accounts.product_terms.next_coupon_index as usize)
-        < ctx.accounts.product_terms.monthly_coupon_schedule.len()
-    {
-        let next_coupon_idx = ctx.accounts.product_terms.next_coupon_index as usize;
-        let coupon_due_ts = ctx.accounts.product_terms.monthly_coupon_schedule[next_coupon_idx];
-        if now >= coupon_due_ts {
-            let coupon_due =
-                if ratio_meets_barrier(worst_ratio, ctx.accounts.product_terms.coupon_barrier_bps)?
-                {
-                    coupon_due_with_memory_usdc(
-                        ctx.accounts.policy_header.notional,
-                        ctx.accounts.product_terms.offered_coupon_bps_s6,
-                        ctx.accounts.product_terms.missed_coupon_observations,
-                    )?
-                } else {
-                    0
-                };
-            if coupon_due > 0 {
-                let bump = ctx.bumps.product_authority;
-                let signer_seeds: &[&[&[u8]]] = &[&[seeds::PRODUCT_AUTHORITY, &[bump]]];
-                halcyon_kernel::cpi::pay_coupon(
-                    CpiContext::new_with_signer(
-                        ctx.accounts.kernel_program.to_account_info(),
-                        PayCoupon {
-                            product_authority: ctx.accounts.product_authority.to_account_info(),
-                            product_registry_entry: ctx
-                                .accounts
-                                .product_registry_entry
-                                .to_account_info(),
-                            protocol_config: ctx.accounts.protocol_config.to_account_info(),
-                            vault_state: ctx.accounts.vault_state.to_account_info(),
-                            policy_header: ctx.accounts.policy_header.to_account_info(),
-                            usdc_mint: ctx.accounts.usdc_mint.to_account_info(),
-                            coupon_vault: ctx.accounts.coupon_vault.to_account_info(),
-                            coupon_vault_usdc: ctx.accounts.coupon_vault_usdc.to_account_info(),
-                            buyer_usdc: ctx.accounts.buyer_usdc.to_account_info(),
-                            token_program: ctx.accounts.token_program.to_account_info(),
-                        },
-                        signer_seeds,
-                    ),
-                    PayCouponArgs { amount: coupon_due },
-                )?;
-                ctx.accounts.product_terms.coupons_paid_usdc = ctx
-                    .accounts
-                    .product_terms
-                    .coupons_paid_usdc
-                    .checked_add(coupon_due)
-                    .ok_or(HalcyonError::Overflow)?;
-            }
-            ctx.accounts.product_terms.missed_coupon_observations = 0;
-            ctx.accounts.product_terms.next_coupon_index = ctx
-                .accounts
-                .product_terms
-                .next_coupon_index
-                .saturating_add(1);
-        }
-    }
 
     let payout = maturity_payout_usdc(
         &ctx.accounts.policy_header,

@@ -17,6 +17,8 @@ anyhow = "1"
 anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
 pyth-solana-receiver-sdk = "=1.1.0"
 halcyon_client_sdk = { path = "../../crates/halcyon_client_sdk" }
+halcyon_common = { path = "../../crates/halcyon_common" }
 halcyon_flagship_autocall = { path = "../../programs/halcyon_flagship_autocall", features = ["cpi"] }
 halcyon_kernel = { path = "../../programs/halcyon_kernel", features = ["cpi"] }
 halcyon_oracles = { path = "../../crates/halcyon_oracles" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

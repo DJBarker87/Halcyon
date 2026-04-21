@@ -3,61 +3,61 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Settings2 } from "lucide-react";
+
+import { Kingfisher } from "@/components/kingfisher";
 import {
-  AlertTriangle,
-  BriefcaseBusiness,
-  ChartColumn,
-  Cpu,
-  Database,
-  Layers3,
-  Settings2,
-  ShieldCheck,
-  Wallet,
-} from "lucide-react";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
+  EquityIcon,
+  ILIcon,
+  PortfolioIcon,
+  SolIcon,
+  VaultIcon,
+} from "@/components/nav-icons";
 
 import { useRuntimeConfig } from "@/lib/runtime-config";
 import { cn, shortAddress } from "@/lib/format";
 import { HALCYON_OPEN_RUNTIME_PANEL } from "@/lib/runtime-panel";
+import { ClusterSwitchModal } from "@/components/cluster-switch-modal";
 import { SettingsPanel } from "@/components/settings-panel";
+import { WalletControl } from "@/components/wallet-control";
 
 const NAV_ITEMS = [
   {
     href: "/flagship",
-    label: "Flagship",
-    description: "Worst-of equity autocall",
-    icon: ChartColumn,
+    label: "Equity Autocall",
+    description: "SPY · QQQ · IWM coupon",
+    icon: EquityIcon,
   },
   {
     href: "/il-protection",
     label: "IL Protection",
-    description: "Synthetic SOL/USDC cover",
-    icon: ShieldCheck,
+    description: "SOL/USDC LP cover",
+    icon: ILIcon,
   },
   {
     href: "/sol-autocall",
     label: "SOL Autocall",
-    description: "Principal-backed note",
-    icon: Cpu,
+    description: "Principal-backed SOL note",
+    icon: SolIcon,
   },
   {
     href: "/portfolio",
     label: "Portfolio",
-    description: "Live policies by wallet",
-    icon: BriefcaseBusiness,
+    description: "Your open positions",
+    icon: PortfolioIcon,
   },
   {
     href: "/vault",
     label: "Vault",
-    description: "Kernel capital state",
-    icon: Database,
+    description: "Underwriting capital",
+    icon: VaultIcon,
   },
 ] as const;
 
 function clusterTone(cluster: "localnet" | "devnet" | "mainnet") {
-  if (cluster === "mainnet") return "text-emerald-300 border-emerald-400/30 bg-emerald-400/10";
-  if (cluster === "devnet") return "text-cyan-300 border-cyan-400/30 bg-cyan-400/10";
-  return "text-amber-300 border-amber-400/30 bg-amber-400/10";
+  if (cluster === "mainnet") return "text-success-700 border-success-700/30 bg-success-50";
+  if (cluster === "devnet") return "text-halcyonBlue-700 border-halcyonBlue-300 bg-halcyonBlue-50";
+  return "text-rust-700 border-rust-300 bg-rust-50";
 }
 
 function pageTitle(pathname: string) {
@@ -67,7 +67,7 @@ function pageTitle(pathname: string) {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { cluster, current, currentHasOverrides } = useRuntimeConfig();
+  const { cluster, current } = useRuntimeConfig();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
@@ -79,22 +79,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background">
       <div className="mx-auto flex min-h-screen max-w-[1600px] flex-col lg:flex-row">
-        <aside className="border-b border-border bg-card/60 px-4 py-5 backdrop-blur lg:sticky lg:top-0 lg:h-screen lg:w-[300px] lg:border-b-0 lg:border-r lg:px-5 lg:py-6">
+        <aside className="border-b border-border bg-paper px-4 py-5 lg:sticky lg:top-0 lg:h-screen lg:w-[300px] lg:border-b-0 lg:border-r lg:px-5 lg:py-6">
           <Link
-            href="/flagship"
-            className="flex items-start gap-3 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            href="/"
+            className="flex items-start gap-3 rounded-md pb-5 border-b border-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
-            <div className="flex h-11 w-11 items-center justify-center rounded-md border border-border bg-background">
-              <Layers3 className="h-5 w-5" aria-hidden="true" />
-            </div>
+            <Kingfisher size={32} color="var(--blue-600)" className="mt-1" />
             <div className="min-w-0">
-              <div className="text-sm font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                Halcyon
+              <div className="font-serif text-[22px] leading-none text-ink">Halcyon</div>
+              <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-n-400">
+                Quant math · on-chain
               </div>
-              <div className="text-xl font-semibold text-foreground">Layer 5 Console</div>
-              <p className="mt-1 text-sm leading-6 text-muted-foreground">
-                The new wired frontend. The WASM demo stays in `app/`.
-              </p>
             </div>
           </Link>
 
@@ -143,17 +138,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             })}
           </div>
 
-          <div className="mt-6 hidden rounded-md border border-border bg-background/70 p-4 lg:block">
+          <div className="mt-6 hidden rounded-md border border-border bg-card p-4 lg:block">
             <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-              Runtime
+              Connected to
             </div>
             <div
               className={cn(
-                "mt-3 inline-flex min-h-10 items-center rounded-md border px-3 text-sm font-medium",
+                "mt-3 inline-flex min-h-10 items-center rounded-md border px-3 text-sm font-medium capitalize",
                 clusterTone(cluster),
               )}
             >
-              {cluster}
+              {cluster === "mainnet" ? "Solana mainnet" : cluster === "devnet" ? "Solana devnet" : "Local validator"}
             </div>
             <dl className="mt-4 space-y-3 text-sm">
               <div>
@@ -163,7 +158,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </dd>
               </div>
               <div>
-                <dt className="text-muted-foreground">Kernel</dt>
+                <dt className="text-muted-foreground">Protocol</dt>
                 <dd className="mt-1 font-mono text-[12px] text-foreground">
                   {current.kernelProgramId ? shortAddress(current.kernelProgramId, 6) : "Not set"}
                 </dd>
@@ -173,7 +168,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-30 border-b border-border bg-background/85 backdrop-blur">
+          <header className="sticky top-0 z-30 border-b border-border bg-paper/90 backdrop-blur">
             <div className="flex flex-wrap items-center gap-3 px-4 py-4 sm:px-6">
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
@@ -193,29 +188,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
               <button
                 type="button"
+                aria-label="Network settings"
                 onClick={() => setSettingsOpen(true)}
-                className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-md border border-border bg-card px-2.5 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
                 <Settings2 className="h-4 w-4" aria-hidden="true" />
-                Runtime Config
+                <span className="ml-1.5 hidden sm:inline">Network</span>
               </button>
 
               <div className="min-h-10">
-                <WalletMultiButton />
+                <WalletControl />
               </div>
             </div>
-
-            {currentHasOverrides && (
-              <div className="border-t border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-foreground sm:px-6">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" aria-hidden="true" />
-                  <p>
-                    Browser-local runtime overrides are active. Review the selected cluster, RPC, program IDs,
-                    and oracle accounts before signing.
-                  </p>
-                </div>
-              </div>
-            )}
           </header>
 
           <main className="flex-1 px-4 py-5 sm:px-6 sm:py-6">{children}</main>
@@ -223,6 +207,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <SettingsPanel open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ClusterSwitchModal />
     </div>
   );
 }

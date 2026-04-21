@@ -7,5 +7,8 @@
   "merkle_output_path": "/var/lib/halcyon/flagship_delta.json",
   "scan_interval_secs": 30,
   "backoff_cap_secs": 60,
-  "failure_budget": 5
+  "failure_budget": 5,
+  "_pinata": "Pinata JWT is supplied via the PINATA_JWT environment variable, never in this file.",
+  "pinata_base_url": "https://api.pinata.cloud",
+  "pinata_retries": 3
 }

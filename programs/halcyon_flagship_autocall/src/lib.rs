@@ -5,6 +5,7 @@ use anchor_lang::prelude::*;
 mod calendar;
 pub mod errors;
 pub mod instructions;
+mod observation;
 pub mod pricing;
 pub mod state;
 
@@ -13,6 +14,8 @@ pub use errors::FlagshipAutocallError;
 pub use instructions::accept_quote::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::preview_quote::*;
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::reconcile_coupons::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::record_autocall_observation::*;
 #[allow(ambiguous_glob_reexports)]
@@ -42,6 +45,10 @@ pub mod halcyon_flagship_autocall {
         expected_index: u8,
     ) -> Result<()> {
         instructions::record_coupon_observation::handler(ctx, expected_index)
+    }
+
+    pub fn reconcile_coupons(ctx: Context<ReconcileCoupons>) -> Result<()> {
+        instructions::reconcile_coupons::handler(ctx)
     }
 
     pub fn record_autocall_observation(

@@ -14,10 +14,10 @@ use halcyon_kernel::{
 };
 
 use crate::errors::FlagshipAutocallError;
-use crate::pricing::{
-    coupon_due_with_memory_usdc, ratio_meets_barrier, require_correction_tables_match,
-    worst_ratio_s6,
+use crate::observation::{
+    commit_coupon_observation, coupon_outcome, read_equity_observation_worst_ratio_s6,
 };
+use crate::pricing::require_correction_tables_match;
 use crate::state::{FlagshipAutocallTerms, ProductStatus, MONTHLY_COUPON_COUNT};
 
 #[derive(Accounts)]
@@ -146,45 +146,18 @@ pub fn handler(ctx: Context<RecordCouponObservation>, expected_index: u8) -> Res
         FlagshipAutocallError::ObservationNotDue
     );
 
-    let spy = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_spy.to_account_info(),
-        &halcyon_oracles::feed_ids::SPY_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
-    let qqq = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_qqq.to_account_info(),
-        &halcyon_oracles::feed_ids::QQQ_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
-    let iwm = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_iwm.to_account_info(),
-        &halcyon_oracles::feed_ids::IWM_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
-
-    let worst_ratio = worst_ratio_s6(
+    let worst_ratio = read_equity_observation_worst_ratio_s6(
         &ctx.accounts.product_terms,
-        spy.price_s6,
-        qqq.price_s6,
-        iwm.price_s6,
+        scheduled_ts,
+        &ctx.accounts.pyth_spy.to_account_info(),
+        &ctx.accounts.pyth_qqq.to_account_info(),
+        &ctx.accounts.pyth_iwm.to_account_info(),
     )?;
-    let should_pay =
-        ratio_meets_barrier(worst_ratio, ctx.accounts.product_terms.coupon_barrier_bps)?;
-    let coupon_due = if should_pay {
-        coupon_due_with_memory_usdc(
-            ctx.accounts.policy_header.notional,
-            ctx.accounts.product_terms.offered_coupon_bps_s6,
-            ctx.accounts.product_terms.missed_coupon_observations,
-        )?
-    } else {
-        0
-    };
+    let (should_pay, coupon_due) = coupon_outcome(
+        &ctx.accounts.policy_header,
+        &ctx.accounts.product_terms,
+        worst_ratio,
+    )?;
 
     if coupon_due > 0 {
         let bump = ctx.bumps.product_authority;
@@ -210,19 +183,10 @@ pub fn handler(ctx: Context<RecordCouponObservation>, expected_index: u8) -> Res
         )?;
     }
 
-    let terms = &mut ctx.accounts.product_terms;
-    terms.next_coupon_index = expected_index.saturating_add(1);
-    if should_pay {
-        terms.missed_coupon_observations = 0;
-    } else {
-        terms.missed_coupon_observations = terms
-            .missed_coupon_observations
-            .checked_add(1)
-            .ok_or(HalcyonError::Overflow)?;
-    }
-    terms.coupons_paid_usdc = terms
-        .coupons_paid_usdc
-        .checked_add(coupon_due)
-        .ok_or(HalcyonError::Overflow)?;
-    Ok(())
+    commit_coupon_observation(
+        &mut ctx.accounts.product_terms,
+        expected_index,
+        should_pay,
+        coupon_due,
+    )
 }

@@ -1099,10 +1099,12 @@ dependencies = [
  "anyhow",
  "clap",
  "halcyon_client_sdk",
+ "halcyon_common",
  "halcyon_flagship_autocall",
  "halcyon_kernel",
  "halcyon_oracles",
  "pyth-solana-receiver-sdk",
+ "reqwest",
  "serde",
  "serde_json",
  "solana-rpc-client",
@@ -1292,6 +1294,30 @@ name = "five8_core"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2551bf44bc5f776c15044b9b94153a00198be06743e262afaaa61f11ac7523a5"
+
+[[package]]
+name = "flagship_hedge_keeper"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anyhow",
+ "clap",
+ "halcyon_client_sdk",
+ "halcyon_common",
+ "halcyon_flagship_autocall",
+ "halcyon_kernel",
+ "halcyon_oracles",
+ "pyth-solana-receiver-sdk",
+ "serde",
+ "serde_json",
+ "solana-account-decoder",
+ "solana-rpc-client",
+ "solana-rpc-client-api",
+ "solana-sdk",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "flate2"

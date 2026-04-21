@@ -27,6 +27,8 @@ jobs:
         run: make precision-baseline-check
       - name: cargo audit (no masked advisories)
         run: make audit-check
+      - name: mainnet guards check
+        run: make mainnet-guards-check
       # X1 — pure-Rust invariant guard. The three quote crates must build
       # without anchor-lang / solana-program in their dep graph. This check
       # fails fast if anyone re-adds the halcyon_common dep.
@@ -69,6 +71,8 @@ jobs:
         run: yarn install --frozen-lockfile
       - name: yarn audit
         run: yarn audit --level high
+      - name: frontend npm audit
+        run: cd frontend && npm audit --audit-level=high
       - name: anchor build (L0-L2 only, fail on verifier errors)
         run: make anchor-build-l2
       # K11 — regression guard for the CPI seeds+bump aliasing bug.

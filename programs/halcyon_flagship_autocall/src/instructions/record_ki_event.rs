@@ -64,6 +64,10 @@ pub fn handler(ctx: Context<RecordKiEvent>) -> Result<()> {
     {
         return Ok(());
     }
+    require!(
+        !ctx.accounts.product_registry_entry.paused,
+        HalcyonError::IssuancePausedPerProduct
+    );
     require_correction_tables_match(&ctx.accounts.protocol_config)?;
 
     let spy = halcyon_oracles::read_pyth_price(

@@ -2,11 +2,12 @@ use anchor_lang::AccountDeserialize;
 use anyhow::{Context, Result};
 use clap::Parser;
 use halcyon_client_sdk::{
+    aggregate_delta::{build_signed_write_aggregate_delta_ixs, encode_publication_cid},
     decode::{
-        decode_anchor_account, fetch_anchor_account, fetch_multiple_accounts,
-        list_policy_headers_for_product,
+        decode_anchor_account, fetch_anchor_account, fetch_anchor_account_opt,
+        fetch_multiple_accounts, list_policy_headers_for_product,
     },
-    kernel, pda,
+    pda,
     tx::send_instructions,
 };
 use pyth_solana_receiver_sdk::price_update::{PriceUpdateV2, VerificationLevel};
@@ -56,6 +57,17 @@ struct KeeperConfig {
     backoff_cap_secs: u64,
     #[serde(default = "default_failure_budget")]
     failure_budget: u32,
+    /// Pinata pinning service (audit F4a). Keeper uploads the canonical
+    /// per-note JSON artifact here; the returned CID is then committed
+    /// on-chain in `AggregateDelta.publication_cid`. JWT is read from the
+    /// `PINATA_JWT` environment variable — not from config, to keep the
+    /// secret out of version control even by accident.
+    #[serde(default = "default_pinata_base_url")]
+    pinata_base_url: String,
+    /// Maximum retry attempts for the Pinata pin call before the keeper
+    /// backs off for this cycle.
+    #[serde(default = "default_pinata_retries")]
+    pinata_retries: u32,
 }
 
 fn default_merkle_output_path() -> String {
@@ -74,6 +86,21 @@ fn default_failure_budget() -> u32 {
     5
 }
 
+fn default_pinata_base_url() -> String {
+    "https://api.pinata.cloud".to_string()
+}
+
+fn default_pinata_retries() -> u32 {
+    3
+}
+
+fn pinata_jwt() -> Result<String> {
+    std::env::var("PINATA_JWT")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .context("PINATA_JWT environment variable is required to pin the canonical delta artifact")
+}
+
 impl KeeperConfig {
     fn load(path: &str) -> Result<Self> {
         let raw = std::fs::read_to_string(Path::new(path))
@@ -89,6 +116,7 @@ impl KeeperConfig {
 
 struct KeeperClient {
     rpc: Arc<RpcClient>,
+    http: reqwest::Client,
     signer: Keypair,
     pyth_spy: Pubkey,
     pyth_qqq: Pubkey,
@@ -106,6 +134,10 @@ impl KeeperClient {
             .with_context(|| format!("pinging RPC at {}", cfg.rpc_endpoint))?;
         Ok(Self {
             rpc,
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .context("building Pinata HTTP client")?,
             signer: cfg.load_keypair()?,
             pyth_spy: Pubkey::from_str(&cfg.pyth_spy)
                 .with_context(|| format!("parsing pyth_spy {}", cfg.pyth_spy))?,
@@ -116,13 +148,104 @@ impl KeeperClient {
         })
     }
 
-    async fn send_write_aggregate_delta(
+    /// Pin the canonical per-note artifact to IPFS via Pinata (audit F4a).
+    /// Returns the IPFS CID the service provisions — typically a 46-char
+    /// CIDv0 (`Qm...`) or a 59-char CIDv1 base32 (`bafy...`) depending on
+    /// account settings.
+    async fn pin_artifact_to_pinata(
+        &self,
+        cfg: &KeeperConfig,
+        artifact: &SignedDeltaArtifact,
+    ) -> Result<String> {
+        let jwt = pinata_jwt()?;
+        let endpoint = format!(
+            "{}/pinning/pinJSONToIPFS",
+            cfg.pinata_base_url.trim_end_matches('/')
+        );
+        let payload = serde_json::json!({
+            "pinataMetadata": {
+                "name": format!(
+                    "halcyon_flagship_aggregate_delta_seq_{}",
+                    artifact.artifact.generated_at_ts
+                ),
+                "keyvalues": {
+                    "product_program_id": artifact.artifact.product_program_id,
+                    "merkle_root": artifact.artifact.merkle_root_hex,
+                    "note_count": artifact.artifact.note_count.to_string(),
+                }
+            },
+            "pinataContent": artifact,
+        });
+
+        let mut attempt: u32 = 0;
+        loop {
+            attempt += 1;
+            let response = self
+                .http
+                .post(&endpoint)
+                .bearer_auth(&jwt)
+                .json(&payload)
+                .send()
+                .await;
+            match response {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|e| format!("<read body failed: {e}>"));
+                    if status.is_success() {
+                        let parsed: serde_json::Value = serde_json::from_str(&body)
+                            .context("parsing Pinata pinJSONToIPFS response body")?;
+                        let cid = parsed
+                            .get("IpfsHash")
+                            .and_then(|v| v.as_str())
+                            .context("Pinata response missing IpfsHash")?
+                            .to_string();
+                        return Ok(cid);
+                    }
+                    warn!(
+                        target = "delta_keeper",
+                        attempt,
+                        %status,
+                        body = %body,
+                        "Pinata pin failed"
+                    );
+                }
+                Err(err) => {
+                    warn!(
+                        target = "delta_keeper",
+                        attempt,
+                        %err,
+                        "Pinata request errored"
+                    );
+                }
+            }
+            if attempt >= cfg.pinata_retries {
+                return Err(anyhow::anyhow!(
+                    "Pinata pin failed after {attempt} attempts"
+                ));
+            }
+            sleep(Duration::from_secs((1u64 << attempt.min(5)).min(16))).await;
+        }
+    }
+
+    /// Build the `(Ed25519 precompile, write_aggregate_delta)` instruction
+    /// pair and submit them in a single transaction. The kernel introspects
+    /// the precompile's verified message to confirm it matches the
+    /// canonical encoding of the on-chain args (audit F4b).
+    async fn send_signed_write_aggregate_delta(
         &self,
         args: halcyon_kernel::WriteAggregateDeltaArgs,
+        next_sequence: u64,
     ) -> Result<Signature> {
-        let ix =
-            kernel::write_aggregate_delta_ix(&self.signer.pubkey(), &self.signer.pubkey(), args);
-        send_instructions(&self.rpc, &self.signer, vec![ix]).await
+        let (ed_ix, write_ix) = build_signed_write_aggregate_delta_ixs(
+            &self.signer,
+            &self.signer.pubkey(),
+            &args,
+            next_sequence,
+        );
+        send_instructions(&self.rpc, &self.signer, vec![ed_ix, write_ix]).await
     }
 }
 
@@ -138,10 +261,20 @@ struct DeltaLeafRecord {
     delta_iwm_s6: i64,
 }
 
+/// Canonical per-note artifact pinned to IPFS (audit F4a). Version is
+/// bumped whenever the schema changes so off-chain verifiers can dispatch
+/// on the shape explicitly rather than hoping for backward compatibility.
+const DELTA_ARTIFACT_VERSION: u8 = 2;
+
 #[derive(Debug, Serialize)]
 struct DeltaArtifact {
+    version: u8,
     product_program_id: String,
     generated_at_ts: i64,
+    /// Matches `AggregateDelta.sequence` after the on-chain write
+    /// succeeds; the artifact is pinned *before* the write, so at pin
+    /// time this is the projected post-write value (on-chain `sequence + 1`).
+    sequence: u64,
     spot_spy_s6: i64,
     spot_qqq_s6: i64,
     spot_iwm_s6: i64,
@@ -161,7 +294,16 @@ struct SignedDeltaArtifact {
     artifact: DeltaArtifact,
     artifact_sha256_hex: String,
     signer_pubkey: String,
+    /// Signature over the canonical bytes of `artifact` (SHA-256 of the
+    /// pretty-printed JSON). Kept for off-chain artifact integrity; the
+    /// *on-chain* signature in `AggregateDelta.keeper_signature` is over
+    /// `encode_aggregate_delta_message(...)` — a narrower, fixed-width
+    /// byte-string that the kernel can verify via Ed25519 precompile
+    /// without parsing JSON.
     artifact_signature_base58: String,
+    /// IPFS CID returned by Pinata after successful pin. Also stored
+    /// on-chain in `AggregateDelta.publication_cid`.
+    publication_cid: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -345,9 +487,26 @@ async fn run_once(client: &KeeperClient, cfg: &KeeperConfig) -> Result<()> {
     }
 
     let merkle_root = merkle_root(&leaf_hashes);
+
+    // Fetch the current on-chain AggregateDelta (if any) to learn the
+    // sequence counter. The canonical signed message includes this; it
+    // prevents replay of an earlier valid (args, sig) pair even when
+    // every other field coincidentally matches.
+    let (aggregate_delta_pda, _) = pda::aggregate_delta(&halcyon_flagship_autocall::ID);
+    let current_agg = fetch_anchor_account_opt::<halcyon_kernel::state::AggregateDelta>(
+        &client.rpc,
+        &aggregate_delta_pda,
+    )
+    .await?;
+    let next_sequence = current_agg
+        .as_ref()
+        .map_or(1, |a| a.sequence.saturating_add(1));
+
     let artifact = DeltaArtifact {
+        version: DELTA_ARTIFACT_VERSION,
         product_program_id: halcyon_flagship_autocall::ID.to_string(),
         generated_at_ts,
+        sequence: next_sequence,
         spot_spy_s6: spot_spy.price_s6,
         spot_qqq_s6: spot_qqq.price_s6,
         spot_iwm_s6: spot_iwm.price_s6,
@@ -363,11 +522,32 @@ async fn run_once(client: &KeeperClient, cfg: &KeeperConfig) -> Result<()> {
     };
     let artifact_bytes =
         serde_json::to_vec_pretty(&artifact).context("serializing delta artifact payload")?;
-    let signed_artifact = SignedDeltaArtifact {
+    let artifact_sha256_hex = hex_string(&hashv(&[&artifact_bytes]).to_bytes());
+    let artifact_signature_base58 = client.signer.sign_message(&artifact_bytes).to_string();
+
+    // Pin to Pinata first. If the pin fails, abort the cycle — the
+    // on-chain write is only meaningful when a retrievable artifact
+    // backs it.
+    let pre_pin_artifact = SignedDeltaArtifact {
         artifact,
-        artifact_sha256_hex: hex_string(&hashv(&[&artifact_bytes]).to_bytes()),
+        artifact_sha256_hex: artifact_sha256_hex.clone(),
         signer_pubkey: client.signer.pubkey().to_string(),
-        artifact_signature_base58: client.signer.sign_message(&artifact_bytes).to_string(),
+        artifact_signature_base58: artifact_signature_base58.clone(),
+        publication_cid: String::new(),
+    };
+    let cid = client
+        .pin_artifact_to_pinata(cfg, &pre_pin_artifact)
+        .await
+        .context("pinning canonical delta artifact to Pinata")?;
+    let publication_cid_bytes =
+        encode_publication_cid(&cid).context("encoding publication_cid for on-chain write")?;
+
+    let signed_artifact = SignedDeltaArtifact {
+        artifact: pre_pin_artifact.artifact,
+        artifact_sha256_hex,
+        signer_pubkey: pre_pin_artifact.signer_pubkey,
+        artifact_signature_base58,
+        publication_cid: cid.clone(),
     };
     std::fs::write(
         &cfg.merkle_output_path,
@@ -376,18 +556,27 @@ async fn run_once(client: &KeeperClient, cfg: &KeeperConfig) -> Result<()> {
     .with_context(|| format!("writing delta artifact to {}", cfg.merkle_output_path))?;
 
     let sig = client
-        .send_write_aggregate_delta(halcyon_kernel::WriteAggregateDeltaArgs {
-            product_program_id: halcyon_flagship_autocall::ID,
-            delta_spy_s6: agg_spy_s6,
-            delta_qqq_s6: agg_qqq_s6,
-            delta_iwm_s6: agg_iwm_s6,
-            merkle_root,
-            spot_spy_s6: spot_spy.price_s6,
-            spot_qqq_s6: spot_qqq.price_s6,
-            spot_iwm_s6: spot_iwm.price_s6,
-            live_note_count: u32::try_from(signed_artifact.artifact.note_count)
-                .context("note_count overflow")?,
-        })
+        .send_signed_write_aggregate_delta(
+            halcyon_kernel::WriteAggregateDeltaArgs {
+                product_program_id: halcyon_flagship_autocall::ID,
+                delta_spy_s6: agg_spy_s6,
+                delta_qqq_s6: agg_qqq_s6,
+                delta_iwm_s6: agg_iwm_s6,
+                merkle_root,
+                spot_spy_s6: spot_spy.price_s6,
+                spot_qqq_s6: spot_qqq.price_s6,
+                spot_iwm_s6: spot_iwm.price_s6,
+                live_note_count: u32::try_from(signed_artifact.artifact.note_count)
+                    .context("note_count overflow")?,
+                pyth_publish_times: [
+                    spot_spy.publish_time,
+                    spot_qqq.publish_time,
+                    spot_iwm.publish_time,
+                ],
+                publication_cid: publication_cid_bytes,
+            },
+            next_sequence,
+        )
         .await?;
 
     info!(
@@ -397,6 +586,8 @@ async fn run_once(client: &KeeperClient, cfg: &KeeperConfig) -> Result<()> {
         delta_qqq_s6 = agg_qqq_s6,
         delta_iwm_s6 = agg_iwm_s6,
         merkle_root = %signed_artifact.artifact.merkle_root_hex,
+        sequence = next_sequence,
+        publication_cid = %cid,
         %sig,
         "wrote flagship aggregate delta",
     );

@@ -1,0 +1,17 @@
+{
+  "rpc_endpoint": "https://api.mainnet-beta.solana.com",
+  "keypair_path": "/secure/halcyon/flagship_hedge_keeper.json",
+  "pyth_spy": "REPLACE_PYTH_SPY_ACCOUNT",
+  "pyth_qqq": "REPLACE_PYTH_QQQ_ACCOUNT",
+  "pyth_iwm": "REPLACE_PYTH_IWM_ACCOUNT",
+  "scan_interval_secs": 300,
+  "backoff_cap_secs": 60,
+  "failure_budget": 5,
+  "aggregate_delta_max_age_secs": 1800,
+  "aggregate_delta_max_spot_drift_bps": 50,
+  "regression_max_age_secs": 432000,
+  "rebalance_cooldown_secs": 432000,
+  "rebalance_breach_multiple_bps": 15000,
+  "leg_band_width_bps": 1000,
+  "leg_min_trade_bps": 100
+}

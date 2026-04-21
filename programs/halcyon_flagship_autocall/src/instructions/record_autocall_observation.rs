@@ -5,18 +5,20 @@ use anchor_spl::{
 };
 use halcyon_common::{seeds, HalcyonError};
 use halcyon_kernel::{
-    cpi::accounts::{ApplySettlement, PayCoupon},
+    cpi::accounts::ApplySettlement,
     state::{
         CouponVault, KeeperRegistry, PolicyHeader, PolicyStatus, ProductRegistryEntry,
         ProtocolConfig, VaultState,
     },
-    ApplySettlementArgs, KernelError, PayCouponArgs, SettlementReason,
+    ApplySettlementArgs, KernelError, SettlementReason,
 };
 
 use crate::errors::FlagshipAutocallError;
+use crate::observation::{
+    read_equity_observation_worst_ratio_s6, require_coupon_reconciled_through,
+};
 use crate::pricing::{
-    coupon_due_with_memory_usdc, quarterly_coupon_index, ratio_meets_barrier,
-    require_correction_tables_match, worst_ratio_s6,
+    quarterly_coupon_index, ratio_meets_barrier, require_correction_tables_match,
 };
 use crate::state::{FlagshipAutocallTerms, ProductStatus, QUARTERLY_AUTOCALL_COUNT};
 
@@ -136,6 +138,10 @@ pub fn handler(ctx: Context<RecordAutocallObservation>, expected_index: u8) -> R
     {
         return Ok(());
     }
+    require!(
+        !ctx.accounts.product_registry_entry.paused,
+        HalcyonError::IssuancePausedPerProduct
+    );
     require_correction_tables_match(&ctx.accounts.protocol_config)?;
 
     let terms = &ctx.accounts.product_terms;
@@ -154,84 +160,18 @@ pub fn handler(ctx: Context<RecordAutocallObservation>, expected_index: u8) -> R
         FlagshipAutocallError::ObservationNotDue
     );
 
-    let spy = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_spy.to_account_info(),
-        &halcyon_oracles::feed_ids::SPY_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
-    let qqq = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_qqq.to_account_info(),
-        &halcyon_oracles::feed_ids::QQQ_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
-    let iwm = halcyon_oracles::read_pyth_price(
-        &ctx.accounts.pyth_iwm.to_account_info(),
-        &halcyon_oracles::feed_ids::IWM_USD,
-        &crate::ID,
-        &ctx.accounts.clock,
-        ctx.accounts.protocol_config.pyth_settle_staleness_cap_secs,
-    )?;
+    let coupon_index = quarterly_coupon_index(expected_index)?;
+    require_coupon_reconciled_through(&ctx.accounts.product_terms, coupon_index)?;
 
-    let worst_ratio = worst_ratio_s6(
+    let worst_ratio = read_equity_observation_worst_ratio_s6(
         &ctx.accounts.product_terms,
-        spy.price_s6,
-        qqq.price_s6,
-        iwm.price_s6,
+        scheduled_ts,
+        &ctx.accounts.pyth_spy.to_account_info(),
+        &ctx.accounts.pyth_qqq.to_account_info(),
+        &ctx.accounts.pyth_iwm.to_account_info(),
     )?;
     let should_autocall =
         ratio_meets_barrier(worst_ratio, ctx.accounts.product_terms.autocall_barrier_bps)?;
-
-    let coupon_index = quarterly_coupon_index(expected_index)?;
-    if ctx.accounts.product_terms.next_coupon_index == coupon_index {
-        let coupon_scheduled_ts =
-            ctx.accounts.product_terms.monthly_coupon_schedule[coupon_index as usize];
-        if now >= coupon_scheduled_ts
-            && ratio_meets_barrier(worst_ratio, ctx.accounts.product_terms.coupon_barrier_bps)?
-        {
-            let coupon_due = coupon_due_with_memory_usdc(
-                ctx.accounts.policy_header.notional,
-                ctx.accounts.product_terms.offered_coupon_bps_s6,
-                ctx.accounts.product_terms.missed_coupon_observations,
-            )?;
-            if coupon_due > 0 {
-                let bump = ctx.bumps.product_authority;
-                let signer_seeds: &[&[&[u8]]] = &[&[seeds::PRODUCT_AUTHORITY, &[bump]]];
-                halcyon_kernel::cpi::pay_coupon(
-                    CpiContext::new_with_signer(
-                        ctx.accounts.kernel_program.to_account_info(),
-                        PayCoupon {
-                            product_authority: ctx.accounts.product_authority.to_account_info(),
-                            product_registry_entry: ctx
-                                .accounts
-                                .product_registry_entry
-                                .to_account_info(),
-                            protocol_config: ctx.accounts.protocol_config.to_account_info(),
-                            vault_state: ctx.accounts.vault_state.to_account_info(),
-                            policy_header: ctx.accounts.policy_header.to_account_info(),
-                            usdc_mint: ctx.accounts.usdc_mint.to_account_info(),
-                            coupon_vault: ctx.accounts.coupon_vault.to_account_info(),
-                            coupon_vault_usdc: ctx.accounts.coupon_vault_usdc.to_account_info(),
-                            buyer_usdc: ctx.accounts.buyer_usdc.to_account_info(),
-                            token_program: ctx.accounts.token_program.to_account_info(),
-                        },
-                        signer_seeds,
-                    ),
-                    PayCouponArgs { amount: coupon_due },
-                )?;
-                let terms = &mut ctx.accounts.product_terms;
-                terms.coupons_paid_usdc = terms
-                    .coupons_paid_usdc
-                    .checked_add(coupon_due)
-                    .ok_or(HalcyonError::Overflow)?;
-                terms.missed_coupon_observations = 0;
-                terms.next_coupon_index = coupon_index.saturating_add(1);
-            }
-        }
-    }
 
     {
         let terms = &mut ctx.accounts.product_terms;

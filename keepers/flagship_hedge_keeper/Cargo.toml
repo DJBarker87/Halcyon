@@ -1,0 +1,29 @@
+[package]
+name = "flagship_hedge_keeper"
+version = "0.1.0"
+edition = "2021"
+description = "Flagship worst-of-3 hedge keeper. Scaffold pass (audit F1) — reads AggregateDelta + Regression, composes 2D SPY/QQQ targets using the IWM projection, exits in --dry-run mode. Live Jupiter submission lands in a follow-up."
+
+[[bin]]
+name = "flagship_hedge_keeper"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.47", features = ["full"] }
+solana-sdk = "=2.3.1"
+solana-rpc-client = "=2.3.1"
+solana-rpc-client-api = "=2.3.1"
+solana-account-decoder = "=2.3.1"
+clap = { version = "4.5", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
+pyth-solana-receiver-sdk = "=1.1.0"
+halcyon_client_sdk = { path = "../../crates/halcyon_client_sdk" }
+halcyon_common = { path = "../../crates/halcyon_common" }
+halcyon_flagship_autocall = { path = "../../programs/halcyon_flagship_autocall", features = ["cpi"] }
+halcyon_kernel = { path = "../../programs/halcyon_kernel", features = ["cpi"] }
+halcyon_oracles = { path = "../../crates/halcyon_oracles" }

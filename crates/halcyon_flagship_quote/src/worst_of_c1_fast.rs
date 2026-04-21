@@ -24,8 +24,7 @@ pub(crate) const CF_DELTA_SCALE_S12: i128 = 116_985_997_577;
 const N_OBS: usize = 6;
 const FAIR_COUPON_BPS_S6_SCALE: i128 = 10_000_000_000;
 const S12_TO_S6_DIVISOR: i128 = 1_000_000;
-const SPY_QQQ_IWM_RESIDUAL_VARIANCE_DIAG_DAILY_S12: [i128; 3] =
-    [8_222_389, 19_862_760, 21_036_297];
+const SPY_QQQ_IWM_RESIDUAL_VARIANCE_DIAG_DAILY_S12: [i128; 3] = [8_222_389, 19_862_760, 21_036_297];
 
 /// i64 multiply at SCALE_6. Product fits i64 for |a|,|b| ≤ ~3e6.
 #[inline(always)]
@@ -506,6 +505,9 @@ impl C1FastQuote {
     }
 }
 
+/// Off-chain diagnostics return type for `quote_c1_fast_trace`. Not part
+/// of the on-chain SBF build — see the gate on `quote_c1_fast` above.
+#[cfg(any(test, not(target_os = "solana")))]
 #[derive(Debug, Clone, Copy)]
 struct C1FastTrace {
     quote: C1FastQuote,
@@ -525,6 +527,14 @@ struct NodeState {
 /// `sigma_s6`: σ_common at SCALE_6.
 /// `drift_diffs`: `[drift[1]-drift[0], drift[2]-drift[0]]` at SCALE_6 for step=63.
 /// `drift_shift_63`: `Σ l_i × drift_i` at SCALE_6 for step=63.
+///
+/// **Off-chain only.** The flagship program's on-chain pricing path
+/// routes through `worst_of_c1_filter::quote_c1_filter`, not this faster
+/// but higher-stack-usage variant. Keeping `quote_c1_fast` and its
+/// `quote_c1_fast_trace` helper out of the SBF target avoids a 4.8 KB
+/// frame that exceeds the 4 KB SBF per-frame cap without changing any
+/// on-chain behaviour. Off-chain tests and benches still use this path.
+#[cfg(not(target_os = "solana"))]
 pub fn quote_c1_fast(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -534,6 +544,7 @@ pub fn quote_c1_fast(
     quote_c1_fast_trace(cfg, sigma_s6, drift_diffs, drift_shift_63).quote
 }
 
+#[cfg(not(target_os = "solana"))]
 fn quote_c1_fast_trace(
     cfg: &C1FastConfig,
     sigma_s6: i64,
@@ -570,12 +581,18 @@ fn quote_c1_fast_trace(
         step_mean_v[k] = drift_diffs[1] + cfg.uv_slope[1] * factor_values[k] / S6;
         common_shift_step[k] = factor_values[k] + drift_shift_63;
     }
-    let triple_pre = core::array::from_fn::<_, N_OBS, _>(|i| {
-        let obs = &cfg.obs[i];
-        cholesky6(obs.cov_uu, obs.cov_uv, obs.cov_vv)
-            .ok()
-            .map(|(l11, l21, l22)| build_triple_correction_pre(l11, l21, l22, &cfg.au, &cfg.av))
-    });
+    // Heap-allocate the per-observation `TripleCorrectionPre` table
+    // (6 × ~88 B ≈ 528 B). Combined with the other persistent arrays in
+    // this function, keeping it on the stack pushed the SBF frame past
+    // the 4 KB limit. Moving to the heap leaves only an 8-byte pointer
+    // on the stack; the math is unchanged.
+    let triple_pre: Box<[Option<TripleCorrectionPre>; N_OBS]> =
+        Box::new(core::array::from_fn::<_, N_OBS, _>(|i| {
+            let obs = &cfg.obs[i];
+            cholesky6(obs.cov_uu, obs.cov_uv, obs.cov_vv)
+                .ok()
+                .map(|(l11, l21, l22)| build_triple_correction_pre(l11, l21, l22, &cfg.au, &cfg.av))
+        }));
     let mut node_states = core::array::from_fn::<_, 9, _>(|k| NodeState {
         survival_w: weights[k],
         mean_u: 0,

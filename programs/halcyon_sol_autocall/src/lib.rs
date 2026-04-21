@@ -30,6 +30,8 @@ pub use instructions::preview_quote::*;
 pub use instructions::record_observation::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::settle::*;
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::write_reduced_operators::*;
 pub use state::*;
 
 declare_id!("6DfpE7MEx1K1CeiQuw8Q61Empamcuknv9Tc79xtJKae8");
@@ -52,5 +54,12 @@ pub mod halcyon_sol_autocall {
 
     pub fn settle(ctx: Context<Settle>) -> Result<()> {
         instructions::settle::handler(ctx)
+    }
+
+    pub fn write_reduced_operators(
+        ctx: Context<WriteReducedOperators>,
+        args: WriteReducedOperatorsArgs,
+    ) -> Result<()> {
+        instructions::write_reduced_operators::handler(ctx, args)
     }
 }

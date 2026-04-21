@@ -2,11 +2,26 @@ use anchor_lang::prelude::*;
 
 pub const MONTHLY_COUPON_COUNT: usize = 18;
 pub const QUARTERLY_AUTOCALL_COUNT: usize = 6;
+#[cfg(feature = "integration-test")]
+pub const SECONDS_PER_DAY: i64 = 1;
+#[cfg(not(feature = "integration-test"))]
 pub const SECONDS_PER_DAY: i64 = 86_400;
+#[cfg(feature = "integration-test")]
+pub const TENOR_TRADING_DAYS: u16 = 18;
+#[cfg(not(feature = "integration-test"))]
 pub const TENOR_TRADING_DAYS: u16 = 378;
+#[cfg(feature = "integration-test")]
+pub const MONTHLY_COUPON_TRADING_DAY_BOUNDARIES: [u16; MONTHLY_COUPON_COUNT] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+];
+#[cfg(not(feature = "integration-test"))]
 pub const MONTHLY_COUPON_TRADING_DAY_BOUNDARIES: [u16; MONTHLY_COUPON_COUNT] = [
     21, 42, 63, 84, 105, 126, 147, 168, 189, 210, 231, 252, 273, 294, 315, 336, 357, 378,
 ];
+#[cfg(feature = "integration-test")]
+pub const QUARTERLY_AUTOCALL_TRADING_DAY_BOUNDARIES: [u16; QUARTERLY_AUTOCALL_COUNT] =
+    [3, 6, 9, 12, 15, 18];
+#[cfg(not(feature = "integration-test"))]
 pub const QUARTERLY_AUTOCALL_TRADING_DAY_BOUNDARIES: [u16; QUARTERLY_AUTOCALL_COUNT] =
     [63, 126, 189, 252, 315, 378];
 

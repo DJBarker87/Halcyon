@@ -1,0 +1,10 @@
+[package]
+name = "halcyon_sol_autocall_quote_training"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1"
+halcyon_sol_autocall_quote = { path = "../halcyon_sol_autocall_quote" }
+sha2 = "0.10"

@@ -16,6 +16,25 @@
 
 use solmath_core::{div6, exp6, fp_div, fp_mul, mul6, sqrt6, SolMathError, SCALE, SCALE_6};
 
+use crate::generated::pod_deim_table as generated;
+
+#[cfg(target_os = "solana")]
+unsafe extern "C" {
+    fn sol_log_compute_units_();
+    fn sol_log_(message: *const u8, length: u64);
+}
+
+#[inline(always)]
+pub(crate) fn cu_trace(stage: &'static [u8]) {
+    #[cfg(target_os = "solana")]
+    unsafe {
+        sol_log_(stage.as_ptr(), stage.len() as u64);
+        sol_log_compute_units_();
+    }
+    #[cfg(not(target_os = "solana"))]
+    let _ = stage;
+}
+
 // ============================================================
 // Existing scaffold types (preserved for backward compatibility)
 // ============================================================
@@ -1677,6 +1696,7 @@ fn build_transition_matrix(
     grid: &MarkovGrid,
     params: &NigParams6,
 ) -> Result<Vec<Vec<i64>>, SolMathError> {
+    cu_trace(b"cu_trace:build_transition_matrix:start");
     let s = grid.n_states;
 
     // Precompute NIG COS coefficients
@@ -1726,6 +1746,7 @@ fn build_transition_matrix(
         let a_im = mul6(phi.re, rot.im)? + mul6(phi.im, rot.re)?;
         coeffs.push((a_re, a_im));
     }
+    cu_trace(b"cu_trace:build_transition_matrix:after_coeffs");
 
     // Build N×N transition matrix using grid representatives
     let mut mat = vec![vec![0i64; s]; s];
@@ -1753,6 +1774,7 @@ fn build_transition_matrix(
         }
     }
 
+    cu_trace(b"cu_trace:build_transition_matrix:end");
     Ok(mat)
 }
 
@@ -1820,8 +1842,12 @@ pub fn solve_fair_coupon_markov_with_params(
     n_states: usize,
     contract: &AutocallParams,
 ) -> Result<AutocallPriceResult, AutocallV2Error> {
+    cu_trace(b"cu_trace:markov_with_params:start");
     let grid = MarkovGrid::build_with_contract(n_states.max(7), nig, contract)?;
-    solve_with_grid(&grid, nig, contract)
+    cu_trace(b"cu_trace:markov_with_params:after_grid_build");
+    let result = solve_with_grid(&grid, nig, contract)?;
+    cu_trace(b"cu_trace:markov_with_params:end");
+    Ok(result)
 }
 
 /// Price on a pre-built Markov grid.
@@ -1833,8 +1859,10 @@ fn solve_with_grid(
     nig: &NigParams6,
     contract: &AutocallParams,
 ) -> Result<AutocallPriceResult, AutocallV2Error> {
+    cu_trace(b"cu_trace:solve_with_grid:start");
     let s = grid.n_states;
     let mat = build_transition_matrix(grid, nig)?;
+    cu_trace(b"cu_trace:solve_with_grid:after_transition_matrix");
 
     let principal_6 = SCALE_6;
 
@@ -1864,6 +1892,12 @@ fn solve_with_grid(
                 principal_6
             };
             val_touched[j] = redemption + coupon;
+        }
+
+        if pass == 0 {
+            cu_trace(b"cu_trace:solve_with_grid:after_terminal_pass0");
+        } else {
+            cu_trace(b"cu_trace:solve_with_grid:after_terminal_pass1");
         }
 
         // Backward recursion: 7 observation steps (obs 8 down to obs 1),
@@ -1932,6 +1966,12 @@ fn solve_with_grid(
             val_touched = new_touched;
         }
 
+        if pass == 0 {
+            cu_trace(b"cu_trace:solve_with_grid:after_backward_pass0");
+        } else {
+            cu_trace(b"cu_trace:solve_with_grid:after_backward_pass1");
+        }
+
         results[pass] = (val_untouched[grid.atm_state], val_touched[grid.atm_state]);
     }
 
@@ -1952,13 +1992,15 @@ fn solve_with_grid(
         0
     };
 
-    Ok(AutocallPriceResult {
+    let result = AutocallPriceResult {
         expected_redemption: (e_v0.max(0) as u128) * up,
         expected_coupon_count: (e_coupon_count.max(0) as u128) * up,
         expected_shortfall: (shortfall as u128) * up,
         fair_coupon: (fair_coupon_6.max(0) as u128) * up,
         fair_coupon_bps: fc_bps,
-    })
+    };
+    cu_trace(b"cu_trace:solve_with_grid:end");
+    Ok(result)
 }
 
 /// Default CTMC state count for on-chain pricing.
@@ -2107,10 +2149,13 @@ pub fn solve_fair_coupon_markov_richardson_gated_with_threshold(
     contract: &AutocallParams,
     threshold_pct: u64,
 ) -> Result<GatedPriceResult, AutocallV2Error> {
+    cu_trace(b"cu_trace:richardson:start");
     let (n_small, n_large) = if n1 <= n2 { (n1, n2) } else { (n2, n1) };
 
     let r_coarse = solve_fair_coupon_markov_with_params(nig, n_small, contract)?;
+    cu_trace(b"cu_trace:richardson:after_coarse");
     let r_fine = solve_fair_coupon_markov_with_params(nig, n_large, contract)?;
+    cu_trace(b"cu_trace:richardson:after_fine");
 
     let fc_coarse = r_coarse.fair_coupon;
     let fc_fine = r_fine.fair_coupon;
@@ -2129,6 +2174,7 @@ pub fn solve_fair_coupon_markov_richardson_gated_with_threshold(
 
     let gap_pct = grid_gap * 100 / SCALE;
     let high_confidence = gap_pct < threshold_pct as u128;
+    cu_trace(b"cu_trace:richardson:after_confidence");
 
     let result = if high_confidence {
         // Richardson is reliable — extrapolate
@@ -2166,7 +2212,7 @@ pub fn solve_fair_coupon_markov_richardson_gated_with_threshold(
         r_fine
     };
 
-    Ok(GatedPriceResult {
+    let gated = GatedPriceResult {
         result,
         confidence: if high_confidence {
             PriceConfidence::High
@@ -2176,7 +2222,9 @@ pub fn solve_fair_coupon_markov_richardson_gated_with_threshold(
         grid_gap,
         fc_fine,
         fc_coarse,
-    })
+    };
+    cu_trace(b"cu_trace:richardson:end");
+    Ok(gated)
 }
 
 /// Public access to the Markov grid structure for testing.
@@ -2184,6 +2232,16 @@ pub fn solve_fair_coupon_markov_richardson_gated_with_threshold(
 pub struct MarkovGridInfo {
     pub reps: Vec<i64>,
     pub bounds: Vec<i64>,
+    pub n_states: usize,
+    pub atm_state: usize,
+    pub ki_state_max: usize,
+    pub ki_boundary_idx: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MarkovGridInfoConst<'a> {
+    pub reps: &'a [i64],
+    pub bounds: &'a [i64],
     pub n_states: usize,
     pub atm_state: usize,
     pub ki_state_max: usize,
@@ -2412,6 +2470,18 @@ pub struct DeimLegData {
     pub d: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct DeimLegConst<'a> {
+    pub phi_at_idx: &'a [i64],
+    pub pt_inv: &'a [i64],
+    pub phi_atm: &'a [i64],
+    pub ki_at_idx: &'a [bool],
+    pub cpn_at_idx: &'a [bool],
+    pub ac_at_idx: &'a [bool],
+    pub phi: &'a [i64],
+    pub d: usize,
+}
+
 /// Pre-computed DEIM factors for the reduced-basis backward pass.
 ///
 /// V-leg (coupon=0, smooth) and U-leg (coupon=1, sharp coupon counting)
@@ -2425,6 +2495,12 @@ pub struct DeimFactors {
     pub n: usize,
     /// ATM state index (for readout).
     pub atm_state: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct DeimFactorsConst<'a> {
+    pub v_leg: DeimLegConst<'a>,
+    pub u_leg: DeimLegConst<'a>,
 }
 
 /// Solve fair coupon using the DEIM reduced-basis backward pass.
@@ -2466,6 +2542,11 @@ pub fn solve_fair_coupon_deim(
         // Project into reduced space: c = Φᵀ · v_full
         let mut v_u = phi_transpose_times_v(&leg.phi, &val_u_full, d, s)?;
         let mut v_t = phi_transpose_times_v(&leg.phi, &val_t_full, d, s)?;
+        if pass == 0 {
+            cu_trace(b"cu_trace:e11:after_terminal_projection_pass0");
+        } else {
+            cu_trace(b"cu_trace:e11:after_terminal_projection_pass1");
+        }
 
         for step in 0..contract.n_obs {
             let is_day0 = step == contract.n_obs - 1;
@@ -2528,6 +2609,11 @@ pub fn solve_fair_coupon_deim(
             atm_val += mul6(leg.phi_atm[j], v_u[j])?;
         }
         pass_results[pass] = atm_val;
+        if pass == 0 {
+            cu_trace(b"cu_trace:e11:after_backward_pass0");
+        } else {
+            cu_trace(b"cu_trace:e11:after_backward_pass1");
+        }
     }
 
     let e_v0 = pass_results[0];
@@ -2546,6 +2632,7 @@ pub fn solve_fair_coupon_deim(
     } else {
         0
     };
+    cu_trace(b"cu_trace:e11:after_fair_coupon");
 
     Ok(AutocallPriceResult {
         expected_redemption: (e_v0.max(0) as u128) * up,
@@ -2554,6 +2641,195 @@ pub fn solve_fair_coupon_deim(
         fair_coupon: (fair_coupon_6.max(0) as u128) * up,
         fair_coupon_bps: fc_bps,
     })
+}
+
+/// Solve fair coupon using precomputed reduced operators and the generated
+/// fixed-product POD-DEIM basis compiled into the binary.
+pub fn solve_fair_coupon_deim_const(
+    grid_info: &MarkovGridInfoConst<'_>,
+    factors: &DeimFactorsConst<'_>,
+    p_red_v: &[i64],
+    p_red_u: &[i64],
+    contract: &AutocallParams,
+) -> Result<AutocallPriceResult, AutocallV2Error> {
+    if p_red_v.len() != generated::D * generated::D || p_red_u.len() != generated::D * generated::D
+    {
+        return Err(AutocallV2Error::InvalidGrid);
+    }
+
+    let mut p_red_v_fixed = [0i64; generated::D * generated::D];
+    let mut p_red_u_fixed = [0i64; generated::D * generated::D];
+    p_red_v_fixed.copy_from_slice(p_red_v);
+    p_red_u_fixed.copy_from_slice(p_red_u);
+
+    let e_v0 = solve_fair_coupon_deim_leg_const(
+        grid_info,
+        &factors.v_leg,
+        &p_red_v_fixed,
+        contract,
+        0,
+        0,
+    )?;
+    let e_v1 = solve_fair_coupon_deim_leg_const(
+        grid_info,
+        &factors.u_leg,
+        &p_red_u_fixed,
+        contract,
+        SCALE_6,
+        1,
+    )?;
+
+    let e_coupon_count = e_v1 - e_v0;
+    let shortfall = if SCALE_6 > e_v0 { SCALE_6 - e_v0 } else { 0 };
+    let fair_coupon_6 = if e_coupon_count > 0 {
+        div6(shortfall, e_coupon_count)?
+    } else {
+        0
+    };
+
+    let up = (SCALE / SCALE_6 as u128) as u128;
+    let fc_bps = if fair_coupon_6 > 0 {
+        (fair_coupon_6 as u64 * 10_000) / SCALE_6 as u64
+    } else {
+        0
+    };
+    cu_trace(b"cu_trace:deim:after_fair_coupon");
+
+    Ok(AutocallPriceResult {
+        expected_redemption: (e_v0.max(0) as u128) * up,
+        expected_coupon_count: (e_coupon_count.max(0) as u128) * up,
+        expected_shortfall: (shortfall as u128) * up,
+        fair_coupon: (fair_coupon_6.max(0) as u128) * up,
+        fair_coupon_bps: fc_bps,
+    })
+}
+
+fn solve_fair_coupon_deim_leg_const(
+    grid_info: &MarkovGridInfoConst<'_>,
+    leg: &DeimLegConst<'_>,
+    p_red: &E11ReducedMat6,
+    contract: &AutocallParams,
+    coupon_6: i64,
+    pass: usize,
+) -> Result<i64, AutocallV2Error> {
+    let s = grid_info.n_states;
+    debug_assert_eq!(s, generated::N_STATES);
+    debug_assert_eq!(leg.d, generated::D);
+
+    let mut val_u_full = [0i64; generated::N_STATES];
+    let mut val_t_full = [0i64; generated::N_STATES];
+    for j in 0..s {
+        let rep = grid_info.reps[j];
+        let coupon = if rep >= 0 { coupon_6 } else { 0 };
+        val_u_full[j] = SCALE_6 + coupon;
+        let redemption = if rep < 0 { exp6(rep)? } else { SCALE_6 };
+        val_t_full[j] = redemption + coupon;
+    }
+
+    let mut v_u = [0i64; generated::D];
+    let mut v_t = [0i64; generated::D];
+    phi_transpose_times_v_fixed(leg.phi, &val_u_full, s, &mut v_u)?;
+    phi_transpose_times_v_fixed(leg.phi, &val_t_full, s, &mut v_t)?;
+    if pass == 0 {
+        cu_trace(b"cu_trace:deim:after_terminal_projection_pass0");
+    } else {
+        cu_trace(b"cu_trace:deim:after_terminal_projection_pass1");
+    }
+
+    let mut e_t = [0i64; generated::D];
+    let mut v_u_at = [0i64; generated::D];
+    let mut v_t_at = [0i64; generated::D];
+    let mut hybrid_at = [0i64; generated::D];
+    let mut hybrid_red = [0i64; generated::D];
+    let mut e_u = [0i64; generated::D];
+    let mut e_u_at = [0i64; generated::D];
+    let mut e_t_at = [0i64; generated::D];
+    let mut new_u_at = [0i64; generated::D];
+    let mut new_t_at = [0i64; generated::D];
+
+    for step in 0..contract.n_obs {
+        let is_day0 = step == contract.n_obs - 1;
+        let autocall_suppressed = !is_day0
+            && contract.no_autocall_first_n_obs > 0
+            && (contract.n_obs - 1 - step) <= contract.no_autocall_first_n_obs;
+
+        deim_matvec6_fixed(p_red, &v_t, &mut e_t)?;
+        deim_matvec6_fixed(leg.phi_at_idx, &v_u, &mut v_u_at)?;
+        deim_matvec6_fixed(leg.phi_at_idx, &v_t, &mut v_t_at)?;
+        for i in 0..generated::D {
+            hybrid_at[i] = if leg.ki_at_idx[i] { v_t_at[i] } else { v_u_at[i] };
+        }
+        deim_matvec6_fixed(leg.pt_inv, &hybrid_at, &mut hybrid_red)?;
+        deim_matvec6_fixed(p_red, &hybrid_red, &mut e_u)?;
+
+        if is_day0 {
+            v_u.copy_from_slice(&e_u);
+            v_t.copy_from_slice(&e_t);
+        } else {
+            deim_matvec6_fixed(leg.phi_at_idx, &e_u, &mut e_u_at)?;
+            deim_matvec6_fixed(leg.phi_at_idx, &e_t, &mut e_t_at)?;
+
+            for i in 0..generated::D {
+                let cpn = if leg.cpn_at_idx[i] { coupon_6 } else { 0 };
+                if !autocall_suppressed && leg.ac_at_idx[i] {
+                    new_u_at[i] = SCALE_6 + cpn;
+                    new_t_at[i] = SCALE_6 + cpn;
+                } else if leg.ki_at_idx[i] {
+                    new_u_at[i] = e_t_at[i] + cpn;
+                    new_t_at[i] = e_t_at[i] + cpn;
+                } else {
+                    new_u_at[i] = e_u_at[i] + cpn;
+                    new_t_at[i] = e_t_at[i] + cpn;
+                }
+            }
+
+            deim_matvec6_fixed(leg.pt_inv, &new_u_at, &mut v_u)?;
+            deim_matvec6_fixed(leg.pt_inv, &new_t_at, &mut v_t)?;
+        }
+    }
+
+    let mut atm_val: i64 = 0;
+    for j in 0..generated::D {
+        atm_val += mul6(leg.phi_atm[j], v_u[j])?;
+    }
+    if pass == 0 {
+        cu_trace(b"cu_trace:deim:after_backward_pass0");
+    } else {
+        cu_trace(b"cu_trace:deim:after_backward_pass1");
+    }
+    Ok(atm_val)
+}
+
+fn phi_transpose_times_v_fixed(
+    phi: &[i64],
+    v: &E11StateVec6,
+    n: usize,
+    out: &mut E11ReducedVec6,
+) -> Result<(), SolMathError> {
+    for k in 0..generated::D {
+        let mut acc: i64 = 0;
+        for i in 0..n {
+            acc += mul6(phi[i * generated::D + k], v[i])?;
+        }
+        out[k] = acc;
+    }
+    Ok(())
+}
+
+fn deim_matvec6_fixed(
+    mat: &[i64],
+    v: &E11ReducedVec6,
+    out: &mut E11ReducedVec6,
+) -> Result<(), SolMathError> {
+    for i in 0..generated::D {
+        let mut acc: i64 = 0;
+        let base = i * generated::D;
+        for j in 0..generated::D {
+            acc += mul6(mat[base + j], v[j])?;
+        }
+        out[i] = acc;
+    }
+    Ok(())
 }
 
 /// Φᵀ · v where Φ is n×d row-major and v is n-vector. Returns d-vector.
@@ -2757,6 +3033,89 @@ pub struct E11Factors {
     pub grid_bounds: Vec<i64>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct E11FactorsConst<'a> {
+    pub m: usize,
+    pub d: usize,
+    pub atoms_v: &'a [i64],
+    pub atoms_u: &'a [i64],
+    pub p_ref_red_v: &'a [i64],
+    pub p_ref_red_u: &'a [i64],
+    pub p_ref_at_eim: &'a [i64],
+    pub b_inv: &'a [i64],
+    pub eim_rows: &'a [u16],
+    pub eim_cols: &'a [u16],
+}
+
+type E11StateVec6 = [i64; generated::N_STATES];
+type E11ReducedVec6 = [i64; generated::D];
+type E11ReducedMat6 = [i64; generated::D * generated::D];
+type E11InterpVals6 = [i64; generated::M];
+type E11InterpCoeffsHp = [i128; generated::M];
+
+/// Assemble the live σ-dependent reduced operators for the fixed-product
+/// POD-DEIM tables compiled into the binary.
+#[cfg(not(target_os = "solana"))]
+pub fn assemble_e11_reduced_operators_const(
+    factors: &E11FactorsConst<'_>,
+    nig: &NigParams6,
+    grid_info: &MarkovGridInfoConst<'_>,
+) -> Result<(E11ReducedMat6, E11ReducedMat6), AutocallV2Error> {
+    debug_assert_eq!(factors.m, generated::M);
+    debug_assert_eq!(factors.d, generated::D);
+    debug_assert_eq!(grid_info.n_states, generated::N_STATES);
+
+    let s = grid_info.n_states;
+    let mut dp_vals = [0i64; generated::M];
+    for idx in 0..generated::M {
+        let row = factors.eim_rows[idx] as usize;
+        let col = factors.eim_cols[idx] as usize;
+
+        let upper_6 = if col < s - 1 {
+            nig_cdf_cos_at(grid_info.bounds[col] - grid_info.reps[row], nig)?
+        } else {
+            SCALE_6
+        };
+        let lower_6 = if col > 0 {
+            nig_cdf_cos_at(grid_info.bounds[col - 1] - grid_info.reps[row], nig)?
+        } else {
+            0i64
+        };
+        let p_live = (upper_6 - lower_6).max(0);
+        dp_vals[idx] = p_live - factors.p_ref_at_eim[idx];
+    }
+    cu_trace(b"cu_trace:e11:after_dp_eval");
+
+    let mut c_coeffs_hp = [0i128; generated::M];
+    for a in 0..generated::M {
+        let mut acc: i128 = 0;
+        for b in 0..generated::M {
+            acc += factors.b_inv[a * generated::M + b] as i128 * dp_vals[b] as i128;
+        }
+        c_coeffs_hp[a] = acc;
+    }
+    cu_trace(b"cu_trace:e11:after_coeff_solve");
+
+    let s6_sq = SCALE_6 as i128 * SCALE_6 as i128;
+    let mut p_red_v = [0i64; generated::D * generated::D];
+    let mut p_red_u = [0i64; generated::D * generated::D];
+
+    for k in 0..(generated::D * generated::D) {
+        let mut acc_v = factors.p_ref_red_v[k] as i128 * s6_sq;
+        let mut acc_u = factors.p_ref_red_u[k] as i128 * s6_sq;
+        for im in 0..generated::M {
+            let atom_base = im * generated::D * generated::D;
+            acc_v += c_coeffs_hp[im] * factors.atoms_v[atom_base + k] as i128;
+            acc_u += c_coeffs_hp[im] * factors.atoms_u[atom_base + k] as i128;
+        }
+        p_red_v[k] = (acc_v / s6_sq) as i64;
+        p_red_u[k] = (acc_u / s6_sq) as i64;
+    }
+    cu_trace(b"cu_trace:e11:after_p_red_assembly");
+
+    Ok((p_red_v, p_red_u))
+}
+
 /// Solve fair coupon using E11 live operator interpolation.
 ///
 /// On-chain computation:
@@ -2766,6 +3125,58 @@ pub struct E11Factors {
 ///   4. Run DEIM backward pass with the live-assembled P_red
 ///
 /// All NIG fat-tail math (Bessel K₁, exp, sqrt) is computed live from σ.
+#[cfg(not(target_os = "solana"))]
+pub fn solve_fair_coupon_e11_const(
+    factors: &E11FactorsConst<'_>,
+    nig: &NigParams6,
+    grid_info: &MarkovGridInfoConst<'_>,
+    deim_base: &DeimFactorsConst<'_>,
+    contract: &AutocallParams,
+) -> Result<AutocallPriceResult, AutocallV2Error> {
+    let (p_red_v, p_red_u) = assemble_e11_reduced_operators_const(factors, nig, grid_info)?;
+    let e_v0 = solve_fair_coupon_deim_leg_const(
+        grid_info,
+        &deim_base.v_leg,
+        &p_red_v,
+        contract,
+        0,
+        0,
+    )?;
+    let e_v1 = solve_fair_coupon_deim_leg_const(
+        grid_info,
+        &deim_base.u_leg,
+        &p_red_u,
+        contract,
+        SCALE_6,
+        1,
+    )?;
+
+    let e_coupon_count = e_v1 - e_v0;
+    let shortfall = if SCALE_6 > e_v0 { SCALE_6 - e_v0 } else { 0 };
+    let fair_coupon_6 = if e_coupon_count > 0 {
+        div6(shortfall, e_coupon_count)?
+    } else {
+        0
+    };
+
+    let up = (SCALE / SCALE_6 as u128) as u128;
+    let fc_bps = if fair_coupon_6 > 0 {
+        (fair_coupon_6 as u64 * 10_000) / SCALE_6 as u64
+    } else {
+        0
+    };
+    cu_trace(b"cu_trace:e11:after_fair_coupon");
+
+    Ok(AutocallPriceResult {
+        expected_redemption: (e_v0.max(0) as u128) * up,
+        expected_coupon_count: (e_coupon_count.max(0) as u128) * up,
+        expected_shortfall: (shortfall as u128) * up,
+        fair_coupon: (fair_coupon_6.max(0) as u128) * up,
+        fair_coupon_bps: fc_bps,
+    })
+}
+
+#[cfg(not(target_os = "solana"))]
 pub fn solve_fair_coupon_e11(
     factors: &E11Factors,
     nig: &NigParams6,
@@ -2826,6 +3237,7 @@ pub fn solve_fair_coupon_e11(
         let p_live = (upper_6 - lower_6).max(0);
         dp_vals[idx] = p_live - factors.p_ref_at_eim[idx];
     }
+    cu_trace(b"cu_trace:e11:after_dp_eval");
 
     // ── Step 2: c = B⁻¹ · δP_vals (i128 accumulation) ────────────────
     // Keep c_coeffs at SCALE_6² (i128) to avoid premature truncation.
@@ -2837,6 +3249,7 @@ pub fn solve_fair_coupon_e11(
         }
         c_coeffs_hp[a] = acc; // at SCALE_6² = 1e12
     }
+    cu_trace(b"cu_trace:e11:after_coeff_solve");
 
     // ── Step 3: P_red = P_ref_red + Σ c_m · δA_m (i128 assembly) ────
     // Accumulate in i128 at SCALE_6³, divide once at the end.
@@ -2867,9 +3280,10 @@ pub fn solve_fair_coupon_e11(
 
     let p_red_v = assemble_p_red(&factors.atoms_v, &factors.p_ref_red_v)?;
     let p_red_u = assemble_p_red(&factors.atoms_u, &factors.p_ref_red_u)?;
+    cu_trace(b"cu_trace:e11:after_p_red_assembly");
 
     // ── Step 4: Build patched DEIM factors and call DEIM solver ──────────
-    let mut patched = DeimFactors {
+    let patched = DeimFactors {
         v_leg: DeimLegData {
             p_red: p_red_v,
             ..clone_deim_leg(&deim_base.v_leg)
@@ -2882,7 +3296,9 @@ pub fn solve_fair_coupon_e11(
         atm_state: deim_base.atm_state,
     };
 
-    solve_fair_coupon_deim(grid_info, &patched, contract)
+    let result = solve_fair_coupon_deim(grid_info, &patched, contract)?;
+    cu_trace(b"cu_trace:e11:after_deim_solver");
+    Ok(result)
 }
 
 /// Clone a DeimLegData (needed because DeimLegData doesn't derive Clone).
@@ -2930,7 +3346,8 @@ fn nig_cdf_cos_at(z_6: i64, nig: &NigParams6) -> Result<i64, SolMathError> {
     let rot_base = C6::new(cos_r1, -sin_r1);
     let mut rot = C6::new(SCALE_6, 0);
 
-    let mut coeffs: Vec<(i64, i64)> = Vec::new();
+    let mut coeffs = [(0i64, 0i64); COS_M - 1];
+    let mut coeffs_len = 0usize;
     for k in 1..COS_M {
         let omega_k = (k as i64) * omega_1;
         let new_re = mul6(rot.re, rot_base.re)? - mul6(rot.im, rot_base.im)?;
@@ -2948,10 +3365,11 @@ fn nig_cdf_cos_at(z_6: i64, nig: &NigParams6) -> Result<i64, SolMathError> {
 
         let a_re = mul6(phi.re, rot.re)? - mul6(phi.im, rot.im)?;
         let a_im = mul6(phi.re, rot.im)? + mul6(phi.im, rot.re)?;
-        coeffs.push((a_re, a_im));
+        coeffs[coeffs_len] = (a_re, a_im);
+        coeffs_len += 1;
     }
 
-    nig_cdf_cos_direct(z_6, cos_a, ba, &coeffs)
+    nig_cdf_cos_direct(z_6, cos_a, ba, &coeffs[..coeffs_len])
 }
 
 /// Build and return the transition matrix for inspection.

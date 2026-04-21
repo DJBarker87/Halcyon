@@ -1,0 +1,26 @@
+{
+  "comment": "Halcyon price relay — devnet config. Copy to devnet.json and fill in keypair_path + shard_id.",
+
+  "rpc_endpoint": "https://devnet.helius-rpc.com/?api-key=REPLACE_ME",
+  "hermes_endpoint": "https://hermes.pyth.network",
+  "keypair_path": "/secure/halcyon/devnet/price_relay.keypair.json",
+
+  "_shard_id_doc": "Shard ID produces deterministic PriceUpdateV2 account addresses: PDA = findProgramAddress([shard_id_u16_le, feed_id_hex_32], receiver_program). Halcyon uses shard 7 to keep our addresses distinct from the 3000+ other devnet writers who claimed shard 0.",
+  "shard_id": 7,
+
+  "scan_interval_secs": 10,
+
+  "_staleness_doc": "If the on-chain publish_time is within this many seconds of the latest Hermes publish_time, the relay skips the post. Saves tx fees when nothing has changed.",
+  "staleness_cap_secs": 30,
+
+  "feeds": [
+    { "alias": "SOL_USD",  "id": "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d" },
+    { "alias": "USDC_USD", "id": "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a" },
+    { "alias": "SPY_USD",  "id": "0x19e09bb805456ada3979a7d1cbb4b6d63babc3a0f8e8a9509f68afa5c4c11cd5" },
+    { "alias": "QQQ_USD",  "id": "0x9695e2b96ea7b3859da9ed25b7a46a920a776e2fdae19a7bcfdf2b219230452d" },
+    { "alias": "IWM_USD",  "id": "0xeff690a187797aa225723345d4612abec0bf0cec1ae62347c0e7b1905d730879" }
+  ],
+
+  "failure_budget": 5,
+  "backoff_cap_secs": 60
+}

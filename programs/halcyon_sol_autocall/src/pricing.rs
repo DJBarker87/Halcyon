@@ -13,28 +13,41 @@ use anchor_lang::prelude::*;
 use halcyon_common::HalcyonError;
 use halcyon_kernel::state::{ProtocolConfig, RegimeSignal, VaultSigma};
 use halcyon_sol_autocall_quote::autocall_v2::{
-    solve_fair_coupon_markov_richardson_gated_at_vol, AutocallParams, AutocallPriceResult,
-    GatedPriceResult, PriceConfidence, AUTOCALL_LOG_6, KNOCK_IN_LOG_6,
+    AutocallParams, AutocallPriceResult, AUTOCALL_LOG_6, KNOCK_IN_LOG_6,
 };
-use halcyon_sol_autocall_quote::autocall_v2_e11::solve_fair_coupon_e11_cached;
+use halcyon_sol_autocall_quote::autocall_v2_e11::solve_fair_coupon_deim_from_precomputed_const as solve_keeper_deim;
+use halcyon_sol_autocall_quote::generated::pod_deim_table::POD_DEIM_TABLE_SHA256;
 use solana_sha256_hasher::hash;
 use solmath_core::{fp_mul, fp_sqrt, SCALE};
 
 use crate::errors::SolAutocallError;
 use crate::state::{
     CURRENT_ENGINE_VERSION, KI_BARRIER_BPS, MATURITY_DAYS, NO_AUTOCALL_FIRST_N_OBS,
-    OBSERVATION_COUNT, OBSERVATION_INTERVAL_DAYS, SECONDS_PER_DAY,
+    OBSERVATION_COUNT, OBSERVATION_INTERVAL_DAYS, SECONDS_PER_DAY, SolAutocallReducedOperators,
 };
 
-/// Richardson grids per plan §3.2: coarse N₁=10, fine N₂=15; gap > 10% →
-/// `PriceConfidence::Low` and accept_quote aborts.
-pub const RICHARDSON_N1: usize = 10;
-pub const RICHARDSON_N2: usize = 15;
+#[cfg(target_os = "solana")]
+unsafe extern "C" {
+    fn sol_log_compute_units_();
+    fn sol_log_(message: *const u8, length: u64);
+}
+
+#[inline(always)]
+pub(crate) fn cu_trace(label: &str) {
+    #[cfg(target_os = "solana")]
+    unsafe {
+        sol_log_(label.as_ptr(), label.len() as u64);
+        sol_log_compute_units_();
+    }
+    #[cfg(not(target_os = "solana"))]
+    {
+        let _ = label;
+    }
+}
+
 pub const MIN_FAIR_COUPON_BPS: u64 = 50;
-const NIG_ALPHA_S6: i64 = 13_040_000;
-const NIG_BETA_S6: i64 = 1_520_000;
-const E11_SIGMA_MIN_S6: i64 = 500_000;
-const E11_SIGMA_MAX_S6: i64 = 2_500_000;
+pub const KEEPER_DEIM_SIGMA_MIN_S6: i64 = 500_000;
+pub const KEEPER_DEIM_SIGMA_MAX_S6: i64 = 2_500_000;
 
 /// SCALE_6 constant used by the offered-coupon formula.
 const SCALE_6_I128: i128 = 1_000_000;
@@ -103,8 +116,10 @@ pub fn compose_pricing_sigma(
     Ok(sigma_s6.max(floor_s6))
 }
 
-/// Call the gated-Richardson pricer, apply Dom's offered-coupon formula, and
-/// package the `(upfront_premium, max_liability)` pair for issuance.
+/// Call the keeper-fed fixed-product POD-DEIM pricer when the current reduced
+/// operator matches the live sigma, otherwise return a no-quote / abort, then
+/// apply Dom's offered-coupon formula and package the `(upfront_premium,
+/// max_liability)` pair for issuance.
 ///
 /// Per the economics docs, SOL Autocall escrows buyer principal on issue and
 /// pays coupons from a separate coupon vault on each observation date. The
@@ -112,12 +127,17 @@ pub fn compose_pricing_sigma(
 /// risk, not the coupon stream.
 pub fn solve_quote(
     sigma_pricing_s6: i64,
+    reduced_operators: &SolAutocallReducedOperators,
+    vault_sigma_slot: u64,
+    regime_signal_slot: u64,
     notional_usdc: u64,
     quote_share_bps: u16,
     issuer_margin_bps: u16,
     issued_at: i64,
     gate: ConfidenceGate,
 ) -> Result<QuoteOutputs> {
+    cu_trace("solve_quote:start");
+
     let contract = AutocallParams {
         n_obs: OBSERVATION_COUNT,
         knock_in_log_6: KNOCK_IN_LOG_6,
@@ -125,38 +145,44 @@ pub fn solve_quote(
         no_autocall_first_n_obs: NO_AUTOCALL_FIRST_N_OBS as usize,
     };
 
-    let gated: GatedPriceResult = solve_fair_coupon_markov_richardson_gated_at_vol(
-        sigma_pricing_s6,
-        RICHARDSON_N1,
-        RICHARDSON_N2,
+    let sigma_in_band =
+        (KEEPER_DEIM_SIGMA_MIN_S6..=KEEPER_DEIM_SIGMA_MAX_S6).contains(&sigma_pricing_s6);
+    let reduced_ops_current = sigma_in_band
+        && contract.n_obs == OBSERVATION_COUNT
+        && reduced_operators.version == SolAutocallReducedOperators::CURRENT_VERSION
+        && reduced_operators.is_complete()
+        && reduced_operators.matches_current_tables()
+        && reduced_operators.sigma_ann_s6 == sigma_pricing_s6
+        && reduced_operators.source_vault_sigma_slot == vault_sigma_slot
+        && reduced_operators.source_regime_signal_slot == regime_signal_slot;
+    cu_trace(if reduced_ops_current {
+        "solve_quote:keeper_deim_ready=true"
+    } else {
+        "solve_quote:keeper_deim_ready=false"
+    });
+
+    if !sigma_in_band {
+        return match gate {
+            ConfidenceGate::Abort => err!(SolAutocallError::PricingSigmaOutOfBand),
+            ConfidenceGate::SignalOnly => Ok(zero_quote()),
+        };
+    }
+
+    if !reduced_ops_current {
+        return match gate {
+            ConfidenceGate::Abort => err!(SolAutocallError::ReducedOperatorsStale),
+            ConfidenceGate::SignalOnly => Ok(zero_quote()),
+        };
+    }
+
+    cu_trace("solve_quote:before_keeper_deim");
+    let direct_quote: AutocallPriceResult = solve_keeper_deim(
+        &reduced_operators.p_red_v,
+        &reduced_operators.p_red_u,
         &contract,
     )
     .map_err(|_| error!(SolAutocallError::QuoteRecomputeMismatch))?;
-    let direct_quote: AutocallPriceResult = if (E11_SIGMA_MIN_S6..=E11_SIGMA_MAX_S6)
-        .contains(&sigma_pricing_s6)
-        && contract.n_obs == OBSERVATION_COUNT
-    {
-        solve_fair_coupon_e11_cached(
-            sigma_pricing_s6,
-            NIG_ALPHA_S6,
-            NIG_BETA_S6,
-            OBSERVATION_INTERVAL_DAYS as i64,
-            &contract,
-        )
-        .unwrap_or_else(|_| gated.result.clone())
-    } else {
-        gated.result.clone()
-    };
-
-    match (gate, gated.confidence) {
-        (ConfidenceGate::Abort, PriceConfidence::Low) => {
-            return err!(SolAutocallError::PriceConfidenceLow);
-        }
-        (ConfidenceGate::SignalOnly, PriceConfidence::Low) => {
-            return Ok(zero_quote());
-        }
-        _ => {}
-    }
+    cu_trace("solve_quote:after_keeper_deim");
 
     match (gate, direct_quote.fair_coupon_bps < MIN_FAIR_COUPON_BPS) {
         (ConfidenceGate::Abort, true) => {
@@ -355,6 +381,14 @@ pub fn require_regime_fresh(regime_signal: &RegimeSignal, now: i64, cap_secs: i6
 
 pub fn require_protocol_unpaused(config: &ProtocolConfig) -> Result<()> {
     require!(!config.issuance_paused_global, HalcyonError::PausedGlobally);
+    Ok(())
+}
+
+pub fn require_pod_deim_table_match(config: &ProtocolConfig) -> Result<()> {
+    require!(
+        config.pod_deim_table_sha256 == POD_DEIM_TABLE_SHA256,
+        HalcyonError::CorrectionTableHashMismatch
+    );
     Ok(())
 }
 

@@ -43,7 +43,10 @@ pub struct ProtocolConfig {
     pub sol_autocall_issuer_margin_bps: u16,
     pub k12_correction_sha256: [u8; 32],
     pub daily_ki_correction_sha256: [u8; 32],
+    pub pod_deim_table_sha256: [u8; 32],
     pub treasury_destination: Pubkey,
+    pub hedge_max_slippage_bps_cap: u16,
+    pub hedge_defund_destination: Pubkey,
     pub last_update_ts: i64,
 }
 

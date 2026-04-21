@@ -42,11 +42,12 @@ Every struct has `u8 version` at offset 0 for in-place upgrade migration.
 | sol_autocall_issuer_margin_bps   | u16      | 2     | 123    |
 | k12_correction_sha256            | [u8; 32] | 32    | 125    |
 | daily_ki_correction_sha256       | [u8; 32] | 32    | 157    |
-| treasury_destination             | Pubkey   | 32    | 189    |
-| hedge_max_slippage_bps_cap       | u16      | 2     | 221    |
-| hedge_defund_destination         | Pubkey   | 32    | 223    |
-| last_update_ts                   | i64      | 8     | 255    |
-| **TOTAL**                        |          | **263** |      |
+| pod_deim_table_sha256            | [u8; 32] | 32    | 189    |
+| treasury_destination             | Pubkey   | 32    | 221    |
+| hedge_max_slippage_bps_cap       | u16      | 2     | 253    |
+| hedge_defund_destination         | Pubkey   | 32    | 255    |
+| last_update_ts                   | i64      | 8     | 287    |
+| **TOTAL**                        |          | **295** |      |
 
 `treasury_destination` is the only USDC account `sweep_fees` is allowed to
 route to — K5 allowlist. `hedge_defund_destination` plays the same role for

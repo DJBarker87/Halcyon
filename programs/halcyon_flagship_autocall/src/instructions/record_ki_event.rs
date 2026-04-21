@@ -13,7 +13,7 @@ use crate::state::{FlagshipAutocallTerms, ProductStatus};
 pub struct RecordKiEvent<'info> {
     pub keeper: Signer<'info>,
 
-    #[account(seeds = [seeds::KEEPER_REGISTRY], bump)]
+    #[account(seeds = [seeds::KEEPER_REGISTRY], seeds::program = halcyon_kernel::ID, bump)]
     pub keeper_registry: Box<Account<'info, KeeperRegistry>>,
 
     #[account(mut)]
@@ -27,13 +27,14 @@ pub struct RecordKiEvent<'info> {
 
     #[account(
         seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = product_registry_entry.product_program_id == crate::ID
             @ KernelError::ProductProgramMismatch,
     )]
     pub product_registry_entry: Box<Account<'info, ProductRegistryEntry>>,
 
-    #[account(seeds = [seeds::PROTOCOL_CONFIG], bump)]
+    #[account(seeds = [seeds::PROTOCOL_CONFIG], seeds::program = halcyon_kernel::ID, bump)]
     pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     /// CHECK: validated by `halcyon_oracles`.

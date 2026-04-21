@@ -21,6 +21,11 @@ jobs:
       - uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1
       - name: make l2-cargo-check
         run: make l2-cargo-check
+      - name: POD-DEIM training artefact reproducibility
+        run: |
+          set -euo pipefail
+          cargo run -p halcyon_sol_autocall_quote_training
+          git diff --exit-code -- crates/halcyon_sol_autocall_quote/src/generated/pod_deim_table.rs
       - name: make l2-cargo-test
         run: make l2-cargo-test
       - name: precision baseline regression check

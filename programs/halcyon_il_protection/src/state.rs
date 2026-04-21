@@ -1,7 +1,13 @@
 use anchor_lang::prelude::*;
 
 pub const CURRENT_ENGINE_VERSION: u16 = halcyon_il_quote::CURRENT_ENGINE_VERSION;
+#[cfg(feature = "integration-test")]
+pub const TENOR_DAYS: u32 = 3;
+#[cfg(not(feature = "integration-test"))]
 pub const TENOR_DAYS: u32 = halcyon_il_quote::TENOR_DAYS;
+#[cfg(feature = "integration-test")]
+pub const SECONDS_PER_DAY: i64 = 1;
+#[cfg(not(feature = "integration-test"))]
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]

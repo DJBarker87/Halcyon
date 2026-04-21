@@ -3,6 +3,9 @@ use halcyon_common::{seeds, HalcyonError};
 
 use crate::{state::*, KernelError};
 
+#[cfg(feature = "integration-test")]
+const REGIME_WRITE_MIN_GAP_SECS: i64 = 1;
+#[cfg(not(feature = "integration-test"))]
 const REGIME_WRITE_MIN_GAP_SECS: i64 = 18 * 60 * 60;
 const MAX_REGIME_FVOL_S6: i64 = 1_000_000;
 const REGIME_STRESS_THRESHOLD_S6: i64 = 600_000;

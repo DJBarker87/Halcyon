@@ -10,8 +10,9 @@ name = "halcyon_il_protection"
 
 [features]
 default = ["pyth-pull"]
-pyth-pull = ["halcyon_oracles/pyth-pull"]
-mock-pyth = ["halcyon_oracles/mock-pyth"]
+pyth-pull = ["halcyon_kernel/pyth-pull", "halcyon_oracles/pyth-pull"]
+mock-pyth = ["halcyon_kernel/mock-pyth", "halcyon_oracles/mock-pyth"]
+integration-test = ["mock-pyth"]
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []
@@ -32,7 +33,7 @@ anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
 anchor-spl = "=0.32.1"
 halcyon_common = { path = "../../crates/halcyon_common" }
 halcyon_il_quote = { path = "../../crates/halcyon_il_quote" }
-halcyon_kernel = { path = "../halcyon_kernel", features = ["cpi"] }
+halcyon_kernel = { path = "../halcyon_kernel", default-features = false, features = ["cpi"] }
 halcyon_oracles = { path = "../../crates/halcyon_oracles", default-features = false }
 solana-sha256-hasher = "=2.3.0"
 solmath-core = { path = "../../solmath-core" }

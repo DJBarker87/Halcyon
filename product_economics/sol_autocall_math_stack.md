@@ -2,7 +2,9 @@
 
 ## Overview
 
-The SOL Autocall prices a 16-day barrier-monitored autocallable note on-chain using a two-tier pricing architecture: a **POD-DEIM live operator pricer** (primary) backed by a **gated Richardson CTMC** (fallback). Both tiers run entirely in Rust fixed-point arithmetic on Solana. The production contract includes a **2-day autocall lockout** — autocall is suppressed at the first observation (day 2), guaranteeing every note runs at least 4 days.
+The SOL Autocall prices a 16-day barrier-monitored autocallable note on-chain using a two-tier pricing architecture: a **per-product POD-DEIM pricer with keeper-updated reduced operators** (primary) backed by a **gated Richardson CTMC** (fallback). Both tiers run entirely in Rust fixed-point arithmetic on Solana. The production contract includes a **2-day autocall lockout** — autocall is suppressed at the first observation (day 2), guaranteeing every note runs at least 4 days.
+
+The historical **E11 live-operator** path is preserved in the codebase and documented below because it motivated the fixed-product POD/DEIM artefacts, but it is not the shipping primary architecture. Per `research/complexity_reduction_log.md` §11/§12.1, the shipping one-transaction path for the default fixed product is the keeper-fed DEIM solve at about `946K` total CU, while the live-operator E11 path sits around `1.36M` CU and is not the production default.
 
 ---
 
@@ -79,15 +81,50 @@ For t = 8, 7, ..., 1:
             touched[i]   = E_t[i] + coupon_i
 ```
 
-This costs O(N^2) per step, so O(8 * N^2) per coupon pass, and the two-pass solve requires 2 * 8 * N^2 multiply-accumulates total. At N = 50, that is 40,000 operations — feasible on-chain but leaving no room for the delta surface and other overhead. The POD-DEIM method reduces the per-step cost from O(N^2) to O(d^2 + M), where d = 15 and M = 12.
+This costs O(N^2) per step, so O(8 * N^2) per coupon pass, and the two-pass solve requires 2 * 8 * N^2 multiply-accumulates total. At N = 50, that is 40,000 operations — feasible on-chain but leaving no room for the delta surface and other overhead. The shipping POD-DEIM method reduces the on-chain step cost to O(d^2) by loading a keeper-updated reduced operator `P_red(σ)` for the live sigma. The historical E11 variant instead pays an extra live operator-evaluation cost `M = 12` at quote time.
 
 ---
 
-## 4. POD-DEIM Live Operator Pricer (Primary)
+## 4. Production POD-DEIM Pricer (Primary)
 
-The primary pricer is a **parametric reduced-order model** that combines Proper Orthogonal Decomposition (POD) for the value function with the Discrete Empirical Interpolation Method (DEIM) for the transition operator. In the reduced-order modelling literature this is a POD-DEIM method; the "live operator" qualifier indicates that the transition matrix is reassembled from the live volatility at quote time, not pre-cached.
+For the default fixed Structure II product, the shipping architecture is the keeper-fed DEIM path recorded in `research/complexity_reduction_log.md`:
 
-### 4.1 The key observation
+```text
+Off-chain (keeper, per vol update):
+  1. Build the N=50 Zhang-Li transition matrix P(σ)
+  2. Project it to P_red = Φᵀ P(σ) Φ  (15×15, 225 entries)
+  3. Write P_red to the product's vol-update state
+
+On-chain:
+  1. Load Φ, Φ_idx, P_T_inv, masks, and the current P_red(σ)
+  2. Run the d=15 DEIM backward pass for the V leg
+  3. Run the d=15 DEIM backward pass for the U leg
+  4. Compute q* = (1 - V0) / U0
+```
+
+Measured authority numbers:
+
+| Config | Inner CU | Total CU |
+|---|---|---|
+| DEIM d=15, n_obs=8 | 855,763 | 946,482 |
+| DEIM d=15, n_obs=8 + deserialization | 962,540 | 964,441 |
+
+This is the one-transaction shipping note. The keeper burden is small: only the `15 x 15` reduced operator (`225 i64`) changes per volatility update.
+
+### 4.1 Historical E11 live-operator path
+
+The historical E11 path keeps the same POD/DEIM basis infrastructure but reassembles the reduced operator from live sigma at quote time by evaluating `M = 12` operator samples on-chain. It is useful as a reference path and a research artefact, but it is not the shipping primary path.
+
+Measured follow-up numbers from the archived research:
+
+| Config | Total CU | Note |
+|---|---|---|
+| E11 + DEIM d=15 | 1,358,528 | keeper-free, but too expensive for the production 1-tx target |
+| DEIM d=15 (§11, keeper) | 946,482 | shipping fixed-product path |
+
+The remainder of this section describes that historical live-operator construction because it explains where the fixed-product DEIM factors came from.
+
+### 4.2 The key observation
 
 As sigma varies, both the transition matrix P(sigma) and the resulting value function V(sigma) change — but they change *smoothly* and along a low-dimensional manifold. A value function that lives in R^50 can be represented accurately in a 15-dimensional subspace. A transition matrix that lives in R^{50x50} varies along only ~12 independent directions as sigma sweeps [50%, 250%].
 
@@ -97,7 +134,7 @@ The POD-DEIM pricer exploits both facts simultaneously:
 
 The result is a pricer whose online cost is dominated by 12 NIG CDF evaluations and an 8-step recursion in 15 x 15 matrices.
 
-### 4.2 POD: compressing the value function
+### 4.3 POD: compressing the value function
 
 **Problem:** The backward recursion produces value vectors V in R^N. We want a low-rank basis Phi in R^{N x d} such that V(sigma) ≈ Phi * v(sigma) for any sigma in the band, where v(sigma) in R^d is a small coefficient vector.
 
@@ -111,7 +148,7 @@ The first d = 15 columns of U form the basis Phi. The singular values decay rapi
 
 **Why it works:** The autocall payoff is piecewise linear (principal + coupon above the autocall barrier, spot-times-principal below if knocked in). As sigma varies, these shapes stretch and shift but don't develop new features. The POD basis captures the small family of shapes that actually appear.
 
-### 4.3 Galerkin projection: the reduced backward recursion
+### 4.4 Galerkin projection: the reduced backward recursion
 
 With the POD basis Phi, project the full-order recursion into the d-dimensional subspace. Define the **reduced transition matrix**:
 
@@ -129,7 +166,7 @@ This is exact to within the POD truncation error. At d = 15, the per-step cost i
 
 **The catch:** Computing P_red(sigma) requires the full N x N matrix P(sigma), which requires N^2 = 2,500 NIG probability evaluations — exactly the cost we are trying to avoid. This is where EIM comes in.
 
-### 4.4 EIM: compressing the operator
+### 4.5 EIM: compressing the operator
 
 **Problem:** We need P_red(sigma) at runtime without evaluating the full P(sigma).
 
@@ -157,7 +194,7 @@ c(sigma) = B^{-1} * (P(sigma) - P_ref)  evaluated at the M magic cells only
 
 This requires only **M = 12** NIG probability evaluations instead of N^2 = 2,500.
 
-### 4.5 Pre-computed atoms
+### 4.6 Pre-computed atoms
 
 Since the basis Phi does not depend on sigma, we can pre-compute the projected modes:
 
@@ -182,7 +219,7 @@ This is M scalar-times-matrix additions in d x d space: 12 * 15^2 = 2,700 multip
 
 versus the full-order 2 * 8 * 2,500 = 40,000 multiply-adds (plus 2,500 CDF evals to build P). The reduction is roughly **200x** fewer NIG evaluations.
 
-### 4.6 The DEIM projection for payoff application
+### 4.7 The DEIM projection for payoff application
 
 One subtlety: the backward recursion does not just multiply by P_red. At each observation step, it also applies the payoff logic (autocall absorption, coupon payment, KI state transition). These operations are nonlinear and state-dependent.
 
@@ -196,7 +233,7 @@ v_new = (Phi_deim)^{-1} * v_at_deim_new    (project back)
 
 Phi_deim is the d x d submatrix of Phi at the DEIM rows, which is invertible by construction.
 
-### 4.7 Summary of the POD-DEIM decomposition
+### 4.8 Summary of the POD-DEIM decomposition
 
 | Component | Dimension | What it captures |
 |---|---|---|
@@ -209,7 +246,7 @@ Phi_deim is the d x d submatrix of Phi at the DEIM rows, which is invertible by 
 
 **Offline cost:** K full-order backward passes + 2 SVDs + DEIM selection. Runs once per alpha/beta calibration.
 
-**Online cost per quote:** 12 COS CDF evaluations + d x d backward recursion for 8 steps + payoff at d DEIM points. Two passes for the fair coupon linear trick.
+**Historical E11 online cost per quote:** 12 COS CDF evaluations + d x d backward recursion for 8 steps + payoff at d DEIM points. Two passes for the fair coupon linear trick. This is the keeper-free live-operator variant, not the shipping primary path.
 
 ---
 
@@ -372,7 +409,8 @@ Both are entirely in i64 arithmetic. No floating point on-chain.
 
 | Component | Where | Why |
 |---|---|---|
-| POD-DEIM live operator solve | **On-chain** | 12 COS CDF evals + d=15 backward recursion |
+| POD-DEIM solve (shipping, keeper-fed `P_red`) | **On-chain** | d=15 backward recursion using the current reduced operator |
+| E11 live-operator solve (historical) | **On-chain** | 12 COS CDF evals + d=15 backward recursion |
 | Gated Richardson CTMC | **On-chain** | Fallback outside POD-DEIM sigma band |
 | EWMA volatility | **On-chain** | Oracle price feed -> sigma update |
 | Settlement | **On-chain** | Oracle prices -> payoff |

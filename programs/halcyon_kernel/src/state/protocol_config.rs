@@ -24,6 +24,7 @@ pub struct ProtocolConfig {
     pub sol_autocall_issuer_margin_bps: u16,
     pub k12_correction_sha256: [u8; 32],
     pub daily_ki_correction_sha256: [u8; 32],
+    pub pod_deim_table_sha256: [u8; 32],
     /// Allowlisted USDC token account that `sweep_fees` may route to. Set
     /// at `initialize_protocol` and rotated via `set_protocol_config`.
     pub treasury_destination: Pubkey,
@@ -41,7 +42,7 @@ pub struct ProtocolConfig {
 }
 
 impl ProtocolConfig {
-    pub const CURRENT_VERSION: u8 = 4;
+    pub const CURRENT_VERSION: u8 = 5;
 
     pub fn premium_splits_sum_to_ten_thousand(&self) -> bool {
         self.senior_share_bps as u32 + self.junior_share_bps as u32 + self.treasury_share_bps as u32

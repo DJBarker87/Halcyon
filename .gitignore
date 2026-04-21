@@ -32,3 +32,13 @@ marketing-video/out/
 *.webm
 .env
 .env.*
+
+# Price-relay local config — carries the Helius key + keypair path. The
+# *.example.json siblings ARE tracked.
+keepers/price_relay/config/*.json
+!keepers/price_relay/config/*.example.json
+
+# Locally-generated keeper keypairs for devnet. Live outside ~/.config
+# so they sit next to the operator runbook but never land in git.
+ops/devnet_keys/
+ops/mainnet_keys/

@@ -10,10 +10,10 @@ use halcyon_common::seeds;
 use halcyon_kernel::state::{ProductRegistryEntry, ProtocolConfig, RegimeSignal, VaultSigma};
 
 use crate::pricing::{
-    self, compose_pricing_sigma, require_protocol_unpaused, require_regime_fresh,
-    require_sigma_fresh, solve_quote, ConfidenceGate,
+    self, compose_pricing_sigma, require_pod_deim_table_match, require_protocol_unpaused,
+    require_regime_fresh, require_sigma_fresh, solve_quote, ConfidenceGate,
 };
-use crate::state::CURRENT_ENGINE_VERSION;
+use crate::state::{SolAutocallReducedOperators, CURRENT_ENGINE_VERSION};
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct QuotePreview {
@@ -34,10 +34,11 @@ pub struct QuotePreview {
 
 #[derive(Accounts)]
 pub struct PreviewQuote<'info> {
-    #[account(seeds = [seeds::PROTOCOL_CONFIG], bump)]
+    #[account(seeds = [seeds::PROTOCOL_CONFIG], seeds::program = halcyon_kernel::ID, bump)]
     pub protocol_config: Account<'info, ProtocolConfig>,
     #[account(
         seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = product_registry_entry.product_program_id == crate::ID,
         constraint = product_registry_entry.active @ halcyon_common::HalcyonError::ProductNotRegistered,
@@ -45,16 +46,20 @@ pub struct PreviewQuote<'info> {
     pub product_registry_entry: Account<'info, ProductRegistryEntry>,
     #[account(
         seeds = [seeds::VAULT_SIGMA, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = vault_sigma.product_program_id == crate::ID,
     )]
     pub vault_sigma: Account<'info, VaultSigma>,
     #[account(
         seeds = [seeds::REGIME_SIGNAL, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = regime_signal.product_program_id == crate::ID,
     )]
     pub regime_signal: Account<'info, RegimeSignal>,
+    #[account(seeds = [seeds::REDUCED_OPERATORS], bump)]
+    pub reduced_operators: Account<'info, SolAutocallReducedOperators>,
     /// CHECK: Pyth price account, validated by halcyon_oracles.
     pub pyth_sol: UncheckedAccount<'info>,
     pub clock: Sysvar<'info, Clock>,
@@ -62,8 +67,10 @@ pub struct PreviewQuote<'info> {
 
 pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePreview> {
     let now = ctx.accounts.clock.unix_timestamp;
+    pricing::cu_trace("preview_quote:start");
 
     require_protocol_unpaused(&ctx.accounts.protocol_config)?;
+    require_pod_deim_table_match(&ctx.accounts.protocol_config)?;
     require!(
         !ctx.accounts.product_registry_entry.paused,
         halcyon_common::HalcyonError::IssuancePausedPerProduct
@@ -78,6 +85,7 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
         now,
         ctx.accounts.protocol_config.regime_staleness_cap_secs,
     )?;
+    pricing::cu_trace("preview_quote:after_state_checks");
 
     let pyth = halcyon_oracles::read_pyth_price(
         &ctx.accounts.pyth_sol.to_account_info(),
@@ -86,6 +94,7 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
         &ctx.accounts.clock,
         ctx.accounts.protocol_config.pyth_quote_staleness_cap_secs,
     )?;
+    pricing::cu_trace("preview_quote:after_oracle_read");
 
     // Sigma composition follows the math stack: annualise daily EWMA variance
     // on a 365-day basis, apply the regime multiplier, then enforce the floor.
@@ -94,19 +103,24 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
         &ctx.accounts.regime_signal,
         ctx.accounts.protocol_config.sigma_floor_annualised_s6,
     )?;
+    pricing::cu_trace("preview_quote:after_sigma_compose");
 
     // Preview uses `SignalOnly`: no-quote conditions return zeros instead of
     // aborting, so `simulateTransaction` still yields a parseable result.
     let quote = solve_quote(
         sigma_pricing_s6,
+        &ctx.accounts.reduced_operators,
+        ctx.accounts.vault_sigma.last_update_slot,
+        ctx.accounts.regime_signal.last_update_slot,
         notional_usdc,
         protocol_share_bps(&ctx.accounts.protocol_config),
         protocol_margin_bps(&ctx.accounts.protocol_config),
         now,
         ConfidenceGate::SignalOnly,
     )?;
+    pricing::cu_trace("preview_quote:after_solve_quote");
 
-    Ok(QuotePreview {
+    let preview = QuotePreview {
         premium: quote.premium,
         max_liability: quote.max_liability,
         fair_coupon_bps_s6: quote.fair_coupon_bps_s6,
@@ -115,7 +129,9 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
         engine_version: CURRENT_ENGINE_VERSION,
         entry_price_s6: pyth.price_s6,
         expiry_ts: quote.expiry_ts,
-    })
+    };
+    pricing::cu_trace("preview_quote:end");
+    Ok(preview)
 }
 
 fn protocol_share_bps(cfg: &ProtocolConfig) -> u16 {
@@ -125,10 +141,3 @@ fn protocol_share_bps(cfg: &ProtocolConfig) -> u16 {
 fn protocol_margin_bps(cfg: &ProtocolConfig) -> u16 {
     cfg.sol_autocall_issuer_margin_bps
 }
-
-// Silence unused-import warnings when the pricing module gates a specific
-// helper behind a cargo feature in the future.
-#[allow(dead_code)]
-const _: () = {
-    let _ = pricing::RICHARDSON_N1;
-};

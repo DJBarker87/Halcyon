@@ -23,7 +23,11 @@ use crate::autocall_v2::{
     solve_fair_coupon_markov_richardson_gated, solve_markov_surface_with_schedule, AutocallParams,
     MarkovScheduleStep, NigParams6,
 };
-use crate::autocall_v2_e11::{live_quote_uses_e11, solve_fair_coupon_e11_cached};
+use crate::autocall_v2_e11::live_quote_uses_e11;
+#[cfg(target_os = "solana")]
+use crate::autocall_v2_e11::solve_fair_coupon_e11_from_const as solve_e11;
+#[cfg(not(target_os = "solana"))]
+use crate::autocall_v2_e11::solve_fair_coupon_e11_cached as solve_e11;
 use solmath_core::{SCALE, SCALE_6};
 
 pub const PARITY_N1: usize = 10;
@@ -333,14 +337,8 @@ pub fn price_autocall_v2_parity(
             .map_err(map_v2_error)?;
     let (direct_quote, live_quote_engine) = if live_quote_uses_e11(model.sigma_ann, &contract) {
         (
-            solve_fair_coupon_e11_cached(
-                sigma_ann_6,
-                alpha_6,
-                beta_6,
-                reference_step_days,
-                &contract,
-            )
-            .map_err(map_v2_error)?,
+            solve_e11(sigma_ann_6, alpha_6, beta_6, reference_step_days, &contract)
+                .map_err(map_v2_error)?,
             "e11_live_operator_quote",
         )
     } else {

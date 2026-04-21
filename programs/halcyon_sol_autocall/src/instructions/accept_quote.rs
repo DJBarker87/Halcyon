@@ -18,11 +18,12 @@ use halcyon_kernel::{
 
 use crate::pricing::{
     build_observation_schedule, compose_pricing_sigma, derive_barriers_from_entry,
-    hash_product_terms, require_protocol_unpaused, require_regime_fresh, require_sigma_fresh,
-    solve_quote, ConfidenceGate,
+    hash_product_terms, require_pod_deim_table_match, require_protocol_unpaused,
+    require_regime_fresh, require_sigma_fresh, solve_quote, ConfidenceGate,
 };
 use crate::state::{
-    ProductStatus, SolAutocallTerms, CURRENT_ENGINE_VERSION, NO_AUTOCALL_FIRST_N_OBS,
+    ProductStatus, SolAutocallReducedOperators, SolAutocallTerms, CURRENT_ENGINE_VERSION,
+    NO_AUTOCALL_FIRST_N_OBS,
 };
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
@@ -79,6 +80,7 @@ pub struct AcceptQuote<'info> {
     #[account(
         mut,
         seeds = [seeds::VAULT_USDC, usdc_mint.key().as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = vault_usdc.mint == usdc_mint.key(),
     )]
@@ -87,38 +89,43 @@ pub struct AcceptQuote<'info> {
     #[account(
         mut,
         seeds = [seeds::TREASURY_USDC, usdc_mint.key().as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = treasury_usdc.mint == usdc_mint.key(),
     )]
     pub treasury_usdc: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: kernel PDA authority for `vault_usdc` / `treasury_usdc`.
-    #[account(seeds = [seeds::VAULT_AUTHORITY], bump)]
+    #[account(seeds = [seeds::VAULT_AUTHORITY], seeds::program = halcyon_kernel::ID, bump)]
     pub vault_authority: UncheckedAccount<'info>,
 
-    #[account(mut, seeds = [seeds::PROTOCOL_CONFIG], bump)]
+    #[account(mut, seeds = [seeds::PROTOCOL_CONFIG], seeds::program = halcyon_kernel::ID, bump)]
     pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     #[account(
         seeds = [seeds::VAULT_SIGMA, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = vault_sigma.product_program_id == crate::ID,
     )]
     pub vault_sigma: Box<Account<'info, VaultSigma>>,
     #[account(
         seeds = [seeds::REGIME_SIGNAL, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = regime_signal.product_program_id == crate::ID,
     )]
     pub regime_signal: Box<Account<'info, RegimeSignal>>,
+    #[account(seeds = [seeds::REDUCED_OPERATORS], bump)]
+    pub reduced_operators: Box<Account<'info, SolAutocallReducedOperators>>,
 
     /// CHECK: validated by `halcyon_oracles`.
     pub pyth_sol: UncheckedAccount<'info>,
 
-    #[account(mut, seeds = [seeds::VAULT_STATE], bump)]
+    #[account(mut, seeds = [seeds::VAULT_STATE], seeds::program = halcyon_kernel::ID, bump)]
     pub vault_state: Box<Account<'info, halcyon_kernel::state::VaultState>>,
 
-    #[account(mut, seeds = [seeds::FEE_LEDGER], bump)]
+    #[account(mut, seeds = [seeds::FEE_LEDGER], seeds::program = halcyon_kernel::ID, bump)]
     pub fee_ledger: Box<Account<'info, halcyon_kernel::state::FeeLedger>>,
 
     // M-6 — fail fast on the product side when the kernel registry has
@@ -127,6 +134,7 @@ pub struct AcceptQuote<'info> {
     #[account(
         mut,
         seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = product_registry_entry.product_program_id == crate::ID
             @ halcyon_kernel::KernelError::ProductProgramMismatch,
@@ -147,6 +155,7 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
     let now = ctx.accounts.clock.unix_timestamp;
 
     require_protocol_unpaused(&ctx.accounts.protocol_config)?;
+    require_pod_deim_table_match(&ctx.accounts.protocol_config)?;
     require_sigma_fresh(
         &ctx.accounts.vault_sigma,
         now,
@@ -174,6 +183,9 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
 
     let quote = solve_quote(
         sigma_pricing_s6,
+        &ctx.accounts.reduced_operators,
+        ctx.accounts.vault_sigma.last_update_slot,
+        ctx.accounts.regime_signal.last_update_slot,
         args.notional_usdc,
         ctx.accounts.protocol_config.sol_autocall_quote_share_bps,
         ctx.accounts.protocol_config.sol_autocall_issuer_margin_bps,

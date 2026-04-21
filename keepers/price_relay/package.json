@@ -1,0 +1,26 @@
+{
+  "name": "halcyon-price-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pyth price relay — pulls VAAs from Hermes and posts them to deterministic PriceUpdateV2 accounts on devnet (or mainnet). Lets Halcyon read live SPY/QQQ/IWM prices on devnet, where Pyth itself does not publish equity feeds.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "start:devnet": "tsx src/index.ts --config ./config/devnet.json",
+    "addresses": "tsx src/addresses.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "0.29.0",
+    "@pythnetwork/hermes-client": "1.4.0",
+    "@pythnetwork/pyth-solana-receiver": "0.8.0",
+    "@solana/web3.js": "1.91.6",
+    "bs58": "5.0.0",
+    "rpc-websockets": "7.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

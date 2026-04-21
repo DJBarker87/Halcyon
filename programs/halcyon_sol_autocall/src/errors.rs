@@ -30,4 +30,14 @@ pub enum SolAutocallError {
     ObservationKeeperMismatch,
     #[msg("EWMA to sigma composition failed")]
     SigmaCompositionUnavailable,
+    #[msg("keeper-fed reduced operators are stale or unavailable for the current sigma")]
+    ReducedOperatorsStale,
+    #[msg("keeper-fed reduced operator payload has the wrong shape")]
+    ReducedOperatorsShapeInvalid,
+    #[msg("keeper-fed reduced operator chunk start does not match the current upload offset")]
+    ReducedOperatorsOffsetInvalid,
+    #[msg("keeper-fed reduced operator upload state does not match the current sigma or source slots")]
+    ReducedOperatorsUploadStateInvalid,
+    #[msg("pricing sigma is outside the supported keeper-fed POD-DEIM band")]
+    PricingSigmaOutOfBand,
 }

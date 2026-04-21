@@ -1,8 +1,21 @@
 use anchor_lang::prelude::*;
+use halcyon_sol_autocall_quote::{
+    generated::pod_deim_table::POD_DEIM_TABLE_SHA256,
+    generated::pod_deim_table::D as POD_DEIM_D,
+};
 
 pub const OBSERVATION_COUNT: usize = 8;
+#[cfg(feature = "integration-test")]
+pub const OBSERVATION_INTERVAL_DAYS: u32 = 1;
+#[cfg(not(feature = "integration-test"))]
 pub const OBSERVATION_INTERVAL_DAYS: u32 = 2;
+#[cfg(feature = "integration-test")]
+pub const MATURITY_DAYS: u32 = OBSERVATION_COUNT as u32;
+#[cfg(not(feature = "integration-test"))]
 pub const MATURITY_DAYS: u32 = 16;
+#[cfg(feature = "integration-test")]
+pub const SECONDS_PER_DAY: i64 = 1;
+#[cfg(not(feature = "integration-test"))]
 pub const SECONDS_PER_DAY: i64 = 86_400;
 
 pub const AUTOCALL_BARRIER_BPS: u64 = 10_250;
@@ -11,6 +24,7 @@ pub const KI_BARRIER_BPS: u64 = 7_000;
 pub const NO_AUTOCALL_FIRST_N_OBS: u8 = 1;
 
 pub const CURRENT_ENGINE_VERSION: u16 = 1;
+pub const REDUCED_OPERATOR_LEN: usize = POD_DEIM_D * POD_DEIM_D;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
 pub enum ProductStatus {
@@ -53,5 +67,38 @@ impl SolAutocallTerms {
     /// Is the `i`th observation the final scheduled observation (maturity)?
     pub fn is_final_observation(&self, i: u8) -> bool {
         i as usize + 1 == OBSERVATION_COUNT
+    }
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct SolAutocallReducedOperators {
+    pub version: u8,
+    pub sigma_ann_s6: i64,
+    pub last_update_slot: u64,
+    pub last_update_ts: i64,
+    pub source_vault_sigma_slot: u64,
+    pub source_regime_signal_slot: u64,
+    pub pod_deim_table_sha256: [u8; 32],
+    pub uploaded_v_len: u16,
+    pub uploaded_u_len: u16,
+    #[max_len(REDUCED_OPERATOR_LEN)]
+    pub p_red_v: Vec<i64>,
+    #[max_len(REDUCED_OPERATOR_LEN)]
+    pub p_red_u: Vec<i64>,
+}
+
+impl SolAutocallReducedOperators {
+    pub const CURRENT_VERSION: u8 = 1;
+
+    pub fn matches_current_tables(&self) -> bool {
+        self.pod_deim_table_sha256 == POD_DEIM_TABLE_SHA256
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.p_red_v.len() == REDUCED_OPERATOR_LEN
+            && self.p_red_u.len() == REDUCED_OPERATOR_LEN
+            && self.uploaded_v_len as usize == REDUCED_OPERATOR_LEN
+            && self.uploaded_u_len as usize == REDUCED_OPERATOR_LEN
     }
 }

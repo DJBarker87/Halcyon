@@ -1,0 +1,15 @@
+[package]
+name = "halcyon_price_relay_tools"
+version = "0.1.0"
+edition = "2021"
+description = "Rust-side utilities for the Halcyon price relay — notably the `print_feed_addresses` CLI that computes the 5 deterministic PriceUpdateV2 account PDAs without needing the Node runtime. The actual relay lives in `src/index.ts` and runs under Node."
+publish = false
+
+[[bin]]
+name = "print_feed_addresses"
+path = "src/print_feed_addresses.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+solana-sdk = "=2.3.1"

@@ -46,7 +46,7 @@ pub struct PolicyAutoCalled {
 pub struct RecordObservation<'info> {
     pub keeper: Signer<'info>,
 
-    #[account(seeds = [seeds::KEEPER_REGISTRY], bump)]
+    #[account(seeds = [seeds::KEEPER_REGISTRY], seeds::program = halcyon_kernel::ID, bump)]
     pub keeper_registry: Box<Account<'info, KeeperRegistry>>,
 
     #[account(mut)]
@@ -61,13 +61,14 @@ pub struct RecordObservation<'info> {
     #[account(
         mut,
         seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = product_registry_entry.product_program_id == crate::ID
             @ KernelError::ProductProgramMismatch,
     )]
     pub product_registry_entry: Box<Account<'info, ProductRegistryEntry>>,
 
-    #[account(seeds = [seeds::PROTOCOL_CONFIG], bump)]
+    #[account(seeds = [seeds::PROTOCOL_CONFIG], seeds::program = halcyon_kernel::ID, bump)]
     pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     /// CHECK: validated by `halcyon_oracles`.
@@ -78,6 +79,7 @@ pub struct RecordObservation<'info> {
     #[account(
         mut,
         seeds = [seeds::COUPON_VAULT, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = coupon_vault.product_program_id == product_registry_entry.product_program_id
             @ KernelError::ProductProgramMismatch,
@@ -97,13 +99,14 @@ pub struct RecordObservation<'info> {
     #[account(
         mut,
         seeds = [seeds::VAULT_USDC, usdc_mint.key().as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = vault_usdc.mint == usdc_mint.key(),
     )]
     pub vault_usdc: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: kernel PDA authority for `vault_usdc`.
-    #[account(seeds = [seeds::VAULT_AUTHORITY], bump)]
+    #[account(seeds = [seeds::VAULT_AUTHORITY], seeds::program = halcyon_kernel::ID, bump)]
     pub vault_authority: UncheckedAccount<'info>,
 
     /// M-1 — canonical-ATA equality: a compromised observation keeper cannot
@@ -123,7 +126,7 @@ pub struct RecordObservation<'info> {
     #[account(seeds = [seeds::PRODUCT_AUTHORITY], bump)]
     pub product_authority: UncheckedAccount<'info>,
 
-    #[account(mut, seeds = [seeds::VAULT_STATE], bump)]
+    #[account(mut, seeds = [seeds::VAULT_STATE], seeds::program = halcyon_kernel::ID, bump)]
     pub vault_state: Box<Account<'info, VaultState>>,
 
     pub clock: Sysvar<'info, Clock>,

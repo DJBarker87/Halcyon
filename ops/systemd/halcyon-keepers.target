@@ -5,7 +5,8 @@ Wants=halcyon-delta-keeper.service \
       halcyon-hedge-keeper.service \
       halcyon-regression-keeper.service \
       halcyon-regime-keeper.service \
-      halcyon-observation-keeper.service
+      halcyon-observation-keeper.service \
+      halcyon-price-relay.service
 # flagship-hedge-keeper is intentionally omitted from Wants= until its
 # live-submit path lands. Add it here once unmasked and validated on
 # devnet end-to-end.

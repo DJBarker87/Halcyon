@@ -21,6 +21,7 @@ pub struct InitializeProtocolArgs {
     pub sigma_floor_annualised_s6: i64,
     pub sol_autocall_quote_share_bps: u16,
     pub sol_autocall_issuer_margin_bps: u16,
+    pub pod_deim_table_sha256: [u8; 32],
     /// USDC token account the admin is permitted to sweep fees into. Must be a
     /// USDC account; ownership is enforced at `sweep_fees` time.
     pub treasury_destination: Pubkey,
@@ -129,6 +130,7 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
     config.sol_autocall_issuer_margin_bps = args.sol_autocall_issuer_margin_bps;
     config.k12_correction_sha256 = [0u8; 32];
     config.daily_ki_correction_sha256 = [0u8; 32];
+    config.pod_deim_table_sha256 = args.pod_deim_table_sha256;
     config.treasury_destination = args.treasury_destination;
     config.hedge_max_slippage_bps_cap = args.hedge_max_slippage_bps_cap;
     config.hedge_defund_destination = args.hedge_defund_destination;

@@ -1,27 +1,58 @@
+#[cfg(not(target_os = "solana"))]
 use std::collections::HashMap;
+#[cfg(not(target_os = "solana"))]
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[cfg(not(target_os = "solana"))]
 use nalgebra::{DMatrix, DVector, SVD};
+#[cfg(not(target_os = "solana"))]
 use solmath_core::SCALE_6;
 
 use crate::autocall_v2::{
-    build_markov_grid_info, build_transition_matrix_on_grid_info, solve_fair_coupon_e11,
-    AutocallParams, AutocallPriceResult, AutocallV2Error, DeimFactors, DeimLegData, E11Factors,
-    MarkovGridInfo, NigParams6,
+    cu_trace, solve_fair_coupon_deim_const, AutocallParams, AutocallPriceResult,
+    AutocallV2Error, DeimFactorsConst, DeimLegConst, E11FactorsConst, MarkovGridInfoConst,
+    NigParams6,
 };
+#[cfg(not(target_os = "solana"))]
+use crate::autocall_v2::{
+    assemble_e11_reduced_operators_const, solve_fair_coupon_e11, solve_fair_coupon_e11_const,
+    DeimFactors, DeimLegData, E11Factors, MarkovGridInfo,
+};
+#[cfg(not(target_os = "solana"))]
+use crate::autocall_v2::{
+    build_markov_grid_info, build_transition_matrix_on_grid_info, AUTOCALL_LOG_6, KNOCK_IN_LOG_6,
+};
+use crate::generated::pod_deim_table as generated;
 
 pub const E11_LIVE_QUOTE_N_STATES: usize = 50;
 pub const E11_LIVE_QUOTE_D: usize = 15;
 pub const E11_LIVE_QUOTE_M: usize = 12;
 pub const E11_LIVE_QUOTE_SIGMA_MIN: f64 = 0.50;
 pub const E11_LIVE_QUOTE_SIGMA_MAX: f64 = 2.50;
+pub const E11_LIVE_QUOTE_NO_AUTOCALL_FIRST_N_OBS: usize = 1;
 
+#[cfg(not(target_os = "solana"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrecomputedReducedOperators {
+    pub sigma_ann_6: i64,
+    pub p_red_v: Vec<i64>,
+    pub p_red_u: Vec<i64>,
+}
+
+#[cfg(not(target_os = "solana"))]
 struct E11QuoteContext {
     factors: E11Factors,
     deim_base: DeimFactors,
     grid_info: MarkovGridInfo,
 }
 
+struct E11QuoteContextConst<'a> {
+    factors: E11FactorsConst<'a>,
+    deim_base: DeimFactorsConst<'a>,
+    grid_info: MarkovGridInfoConst<'a>,
+}
+
+#[cfg(not(target_os = "solana"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct E11QuoteCacheKey {
     alpha_6: i64,
@@ -35,8 +66,145 @@ struct E11QuoteCacheKey {
     m: usize,
 }
 
+#[cfg(not(target_os = "solana"))]
 static E11_QUOTE_CACHE: OnceLock<Mutex<HashMap<E11QuoteCacheKey, Arc<E11QuoteContext>>>> =
     OnceLock::new();
+
+#[cfg(not(target_os = "solana"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrainingParams {
+    pub alpha_6: i64,
+    pub beta_6: i64,
+    pub reference_step_days: i64,
+    pub n_obs: usize,
+    pub no_autocall_first_n_obs: usize,
+    pub knock_in_log_6: i64,
+    pub autocall_log_6: i64,
+    pub n_states: usize,
+    pub d: usize,
+    pub m: usize,
+}
+
+#[cfg(not(target_os = "solana"))]
+impl TrainingParams {
+    pub fn live_quote() -> Self {
+        Self {
+            alpha_6: 13_040_000,
+            beta_6: 1_520_000,
+            reference_step_days: 2,
+            n_obs: 8,
+            no_autocall_first_n_obs: E11_LIVE_QUOTE_NO_AUTOCALL_FIRST_N_OBS,
+            knock_in_log_6: KNOCK_IN_LOG_6,
+            autocall_log_6: AUTOCALL_LOG_6,
+            n_states: E11_LIVE_QUOTE_N_STATES,
+            d: E11_LIVE_QUOTE_D,
+            m: E11_LIVE_QUOTE_M,
+        }
+    }
+
+    fn contract(&self) -> AutocallParams {
+        AutocallParams {
+            n_obs: self.n_obs,
+            knock_in_log_6: self.knock_in_log_6,
+            autocall_log_6: self.autocall_log_6,
+            no_autocall_first_n_obs: self.no_autocall_first_n_obs,
+        }
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedDeimLeg {
+    pub phi_at_idx: Vec<i64>,
+    pub pt_inv: Vec<i64>,
+    pub phi_atm: Vec<i64>,
+    pub m_ki_red: Vec<i64>,
+    pub m_nki_red: Vec<i64>,
+    pub ki_at_idx: Vec<bool>,
+    pub cpn_at_idx: Vec<bool>,
+    pub ac_at_idx: Vec<bool>,
+    pub phi: Vec<i64>,
+    pub d: usize,
+}
+
+#[cfg(not(target_os = "solana"))]
+impl GeneratedDeimLeg {
+    fn from_leg(leg: &DeimLegData) -> Self {
+        Self {
+            phi_at_idx: leg.phi_at_idx.clone(),
+            pt_inv: leg.pt_inv.clone(),
+            phi_atm: leg.phi_atm.clone(),
+            m_ki_red: leg.m_ki_red.clone(),
+            m_nki_red: leg.m_nki_red.clone(),
+            ki_at_idx: leg.ki_at_idx.clone(),
+            cpn_at_idx: leg.cpn_at_idx.clone(),
+            ac_at_idx: leg.ac_at_idx.clone(),
+            phi: leg.phi.clone(),
+            d: leg.d,
+        }
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedPodDeimTables {
+    pub training_params: TrainingParams,
+    pub grid_reps: Vec<i64>,
+    pub grid_bounds: Vec<i64>,
+    pub atm_state: usize,
+    pub ki_state_max: usize,
+    pub ki_boundary_idx: usize,
+    pub p_ref_at_eim: Vec<i64>,
+    pub b_inv: Vec<i64>,
+    pub eim_rows: Vec<u16>,
+    pub eim_cols: Vec<u16>,
+    pub atoms_v: Vec<i64>,
+    pub atoms_u: Vec<i64>,
+    pub p_ref_red_v: Vec<i64>,
+    pub p_ref_red_u: Vec<i64>,
+    pub v_leg: GeneratedDeimLeg,
+    pub u_leg: GeneratedDeimLeg,
+}
+
+#[cfg(not(target_os = "solana"))]
+impl GeneratedPodDeimTables {
+    fn from_context(
+        training_params: TrainingParams,
+        context: &E11QuoteContext,
+    ) -> Result<Self, AutocallV2Error> {
+        let eim_rows = context
+            .factors
+            .eim_rows
+            .iter()
+            .map(|&idx| u16::try_from(idx).map_err(|_| AutocallV2Error::InvalidGrid))
+            .collect::<Result<Vec<_>, _>>()?;
+        let eim_cols = context
+            .factors
+            .eim_cols
+            .iter()
+            .map(|&idx| u16::try_from(idx).map_err(|_| AutocallV2Error::InvalidGrid))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self {
+            training_params,
+            grid_reps: context.grid_info.reps.clone(),
+            grid_bounds: context.grid_info.bounds.clone(),
+            atm_state: context.grid_info.atm_state,
+            ki_state_max: context.grid_info.ki_state_max,
+            ki_boundary_idx: context.grid_info.ki_boundary_idx,
+            p_ref_at_eim: context.factors.p_ref_at_eim.clone(),
+            b_inv: context.factors.b_inv.clone(),
+            eim_rows,
+            eim_cols,
+            atoms_v: context.factors.atoms_v.clone(),
+            atoms_u: context.factors.atoms_u.clone(),
+            p_ref_red_v: context.factors.p_ref_red_v.clone(),
+            p_ref_red_u: context.factors.p_ref_red_u.clone(),
+            v_leg: GeneratedDeimLeg::from_leg(&context.deim_base.v_leg),
+            u_leg: GeneratedDeimLeg::from_leg(&context.deim_base.u_leg),
+        })
+    }
+}
 
 pub fn live_quote_uses_e11(sigma_ann: f64, contract: &AutocallParams) -> bool {
     sigma_ann.is_finite()
@@ -44,6 +212,29 @@ pub fn live_quote_uses_e11(sigma_ann: f64, contract: &AutocallParams) -> bool {
         && (E11_LIVE_QUOTE_SIGMA_MIN..=E11_LIVE_QUOTE_SIGMA_MAX).contains(&sigma_ann)
 }
 
+#[cfg(not(target_os = "solana"))]
+pub fn live_quote_training_params() -> TrainingParams {
+    TrainingParams::live_quote()
+}
+
+#[cfg(not(target_os = "solana"))]
+pub fn generate_pod_deim_tables(
+    params: &TrainingParams,
+) -> Result<GeneratedPodDeimTables, AutocallV2Error> {
+    let contract = params.contract();
+    let context = build_quote_context(
+        params.alpha_6,
+        params.beta_6,
+        params.reference_step_days,
+        &contract,
+        params.n_states,
+        params.d,
+        params.m,
+    )?;
+    GeneratedPodDeimTables::from_context(params.clone(), &context)
+}
+
+#[cfg(not(target_os = "solana"))]
 pub fn solve_fair_coupon_e11_cached(
     sigma_ann_6: i64,
     alpha_6: i64,
@@ -105,6 +296,142 @@ pub fn solve_fair_coupon_e11_cached(
     )
 }
 
+#[cfg(not(target_os = "solana"))]
+pub fn solve_fair_coupon_e11_from_const(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    contract: &AutocallParams,
+) -> Result<AutocallPriceResult, AutocallV2Error> {
+    if !const_tables_match_request(alpha_6, beta_6, reference_step_days, contract) {
+        return Err(AutocallV2Error::InvalidGrid);
+    }
+
+    cu_trace(b"cu_trace:e11:before_generated_context");
+    let context = generated_quote_context_const();
+    cu_trace(b"cu_trace:e11:after_generated_context");
+    solve_from_const_context(
+        &context,
+        sigma_ann_6,
+        alpha_6,
+        beta_6,
+        reference_step_days,
+        contract,
+    )
+}
+
+#[cfg(not(target_os = "solana"))]
+pub fn precompute_reduced_operators_from_const(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    contract: &AutocallParams,
+) -> Result<PrecomputedReducedOperators, AutocallV2Error> {
+    if !const_tables_match_request(alpha_6, beta_6, reference_step_days, contract) {
+        return Err(AutocallV2Error::InvalidGrid);
+    }
+
+    let context = generated_quote_context_const();
+    let nig =
+        NigParams6::from_vol_with_step_days(sigma_ann_6, alpha_6, beta_6, reference_step_days)?;
+    let (p_red_v, p_red_u) =
+        assemble_e11_reduced_operators_const(&context.factors, &nig, &context.grid_info)?;
+
+    Ok(PrecomputedReducedOperators {
+        sigma_ann_6,
+        p_red_v: p_red_v.to_vec(),
+        p_red_u: p_red_u.to_vec(),
+    })
+}
+
+pub fn solve_fair_coupon_deim_from_precomputed_const(
+    p_red_v: &[i64],
+    p_red_u: &[i64],
+    contract: &AutocallParams,
+) -> Result<AutocallPriceResult, AutocallV2Error> {
+    if contract.n_obs != generated::TRAINING_N_OBS
+        || contract.no_autocall_first_n_obs != generated::TRAINING_NO_AUTOCALL_FIRST_N_OBS
+        || contract.knock_in_log_6 != generated::TRAINING_KNOCK_IN_LOG_6
+        || contract.autocall_log_6 != generated::TRAINING_AUTOCALL_LOG_6
+    {
+        return Err(AutocallV2Error::InvalidGrid);
+    }
+
+    let context = generated_quote_context_const();
+    solve_fair_coupon_deim_const(
+        &context.grid_info,
+        &context.deim_base,
+        p_red_v,
+        p_red_u,
+        contract,
+    )
+}
+
+fn const_tables_match_request(
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    contract: &AutocallParams,
+) -> bool {
+    alpha_6 == generated::TRAINING_ALPHA_S6
+        && beta_6 == generated::TRAINING_BETA_S6
+        && reference_step_days == generated::TRAINING_REFERENCE_STEP_DAYS
+        && contract.n_obs == generated::TRAINING_N_OBS
+        && contract.no_autocall_first_n_obs == generated::TRAINING_NO_AUTOCALL_FIRST_N_OBS
+        && contract.knock_in_log_6 == generated::TRAINING_KNOCK_IN_LOG_6
+        && contract.autocall_log_6 == generated::TRAINING_AUTOCALL_LOG_6
+}
+
+fn generated_quote_context_const() -> E11QuoteContextConst<'static> {
+    E11QuoteContextConst {
+        factors: E11FactorsConst {
+            m: generated::M,
+            d: generated::D,
+            atoms_v: &generated::ATOMS_V,
+            atoms_u: &generated::ATOMS_U,
+            p_ref_red_v: &generated::P_REF_RED_V,
+            p_ref_red_u: &generated::P_REF_RED_U,
+            p_ref_at_eim: &generated::P_REF_AT_EIM,
+            b_inv: &generated::B_INV,
+            eim_rows: &generated::EIM_ROWS,
+            eim_cols: &generated::EIM_COLS,
+        },
+        deim_base: DeimFactorsConst {
+            v_leg: DeimLegConst {
+                phi_at_idx: &generated::V_PHI_AT_IDX,
+                pt_inv: &generated::V_PT_INV,
+                phi_atm: &generated::V_PHI_ATM,
+                ki_at_idx: &generated::V_KI_AT_IDX,
+                cpn_at_idx: &generated::V_CPN_AT_IDX,
+                ac_at_idx: &generated::V_AC_AT_IDX,
+                phi: &generated::V_PHI,
+                d: generated::D,
+            },
+            u_leg: DeimLegConst {
+                phi_at_idx: &generated::U_PHI_AT_IDX,
+                pt_inv: &generated::U_PT_INV,
+                phi_atm: &generated::U_PHI_ATM,
+                ki_at_idx: &generated::U_KI_AT_IDX,
+                cpn_at_idx: &generated::U_CPN_AT_IDX,
+                ac_at_idx: &generated::U_AC_AT_IDX,
+                phi: &generated::U_PHI,
+                d: generated::D,
+            },
+        },
+        grid_info: MarkovGridInfoConst {
+            reps: &generated::GRID_REPS,
+            bounds: &generated::GRID_BOUNDS,
+            n_states: generated::N_STATES,
+            atm_state: generated::ATM_STATE,
+            ki_state_max: generated::KI_STATE_MAX,
+            ki_boundary_idx: generated::KI_BOUNDARY_IDX,
+        },
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
 fn solve_from_context(
     context: &E11QuoteContext,
     sigma_ann_6: i64,
@@ -124,6 +451,27 @@ fn solve_from_context(
     )
 }
 
+#[cfg(not(target_os = "solana"))]
+fn solve_from_const_context(
+    context: &E11QuoteContextConst<'_>,
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    contract: &AutocallParams,
+) -> Result<AutocallPriceResult, AutocallV2Error> {
+    let nig =
+        NigParams6::from_vol_with_step_days(sigma_ann_6, alpha_6, beta_6, reference_step_days)?;
+    solve_fair_coupon_e11_const(
+        &context.factors,
+        &nig,
+        &context.grid_info,
+        &context.deim_base,
+        contract,
+    )
+}
+
+#[cfg(not(target_os = "solana"))]
 fn build_quote_context(
     alpha_6: i64,
     beta_6: i64,
@@ -298,6 +646,7 @@ fn build_quote_context(
     })
 }
 
+#[cfg(not(target_os = "solana"))]
 fn build_deim_leg(
     basis: &DMatrix<f64>,
     p_f64: &DMatrix<f64>,
@@ -391,6 +740,7 @@ fn build_deim_leg(
     })
 }
 
+#[cfg(not(target_os = "solana"))]
 fn build_e11_atoms(
     leg: &DeimLegData,
     u_op: &DMatrix<f64>,
@@ -431,6 +781,7 @@ fn build_e11_atoms(
     (atoms, p_ref_red)
 }
 
+#[cfg(not(target_os = "solana"))]
 fn backward_pass_f64_snapshots(
     p: &DMatrix<f64>,
     reps: &[f64],
@@ -513,6 +864,7 @@ fn backward_pass_f64_snapshots(
     snapshots
 }
 
+#[cfg(not(target_os = "solana"))]
 fn deim_select_f64(phi: &DMatrix<f64>, d: usize) -> Vec<usize> {
     let n = phi.nrows();
     let mut indices = Vec::with_capacity(d);
@@ -560,10 +912,12 @@ fn deim_select_f64(phi: &DMatrix<f64>, d: usize) -> Vec<usize> {
     indices
 }
 
+#[cfg(not(target_os = "solana"))]
 fn sigma_training_grid() -> Vec<f64> {
     (0..21).map(|i| 0.50 + i as f64 * 0.10).collect()
 }
 
+#[cfg(not(target_os = "solana"))]
 fn to_scale6_round(value: f64) -> i64 {
     (value * SCALE_6 as f64).round() as i64
 }

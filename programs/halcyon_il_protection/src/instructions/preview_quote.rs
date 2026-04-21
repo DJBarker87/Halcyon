@@ -27,10 +27,11 @@ pub struct QuotePreview {
 
 #[derive(Accounts)]
 pub struct PreviewQuote<'info> {
-    #[account(seeds = [seeds::PROTOCOL_CONFIG], bump)]
+    #[account(seeds = [seeds::PROTOCOL_CONFIG], seeds::program = halcyon_kernel::ID, bump)]
     pub protocol_config: Account<'info, ProtocolConfig>,
     #[account(
         seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = product_registry_entry.product_program_id == crate::ID,
         constraint = product_registry_entry.active @ halcyon_common::HalcyonError::ProductNotRegistered,
@@ -38,12 +39,14 @@ pub struct PreviewQuote<'info> {
     pub product_registry_entry: Account<'info, ProductRegistryEntry>,
     #[account(
         seeds = [seeds::VAULT_SIGMA, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = vault_sigma.product_program_id == crate::ID,
     )]
     pub vault_sigma: Account<'info, VaultSigma>,
     #[account(
         seeds = [seeds::REGIME_SIGNAL, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = regime_signal.product_program_id == crate::ID,
     )]

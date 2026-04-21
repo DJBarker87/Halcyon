@@ -5,8 +5,8 @@ use crate::pda;
 
 pub use halcyon_kernel::{
     ApplySettlementArgs, InitializeProtocolArgs, PrepareHedgeSwapArgs, RecordHedgeTradeArgs,
-    RegisterProductArgs, SettlementReason, WriteAggregateDeltaArgs, WriteRegimeSignalArgs,
-    WriteRegressionArgs,
+    RegisterProductArgs, SetProtocolConfigArgs, SettlementReason, WriteAggregateDeltaArgs,
+    WriteRegimeSignalArgs, WriteRegressionArgs,
 };
 
 pub fn initialize_protocol_ix(
@@ -39,6 +39,48 @@ pub fn initialize_protocol_ix(
         }
         .to_account_metas(None),
         data: halcyon_kernel::instruction::InitializeProtocol { args }.data(),
+    }
+}
+
+pub fn migrate_protocol_config_ix(admin: &Pubkey) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::MigrateProtocolConfig {
+            admin: *admin,
+            protocol_config,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::MigrateProtocolConfig {}.data(),
+    }
+}
+
+pub fn set_protocol_config_ix(admin: &Pubkey, args: SetProtocolConfigArgs) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::SetProtocolConfig {
+            admin: *admin,
+            protocol_config,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::SetProtocolConfig { args }.data(),
+    }
+}
+
+pub fn update_ewma_ix(product_program_id: &Pubkey, oracle_price: &Pubkey) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    let (vault_sigma, _) = pda::vault_sigma(product_program_id);
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::UpdateEwma {
+            protocol_config,
+            vault_sigma,
+            oracle_price: *oracle_price,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::UpdateEwma {}.data(),
     }
 }
 

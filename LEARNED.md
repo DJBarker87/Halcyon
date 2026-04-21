@@ -176,3 +176,21 @@ book state with monotonic sequencing.
 **Carry-forward rule.** Treat the current hedge path as accounting +
 replanning only. L3/L4 should not assume L2 has already solved real DEX
 execution or separate sleeve custody.
+
+### 5. SOL Autocall §11 shipping path is keeper-fed `P_red(σ)`, not the live E11 operator assembly
+
+**Symptom.** After eliminating the E11 heap OOM, the fixed-product live
+operator path still measured around 1.36M CU on SBF — well above the
+`946,421` CU target recorded in the authority log.
+
+**Resolution.** `research/complexity_reduction_log.md §11` is explicit: the
+shipping one-transaction POD-DEIM path stores the basis / DEIM machinery as
+compile-time constants, but the sigma-dependent reduced operator `P_red(σ)` is
+computed off-chain and written to a product PDA by a keeper. The on-chain
+quote path only loads `P_red(σ)` and runs the reduced backward pass.
+
+**Carry-forward rule.** For SOL Autocall compute work, do not equate
+"compile-time POD-DEIM tables" with "fully compile-time quote path". The basis
+is static; the per-sigma reduced operator is not. Any future agent working on
+SOL Autocall CU or pricing should read `research/complexity_reduction_log.md`
+before proposing architectural changes.

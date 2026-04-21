@@ -21,6 +21,7 @@ pub const AGGREGATE_DELTA: &[u8] = b"aggregate_delta";
 pub const REGRESSION: &[u8] = b"regression";
 pub const VAULT_SIGMA: &[u8] = b"vault_sigma";
 pub const REGIME_SIGNAL: &[u8] = b"regime_signal";
+pub const REDUCED_OPERATORS: &[u8] = b"reduced_operators";
 pub const FEE_LEDGER: &[u8] = b"fee_ledger";
 pub const KEEPER_REGISTRY: &[u8] = b"keeper_registry";
 pub const ALT_REGISTRY: &[u8] = b"alt_registry";

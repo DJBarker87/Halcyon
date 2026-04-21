@@ -13,6 +13,12 @@ halcyon_flagship_autocall  = "E4Atu2kHkzJ1NMATBvoMcy3BDKfsyz418DHCoqQHc3Mc"
 halcyon_il_protection      = "HuUQUngf79HgTWdggxAsE135qFeHfYV9Mj9xsCcwqz5g"
 halcyon_sol_autocall       = "6DfpE7MEx1K1CeiQuw8Q61Empamcuknv9Tc79xtJKae8"
 
+[programs.devnet]
+halcyon_kernel             = "H71FxCTuVGL13PkzXeVxeTn89xZreFm4AwLu3iZeVtdF"
+halcyon_flagship_autocall  = "E4Atu2kHkzJ1NMATBvoMcy3BDKfsyz418DHCoqQHc3Mc"
+halcyon_il_protection      = "HuUQUngf79HgTWdggxAsE135qFeHfYV9Mj9xsCcwqz5g"
+halcyon_sol_autocall       = "6DfpE7MEx1K1CeiQuw8Q61Empamcuknv9Tc79xtJKae8"
+
 [registry]
 url = "https://api.apr.dev"
 

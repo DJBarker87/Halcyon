@@ -1,16 +1,29 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::{Args as ClapArgs, Subcommand};
 use solana_sdk::signer::Signer;
 
 use halcyon_client_sdk::{decode::fetch_anchor_account, kernel, sol_autocall, tx};
+use halcyon_sol_autocall_quote::{
+    autocall_v2::AutocallParams,
+    autocall_v2_e11::precompute_reduced_operators_from_const,
+    generated::pod_deim_table::{
+        TRAINING_ALPHA_S6, TRAINING_AUTOCALL_LOG_6, TRAINING_BETA_S6,
+        TRAINING_KNOCK_IN_LOG_6, TRAINING_NO_AUTOCALL_FIRST_N_OBS, TRAINING_N_OBS,
+        TRAINING_REFERENCE_STEP_DAYS,
+    },
+};
+use solana_sdk::pubkey::Pubkey;
 
 use crate::client::CliContext;
+
+const REDUCED_OPERATOR_CHUNK_LEN: usize = 48;
 
 #[derive(Debug, Subcommand)]
 pub enum KeeperCmd {
     FireObservation(FireObservationArgs),
     FireHedge(FireHedgeArgs),
     FireRegime(FireRegimeArgs),
+    FireReducedOps(FireReducedOpsArgs),
 }
 
 #[derive(Debug, ClapArgs)]
@@ -49,13 +62,20 @@ pub struct FireRegimeArgs {
     pub history_url: String,
     #[arg(long)]
     pub fvol_s6: Option<i64>,
+    /// Product that owns the regime_signal PDA to seed. One of `il`, `sol`, `flagship`.
+    #[arg(long, default_value = "il")]
+    pub product: String,
 }
+
+#[derive(Debug, ClapArgs)]
+pub struct FireReducedOpsArgs {}
 
 pub async fn run(ctx: &CliContext, cmd: KeeperCmd) -> Result<()> {
     match cmd {
         KeeperCmd::FireObservation(a) => fire_observation(ctx, a).await,
         KeeperCmd::FireHedge(a) => fire_hedge(ctx, a).await,
         KeeperCmd::FireRegime(a) => fire_regime(ctx, a).await,
+        KeeperCmd::FireReducedOps(a) => fire_reduced_ops(ctx, a).await,
     }
 }
 
@@ -96,8 +116,22 @@ async fn fire_hedge(ctx: &CliContext, args: FireHedgeArgs) -> Result<()> {
     )
 }
 
+fn resolve_regime_product(alias: &str) -> Result<Pubkey> {
+    match alias.to_ascii_lowercase().as_str() {
+        "il" | "il_protection" | "il-protection" => Ok(halcyon_il_protection::ID),
+        "sol" | "sol_autocall" | "sol-autocall" => Ok(halcyon_sol_autocall::ID),
+        "flagship" | "flagship_autocall" | "flagship-autocall" => {
+            Ok(halcyon_flagship_autocall::ID)
+        }
+        other => anyhow::bail!(
+            "unknown --product '{other}' (expected one of: il, sol, flagship)"
+        ),
+    }
+}
+
 async fn fire_regime(ctx: &CliContext, args: FireRegimeArgs) -> Result<()> {
     let keeper = ctx.signer()?;
+    let product_program_id = resolve_regime_product(&args.product)?;
     let fvol_s6 = match args.fvol_s6 {
         Some(value) => value,
         None => fetch_fvol_s6(&args.history_url).await?,
@@ -106,17 +140,83 @@ async fn fire_regime(ctx: &CliContext, args: FireRegimeArgs) -> Result<()> {
     let ix = kernel::write_regime_signal_ix(
         &keeper.pubkey(),
         &keeper.pubkey(),
-        &halcyon_il_protection::ID,
+        &product_program_id,
         halcyon_kernel::WriteRegimeSignalArgs {
-            product_program_id: halcyon_il_protection::ID,
+            product_program_id,
             fvol_s6,
         },
     );
     let signature = tx::send_instructions(ctx.rpc.as_ref(), keeper, vec![ix]).await?;
     println!(
-        "keepers fire-regime: signature={signature} fvol_s6={fvol_s6} regime={:?} sigma_multiplier_s6={}",
+        "keepers fire-regime: signature={signature} product={product_program_id} fvol_s6={fvol_s6} regime={:?} sigma_multiplier_s6={}",
         regime.regime, regime.sigma_multiplier_s6
     );
+    Ok(())
+}
+
+async fn fire_reduced_ops(ctx: &CliContext, _args: FireReducedOpsArgs) -> Result<()> {
+    let keeper = ctx.signer()?;
+    let (protocol_config, _) = halcyon_client_sdk::pda::protocol_config();
+    let (vault_sigma, _) = halcyon_client_sdk::pda::vault_sigma(&halcyon_sol_autocall::ID);
+    let (regime_signal, _) = halcyon_client_sdk::pda::regime_signal(&halcyon_sol_autocall::ID);
+
+    let protocol = fetch_anchor_account::<halcyon_kernel::state::ProtocolConfig>(
+        ctx.rpc.as_ref(),
+        &protocol_config,
+    )
+    .await?;
+    let sigma = fetch_anchor_account::<halcyon_kernel::state::VaultSigma>(ctx.rpc.as_ref(), &vault_sigma)
+        .await?;
+    let regime =
+        fetch_anchor_account::<halcyon_kernel::state::RegimeSignal>(ctx.rpc.as_ref(), &regime_signal)
+            .await?;
+
+    let sigma_ann_s6 = halcyon_sol_autocall::pricing::compose_pricing_sigma(
+        &sigma,
+        &regime,
+        protocol.sigma_floor_annualised_s6,
+    )?;
+
+    let contract = AutocallParams {
+        n_obs: TRAINING_N_OBS,
+        knock_in_log_6: TRAINING_KNOCK_IN_LOG_6,
+        autocall_log_6: TRAINING_AUTOCALL_LOG_6,
+        no_autocall_first_n_obs: TRAINING_NO_AUTOCALL_FIRST_N_OBS,
+    };
+    let reduced = precompute_reduced_operators_from_const(
+        sigma_ann_s6,
+        TRAINING_ALPHA_S6,
+        TRAINING_BETA_S6,
+        TRAINING_REFERENCE_STEP_DAYS,
+        &contract,
+    )
+    .map_err(|err| anyhow!("failed to precompute reduced operators: {err:?}"))?;
+
+    let p_red_v = reduced.p_red_v;
+    let p_red_u = reduced.p_red_u;
+    for (side, values) in [
+        (halcyon_sol_autocall::ReducedOperatorSide::V, p_red_v.as_slice()),
+        (halcyon_sol_autocall::ReducedOperatorSide::U, p_red_u.as_slice()),
+    ] {
+        for start in (0..values.len()).step_by(REDUCED_OPERATOR_CHUNK_LEN) {
+            let end = (start + REDUCED_OPERATOR_CHUNK_LEN).min(values.len());
+            let ix = sol_autocall::write_reduced_operators_ix(
+                &keeper.pubkey(),
+                halcyon_sol_autocall::WriteReducedOperatorsArgs {
+                    begin_upload: matches!(side, halcyon_sol_autocall::ReducedOperatorSide::V)
+                        && start == 0,
+                    side,
+                    start: start as u16,
+                    values: values[start..end].to_vec(),
+                },
+            );
+            let signature = tx::send_instructions(ctx.rpc.as_ref(), keeper, vec![ix]).await?;
+            println!(
+                "keepers fire-reduced-ops: signature={signature} side={side:?} range={start}..{end} sigma_ann_s6={sigma_ann_s6} vault_sigma_slot={} regime_signal_slot={}",
+                sigma.last_update_slot, regime.last_update_slot,
+            );
+        }
+    }
     Ok(())
 }
 

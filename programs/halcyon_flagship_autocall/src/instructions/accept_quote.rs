@@ -75,6 +75,7 @@ pub struct AcceptQuote<'info> {
     #[account(
         mut,
         seeds = [seeds::VAULT_USDC, usdc_mint.key().as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = vault_usdc.mint == usdc_mint.key(),
     )]
@@ -83,26 +84,28 @@ pub struct AcceptQuote<'info> {
     #[account(
         mut,
         seeds = [seeds::TREASURY_USDC, usdc_mint.key().as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = treasury_usdc.mint == usdc_mint.key(),
     )]
     pub treasury_usdc: Box<Account<'info, TokenAccount>>,
 
     /// CHECK: kernel PDA authority for `vault_usdc` / `treasury_usdc`.
-    #[account(seeds = [seeds::VAULT_AUTHORITY], bump)]
+    #[account(seeds = [seeds::VAULT_AUTHORITY], seeds::program = halcyon_kernel::ID, bump)]
     pub vault_authority: UncheckedAccount<'info>,
 
-    #[account(mut, seeds = [seeds::PROTOCOL_CONFIG], bump)]
+    #[account(mut, seeds = [seeds::PROTOCOL_CONFIG], seeds::program = halcyon_kernel::ID, bump)]
     pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     #[account(
         seeds = [seeds::VAULT_SIGMA, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = vault_sigma.product_program_id == crate::ID,
     )]
     pub vault_sigma: Box<Account<'info, VaultSigma>>,
 
-    #[account(seeds = [seeds::REGRESSION], bump)]
+    #[account(seeds = [seeds::REGRESSION], seeds::program = halcyon_kernel::ID, bump)]
     pub regression: Box<Account<'info, Regression>>,
 
     /// CHECK: validated by `halcyon_oracles`.
@@ -112,15 +115,16 @@ pub struct AcceptQuote<'info> {
     /// CHECK: validated by `halcyon_oracles`.
     pub pyth_iwm: UncheckedAccount<'info>,
 
-    #[account(mut, seeds = [seeds::VAULT_STATE], bump)]
+    #[account(mut, seeds = [seeds::VAULT_STATE], seeds::program = halcyon_kernel::ID, bump)]
     pub vault_state: Box<Account<'info, halcyon_kernel::state::VaultState>>,
 
-    #[account(mut, seeds = [seeds::FEE_LEDGER], bump)]
+    #[account(mut, seeds = [seeds::FEE_LEDGER], seeds::program = halcyon_kernel::ID, bump)]
     pub fee_ledger: Box<Account<'info, halcyon_kernel::state::FeeLedger>>,
 
     #[account(
         mut,
         seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
         bump,
         constraint = product_registry_entry.product_program_id == crate::ID
             @ halcyon_kernel::KernelError::ProductProgramMismatch,

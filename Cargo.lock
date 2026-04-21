@@ -1534,10 +1534,12 @@ dependencies = [
  "anyhow",
  "clap",
  "halcyon_client_sdk",
+ "halcyon_flagship_autocall",
  "halcyon_il_protection",
  "halcyon_il_quote",
  "halcyon_kernel",
  "halcyon_sol_autocall",
+ "halcyon_sol_autocall_quote",
  "reqwest",
  "serde",
  "serde_json",
@@ -1652,6 +1654,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "halcyon_price_relay_tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "solana-sdk",
+]
+
+[[package]]
 name = "halcyon_sol_autocall"
 version = "0.1.0"
 dependencies = [
@@ -1673,6 +1684,15 @@ dependencies = [
  "serde",
  "serde_json",
  "solmath-core",
+]
+
+[[package]]
+name = "halcyon_sol_autocall_quote_training"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "halcyon_sol_autocall_quote",
+ "sha2 0.10.9",
 ]
 
 [[package]]

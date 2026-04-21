@@ -96,6 +96,14 @@ pub fn regime_signal(product_program_id: &Pubkey) -> (Pubkey, u8) {
     )
 }
 
+pub fn reduced_operators_for(product_program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[seeds::REDUCED_OPERATORS], product_program_id)
+}
+
+pub fn sol_autocall_reduced_operators() -> (Pubkey, u8) {
+    reduced_operators_for(&halcyon_sol_autocall::ID)
+}
+
 pub fn regression() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seeds::REGRESSION], &halcyon_kernel::ID)
 }

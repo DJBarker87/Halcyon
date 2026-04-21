@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Halcyon — Code Review (2026-04-21)</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.6 -apple-system, system-ui, Segoe UI, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.25rem; color: #111; background: #fafafa; }
+  h1 { font-size: 1.6rem; margin-bottom: .2rem; }
+  h2 { margin-top: 2.2rem; font-size: 1.15rem; border-bottom: 1px solid #ddd; padding-bottom: .3rem; }
+  h3 { margin-top: 1.4rem; font-size: 1rem; }
+  .sub { color: #666; margin-bottom: 1.5rem; }
+  .grade-row { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0 1.5rem; }
+  .card { flex: 1 1 180px; border: 1px solid #ccc; border-radius: 6px; padding: .75rem 1rem; background: #fff; }
+  .card .label { font-size: .75rem; color: #666; text-transform: uppercase; letter-spacing: .05em; }
+  .card .grade { font-size: 1.6rem; font-weight: 600; font-family: ui-monospace, Menlo, monospace; }
+  .grade.a { color: #1a7a1a; } .grade.bp { color: #2a8a2a; } .grade.b { color: #7a7a1a; } .grade.c { color: #a35a1a; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; font-size: 13px; }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid #e0e0e0; vertical-align: top; }
+  th { background: #f0f0f0; font-weight: 600; }
+  td code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .sev { font-weight: 600; font-size: 11px; padding: 2px 6px; border-radius: 3px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+  .sev.crit { background: #fde2e2; color: #a10000; }
+  .sev.high { background: #ffe8c2; color: #8a4a00; }
+  .sev.med  { background: #fff3b8; color: #7a5c00; }
+  .sev.low  { background: #e2efff; color: #1a4a8a; }
+  .sev.info { background: #e6e6e6; color: #333; }
+  .verdict { background: #f0f7f0; border-left: 4px solid #1a7a1a; padding: .8rem 1rem; margin: 1.5rem 0; border-radius: 0 4px 4px 0; }
+  ul { padding-left: 1.2rem; } li { margin: .2rem 0; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1a1a; color: #e0e0e0; }
+    h2 { border-color: #444; }
+    .card, th { background: #222; } .card { border-color: #444; }
+    th, td { border-color: #333; }
+    .sub, .card .label { color: #999; }
+  }
+</style>
+</head>
+<body>
+
+<h1>Halcyon — Code Review</h1>
+<div class="sub">2026-04-21 · scope: 4 Anchor programs, client SDK, frontend, keepers, ops, CI</div>
+
+<div class="verdict">
+<strong>Verdict:</strong> No P0-exploitable vulnerabilities. Arithmetic safety, signer/ownership checks, and PDA discipline are solid throughout. Off-chain surface is genuinely strong (locked allowlists, simulate-before-send, hardened systemd). The fixable gaps concentrate in one area: <strong>oracle staleness enforcement relative to <code>block.timestamp</code></strong>, not just observation-window bounds. Fix the P1s and this is mainnet-ready.
+</div>
+
+<h2>Grade Summary</h2>
+<div class="grade-row">
+  <div class="card"><div class="label">Overall</div><div class="grade bp">B+</div></div>
+  <div class="card"><div class="label">On-chain security</div><div class="grade bp">B+</div></div>
+  <div class="card"><div class="label">Off-chain security</div><div class="grade a">A−</div></div>
+  <div class="card"><div class="label">Error handling</div><div class="grade b">B</div></div>
+  <div class="card"><div class="label">Code org / docs</div><div class="grade a">A−</div></div>
+  <div class="card"><div class="label">Mainnet ready?</div><div class="grade c">After P1s</div></div>
+</div>
+
+<h2>Per-program security grades</h2>
+<table>
+  <tr><th>Program</th><th>Grade</th><th>Headline</th></tr>
+  <tr><td><code>halcyon_kernel</code></td><td>A</td><td>Clean admin + lifecycle. CPI workaround well-documented.</td></tr>
+  <tr><td><code>halcyon_flagship_autocall</code></td><td>B+</td><td>Pyth absolute-freshness gap at observation &amp; settle.</td></tr>
+  <tr><td><code>halcyon_il_protection</code></td><td>B+</td><td>Settle is tight; missing <code>price_s6 &gt; 0</code> re-check post-read.</td></tr>
+  <tr><td><code>halcyon_sol_autocall</code></td><td>B</td><td>E11 fallback silently masks errors; <code>cu_trace</code> still in hot path.</td></tr>
+</table>
+
+<h2>Priority Fix List (before mainnet)</h2>
+<table>
+<tr><th>#</th><th>Severity</th><th>File</th><th>Issue</th><th>Fix</th></tr>
+
+<tr><td>1</td><td><span class="sev high">High</span></td>
+<td><code>halcyon_flagship_autocall/…/observation.rs</code><br><code>record_coupon_observation.rs:151</code><br><code>settle.rs:143</code></td>
+<td>Observation &amp; settle rely on the Pyth range-based window (5-min lead / 15-min lag) for staleness. No absolute check of <code>now − publish_ts ≤ pyth_staleness_cap</code> at recording time. A feed stale relative to <code>Clock::unix_timestamp</code> can pass if it falls in window.</td>
+<td>In <code>read_equity_observation_worst_ratio_s6()</code> and <code>require_snapshot_sync()</code>, add <code>require!(now.saturating_sub(snapshot.publish_ts) ≤ cfg.pyth_quote_staleness_cap_secs, OracleStale)</code> post-read. Use a dedicated <code>observation_staleness_cap_secs</code> in <code>ProtocolConfig</code> if you want a tighter window than settle.</td></tr>
+
+<tr><td>2</td><td><span class="sev high">High</span></td>
+<td><code>halcyon_sol_autocall/src/pricing.rs:177</code></td>
+<td><code>solve_e11(...).unwrap_or_else(|_| gated.result.clone())</code> silently falls back to the Richardson/gated result on E11 failure. A buyer gets a quote they believe came from the E11 pricer when it actually came from the fallback. Masks numerical-instability bugs.</td>
+<td>Match on the error: emit a <code>E11FallbackUsed { reason }</code> event and either (a) return an error, or (b) explicitly set a flag on the emitted <code>QuoteRecorded</code> event so downstream consumers can reject fallback quotes. Silent fallback is the worst shape.</td></tr>
+
+<tr><td>3</td><td><span class="sev high">High</span></td>
+<td><code>halcyon_kernel/…/write_regression.rs:67-88</code></td>
+<td>On <code>version == 0</code> init, caller-supplied <code>window_start_ts</code> / <code>window_end_ts</code> are written without bounds checks. A compromised regression keeper could seed a nonsensical window that all subsequent writes are compared against.</td>
+<td>Even on v0 init, validate both timestamps: <code>require!(window_start_ts &gt; 0 &amp;&amp; window_end_ts &gt; window_start_ts &amp;&amp; window_end_ts ≤ now + GRACE, BadWindow)</code>.</td></tr>
+
+<tr><td>4</td><td><span class="sev med">Med</span></td>
+<td><code>halcyon_il_protection/…/settle.rs:188</code> (<code>price_s6_to_s12</code>)</td>
+<td>Converts <code>i64 → u128 × 1_000_000</code>. Relies on upstream rejection of <code>price ≤ 0</code>. No defensive re-check here; if a Pyth path ever returns zero-or-negative, the IL math silently produces garbage.</td>
+<td>First line of <code>price_s6_to_s12()</code>: <code>require!(price_s6 &gt; 0, IlProtectionError::InvalidEntryPrice);</code> Defensive and free.</td></tr>
+
+<tr><td>5</td><td><span class="sev med">Med</span></td>
+<td><code>halcyon_sol_autocall/…/pricing.rs:40-51, 233, 239</code></td>
+<td><code>cu_trace()</code> / <code>sol_log_compute_units_()</code> still live in the hot pricing path. Skews CU profiling and wastes ~20-50 CU per log call. Not a security issue, but you are near the CU ceiling on SOL autocall.</td>
+<td>Gate behind <code>#[cfg(feature = "cu-trace")]</code> and compile mainnet without it. Keep the feature for devnet profiling.</td></tr>
+
+<tr><td>6</td><td><span class="sev med">Med</span></td>
+<td><code>halcyon_sol_autocall/…/record_observation.rs:176</code></td>
+<td>Idempotency check silently returns <code>Ok</code> on replayed observation index — no event, no warning. A misbehaving keeper submitting with a divergent price gets no feedback; off-chain monitoring cannot detect the replay attempt.</td>
+<td>Emit an <code>ObservationReplayed { expected, submitted }</code> event before the early-return so the keeper-monitoring dashboard can alert.</td></tr>
+
+<tr><td>7</td><td><span class="sev med">Med</span></td>
+<td><code>halcyon_flagship_autocall/…/pricing.rs:206</code> &amp; state setup</td>
+<td><code>coupon_per_observation_usdc()</code> checked math is correct, but <code>offered_coupon_bps_s6</code> has no compile- or init-time upper bound. An absurd coupon could be stored in state without a validation gate, propagating to all observation math.</td>
+<td>On quote acceptance, <code>require!(offered_coupon_bps_s6 &lt;= MAX_COUPON_BPS_S6, ...)</code> with <code>MAX_COUPON_BPS_S6 = 10_000_000</code> (100% / obs).</td></tr>
+
+<tr><td>8</td><td><span class="sev low">Low</span></td>
+<td><code>halcyon_flagship_autocall/…/reconcile_coupons.rs</code></td>
+<td><code>product_terms.next_coupon_index</code> not explicitly bounded against <code>MONTHLY_COUPON_COUNT</code> at the top of the handler.</td>
+<td>Add <code>require!(pt.next_coupon_index &lt;= MONTHLY_COUPON_COUNT, ...)</code> as a first-line guard.</td></tr>
+
+<tr><td>9</td><td><span class="sev low">Low</span></td>
+<td><code>halcyon_sol_autocall/…/accept_quote.rs</code></td>
+<td><code>observation_schedule</code> written without a monotonic-increasing / future-timestamp check. An off-by-one in the scheduler would silently break due-ness checks.</td>
+<td>Validate in <code>accept_quote</code>: iterate <code>schedule[i] &lt; schedule[i+1]</code> and <code>schedule[0] &gt; now</code>.</td></tr>
+
+</table>
+
+<h2>Architectural Risks (not code bugs)</h2>
+<ul>
+  <li><strong>POD-DEIM provenance.</strong> The whitepaper says training is offline; SOL pricer on mainnet uses <code>solve_fair_coupon_e11_from_const</code> — a <code>const fn</code> over a precompiled table. Correct in code. Ensure <code>protocol_config.pod_deim_table_sha256</code> is verified against the training artefact before mainnet and committed in submission materials. A judge will ask.</li>
+  <li><strong>Keeper pause.</strong> There is no global kill-switch across keeper-signed instructions. If the observation keeper is compromised, <code>rotate_keeper</code> closes the window but leaves a gap before admin notices. Consider an admin-settable <code>keepers_paused</code> flag in <code>ProtocolConfig</code> checked at the top of each keeper instruction.</li>
+  <li><strong>Self-hosting during judging.</strong> Home NUC + home ISP + Colosseum review window = operational single point of failure. systemd hardening is great; network availability isn't something systemd solves. Strongly recommend Vercel/Cloudflare for the marketing site + keep keepers on the NUC.</li>
+</ul>
+
+<h2>What's clean (don't re-open)</h2>
+<ul>
+  <li>Arithmetic: <code>checked_add</code> / <code>checked_mul</code> / <code>checked_sub</code> used consistently in value-sensitive paths. No stray <code>+</code> / <code>*</code> on money.</li>
+  <li>Signer/authority: <code>has_one = admin</code> on admin instructions; <code>require_keys_eq!(keeper, registry.observation, ...)</code> on keeper instructions — stricter than a bare <code>Signer</code>.</li>
+  <li>PDA bump canonicalization: bump stored in account state; seeds include unique identifiers (user pk, mint); discriminator-only cross-program-account pattern is the documented Anchor 0.32.1 workaround, defensible.</li>
+  <li>Off-chain secrets: <code>.env</code> <em>not</em> in git. <code>.gitignore</code> covers <code>keepers/*/config/*.json</code>. CI uses pinned action SHAs. Anchor.toml points at user keypair, not committed.</li>
+  <li>Frontend allowlist: runtime config locked to compile-time allowlist; genesis-hash cluster check prevents cluster spoofing from poisoned localStorage.</li>
+  <li>Keeper daemons: exponential backoff + failure budget + systemd <code>PrivateTmp=true</code>, <code>ProtectSystem=strict</code>, <code>NoNewPrivileges=true</code>, <code>MemoryDenyWriteExecute=true</code>. This is production-grade.</li>
+  <li>CI invariants: pure-Rust quote crates cannot transitively depend on <code>anchor-lang</code> / <code>solana-program</code>. Precision baseline regression guard. <code>cargo audit</code> with documented waivers.</li>
+</ul>
+
+<h2>Suggested next steps</h2>
+<ol>
+  <li>Burn a day on Fixes #1–#3 (Pyth absolute staleness, E11 fallback signalling, regression v0 bounds). These are the only findings that could bite in a live setting.</li>
+  <li>Fix #5 (gate <code>cu_trace</code>) before any mainnet CU profiling — your SOL-autocall budget is tight.</li>
+  <li>Fixes #4, #6–#9 are defensive quality improvements. Batch into one PR.</li>
+  <li>Architectural: document the POD-DEIM precompiled table provenance in the submission README. Cite the SHA in <code>ProtocolConfig</code>.</li>
+  <li>Do <em>not</em> self-host the landing page from the NUC during Colosseum judging. Keepers on NUC is fine; public marketing surface on Vercel.</li>
+</ol>
+
+<div class="sub" style="margin-top: 2rem; font-size: 12px;">Generated by <code>/review-and-iterate</code> · Halcyon @ commit <code>6ef3e8a</code> · 2026-04-21</div>
+
+</body>
+</html>

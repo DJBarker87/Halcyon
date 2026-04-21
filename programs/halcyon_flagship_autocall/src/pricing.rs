@@ -435,11 +435,28 @@ fn build_schedule_from_boundaries<const N: usize>(
     issued_at: i64,
     boundaries: &[u16; N],
 ) -> Result<[i64; N]> {
+    #[cfg(feature = "integration-test")]
+    {
+        let mut schedule = [0i64; N];
+        for (idx, boundary) in boundaries.iter().copied().enumerate() {
+            schedule[idx] = issued_at
+                .checked_add(i64::from(boundary) * crate::state::SECONDS_PER_DAY)
+                .ok_or(HalcyonError::Overflow)?;
+        }
+        return Ok(schedule);
+    }
+
+    #[cfg(not(feature = "integration-test"))]
     let issue_date = issue_trade_date(issued_at);
+
     let mut schedule = [0i64; N];
     for (idx, trading_day_boundary) in boundaries.iter().copied().enumerate() {
+        #[cfg(not(feature = "integration-test"))]
         let trading_day = nth_trading_day_after(issue_date, trading_day_boundary)?;
-        schedule[idx] = trading_close_timestamp_utc(trading_day);
+        #[cfg(not(feature = "integration-test"))]
+        {
+            schedule[idx] = trading_close_timestamp_utc(trading_day);
+        }
     }
     Ok(schedule)
 }

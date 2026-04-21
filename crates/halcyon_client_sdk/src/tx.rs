@@ -5,12 +5,24 @@ use solana_rpc_client_api::config::RpcSimulateTransactionConfig;
 use solana_sdk::{
     address_lookup_table::AddressLookupTableAccount,
     commitment_config::CommitmentConfig,
+    compute_budget::ComputeBudgetInstruction,
     instruction::Instruction,
     message::{v0::Message as MessageV0, VersionedMessage},
     signature::{Keypair, Signature},
     signer::Signer,
     transaction::{Transaction, VersionedTransaction},
 };
+
+fn simulate_heap_frame_bytes() -> Result<Option<u32>> {
+    let Some(raw) = std::env::var_os("HALCYON_SIM_HEAP_FRAME_BYTES") else {
+        return Ok(None);
+    };
+    let parsed: u32 = raw
+        .to_string_lossy()
+        .parse()
+        .context("parsing HALCYON_SIM_HEAP_FRAME_BYTES as u32")?;
+    Ok(Some(parsed))
+}
 
 pub async fn send_instructions(
     rpc: &RpcClient,
@@ -41,8 +53,18 @@ pub async fn simulate_instruction(
         .get_latest_blockhash()
         .await
         .context("latest blockhash")?;
+    // Product pricing paths (preview_quote) routinely exceed the 200k default.
+    // Bump to the 1.4M per-ix max so simulations don't false-fail on CU.
+    let cu_limit = ComputeBudgetInstruction::set_compute_unit_limit(1_400_000);
+    let mut instructions = vec![cu_limit];
+    if let Some(heap_frame_bytes) = simulate_heap_frame_bytes()? {
+        instructions.push(ComputeBudgetInstruction::request_heap_frame(
+            heap_frame_bytes,
+        ));
+    }
+    instructions.push(instruction);
     let tx = Transaction::new_signed_with_payer(
-        &[instruction],
+        &instructions,
         Some(&payer.pubkey()),
         &[payer],
         recent_blockhash,
@@ -60,7 +82,13 @@ pub async fn simulate_instruction(
         .await
         .context("simulating transaction")?;
     if let Some(err) = response.value.err.clone() {
-        return Err(anyhow!("simulation failed: {err:?}"));
+        let logs = response
+            .value
+            .logs
+            .as_ref()
+            .map(|l| l.join("\n"))
+            .unwrap_or_default();
+        return Err(anyhow!("simulation failed: {err:?}\nlogs:\n{logs}"));
     }
     Ok(response.value)
 }

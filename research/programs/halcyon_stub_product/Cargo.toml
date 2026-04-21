@@ -18,6 +18,7 @@ name = "halcyon_stub_product"
 # feature) must pass `--no-default-features` to compile the stub with the
 # override gone from its on-chain ABI.
 default = ["localnet-override"]
+integration-test = []
 localnet-override = []
 cpi = ["no-entrypoint"]
 no-entrypoint = []
@@ -32,5 +33,5 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "halcyon_common/id
 anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
 anchor-spl = "=0.32.1"
 halcyon_common = { path = "../../../crates/halcyon_common" }
-halcyon_kernel = { path = "../../../programs/halcyon_kernel", features = ["cpi"] }
+halcyon_kernel = { path = "../../../programs/halcyon_kernel", default-features = false, features = ["cpi", "pyth-pull"] }
 solana-sha256-hasher = "=2.3.0"

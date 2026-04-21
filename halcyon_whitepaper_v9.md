@@ -137,7 +137,7 @@ SOL Autocall is for crypto-native yield seekers looking for defined-return alter
 
 A 16-day defined-yield note on SOL, with 8 observations every 2 days. The buyer earns a coupon each period SOL is above entry, autocalls at par if SOL is above 102.5% at any observation from day 4 onwards, and takes a principal loss if SOL touches 70% of entry and finishes below entry. A 2-day lockout suppresses autocall at the first observation, guaranteeing every note runs at least 4 days.
 
-The engine demonstrates SolMath's handling of backward recursion with compression. Pricing this note honestly requires 8 observation-date backward steps on a barrier-aware state space, which at full grid resolution would need around 40,000 transition matrix evaluations per quote. That's well outside Solana's compute budget. The production pricer uses POD-DEIM (proper orthogonal decomposition with discrete empirical interpolation) to compress the operator to 12 sample points and the value function to 15 dimensions, bringing online quote cost to around 350K CU. A gated Richardson CTMC fallback handles volatilities outside the compression's training band at around 809K CU. This is the one engine that genuinely pushes against Solana's compute ceiling, and getting it to fit took most of the mathematical work behind SolMath's speed.
+The engine demonstrates SolMath's handling of backward recursion with compression. Pricing this note honestly requires 8 observation-date backward steps on a barrier-aware state space, which at full grid resolution would need around 40,000 transition matrix evaluations per quote. That's well outside Solana's compute budget. The production pricer uses per-product POD-DEIM (proper orthogonal decomposition with discrete empirical interpolation) with a keeper-updated reduced operator `P_red(σ)` and a 15-dimensional value basis, bringing the full one-transaction quote path on the default fixed product to about 946K CU. A gated Richardson CTMC fallback handles cases where the compressed basis is not applicable. The historical live-operator E11 variant evaluates 12 operator samples on-chain and lands around 1.36M CU, so it is not the production primary path. This is the one engine that genuinely pushes against Solana's compute ceiling, and getting it to fit took most of the mathematical work behind SolMath's speed.
 
 |  |  |
 |---|---|
@@ -207,7 +207,7 @@ Everything that determines what a user pays or receives happens inside the Solan
 | On-chain (verifiable, replayable) | Off-chain (parameters published to on-chain accounts) |
 |---|---|
 | NIG premium computation (all three products) | NIG α/β calibration (monthly MLE fit) |
-| POD-DEIM online solve (SOL Autocall) | POD-DEIM training (SVD, DEIM cell selection) |
+| POD-DEIM online solve (SOL Autocall, keeper-fed `P_red`) | POD-DEIM training (SVD, DEIM cell selection) |
 | Richardson CTMC fallback | One-factor NIG factor model calibration |
 | IL Gauss-Legendre quadrature | Regime classification (fvol signal) |
 | Daily-KI correction (hash-committed) | KI correction table (regenerable from calibration) |
@@ -253,7 +253,7 @@ Built as of submission:
 * **SolMath.** Open-source on crates.io, around 45KB BPF when feature-trimmed. All the primitives in Section 2, validated against QuantLib, mpmath, and scipy on 2.5 million vectors.
 * **Flagship equity autocall engine.** One-factor NIG with Gaussian residuals, K=12 projected copula filter, deterministic 3D spectral daily-KI correction (Fang-Oosterlee COS, corrected for asymmetric-distribution bias), proxy hedge controller. 207 backtested notes over 20 years, zero insolvencies.
 * **IL Protection engine.** NIG European 5-point Gauss-Legendre pricer plus terminal settlement. 2,027 backtested 30-day windows, zero engine failures.
-* **SOL Autocall engine.** POD-DEIM live operator pricer plus gated Richardson CTMC fallback plus barrier-aligned grid plus Brownian bridge KI correction plus delta surface. 1,638 backtested notes with full hedge replay, positive in every backtested year.
+* **SOL Autocall engine.** Per-product POD-DEIM pricer with keeper-fed reduced operators plus gated Richardson CTMC fallback plus barrier-aligned grid plus Brownian bridge KI correction plus delta surface. The historical E11 live-operator path remains a reference branch, but the shipping fixed-product architecture is the keeper-fed DEIM path recorded in the authority log. 1,638 backtested notes with full hedge replay, positive in every backtested year.
 * **Shared underwriting vault.** Capital stack with senior and junior tranches, kinked utilization curve, per-product issuance gates.
 * **CLI tools.** `make il-hedge`, `make sol-autocall`, and `make equity-autocall` produce quote diagnostics and replay results from JSON payloads.
 

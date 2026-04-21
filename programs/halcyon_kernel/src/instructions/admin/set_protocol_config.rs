@@ -30,6 +30,7 @@ pub struct SetProtocolConfigArgs {
     pub sigma_floor_annualised_s6: Option<i64>,
     pub k12_correction_sha256: Option<[u8; 32]>,
     pub daily_ki_correction_sha256: Option<[u8; 32]>,
+    pub pod_deim_table_sha256: Option<[u8; 32]>,
     pub premium_splits_bps: Option<PremiumSplitsBps>,
     pub sol_autocall_quote_config_bps: Option<SolAutocallQuoteConfigBps>,
     pub treasury_destination: Option<Pubkey>,
@@ -89,6 +90,9 @@ pub fn handler(ctx: Context<SetProtocolConfig>, args: SetProtocolConfigArgs) -> 
     }
     if let Some(h) = args.daily_ki_correction_sha256 {
         cfg.daily_ki_correction_sha256 = h;
+    }
+    if let Some(h) = args.pod_deim_table_sha256 {
+        cfg.pod_deim_table_sha256 = h;
     }
     if let Some(splits) = args.premium_splits_bps {
         cfg.senior_share_bps = splits.senior_bps;

@@ -35,6 +35,10 @@ pub mod halcyon_kernel {
         instructions::admin::set_protocol_config::handler(ctx, args)
     }
 
+    pub fn migrate_protocol_config(ctx: Context<MigrateProtocolConfig>) -> Result<()> {
+        instructions::admin::migrate_protocol_config::handler(ctx)
+    }
+
     pub fn pause_issuance(ctx: Context<SetPauseFlag>, paused: bool) -> Result<()> {
         instructions::admin::pause_issuance::handler(ctx, paused)
     }

@@ -14,7 +14,8 @@ host under systemd. Full deployment walkthrough lives at
 | `halcyon-regression-keeper.service` | Writes flagship `Regression` (IWM→SPY/QQQ β) |
 | `halcyon-regime-keeper.service` | Writes `RegimeSignal` |
 | `halcyon-observation-keeper.service` | SOL Autocall observation writes |
-| `halcyon-keepers.target` | Groups the five production keepers |
+| `halcyon-price-relay.service` | Pyth VAA → devnet PriceUpdateV2 accounts (Node.js, see `keepers/price_relay/`) |
+| `halcyon-keepers.target` | Groups the production keepers |
 | `halcyon-keeper.env.example` | Template env file (secrets go here) |
 
 ## Install

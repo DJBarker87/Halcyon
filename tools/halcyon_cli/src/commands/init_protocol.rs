@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Args as ClapArgs;
+use halcyon_sol_autocall_quote::generated::pod_deim_table::POD_DEIM_TABLE_SHA256;
 use solana_sdk::signer::Signer;
 
 use halcyon_client_sdk::{
@@ -98,6 +99,7 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
             sigma_floor_annualised_s6: args.sigma_floor_annualised_s6,
             sol_autocall_quote_share_bps: args.sol_autocall_quote_share_bps,
             sol_autocall_issuer_margin_bps: args.sol_autocall_issuer_margin_bps,
+            pod_deim_table_sha256: POD_DEIM_TABLE_SHA256,
             treasury_destination,
             hedge_max_slippage_bps_cap: args.hedge_max_slippage_bps_cap,
             hedge_defund_destination,

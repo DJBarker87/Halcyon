@@ -20,8 +20,10 @@ serde_json = "1"
 anyhow = "1"
 anchor-lang = { version = "=0.32.1", features = ["init-if-needed"] }
 halcyon_client_sdk = { path = "../../crates/halcyon_client_sdk" }
+halcyon_flagship_autocall = { path = "../../programs/halcyon_flagship_autocall", features = ["cpi"] }
 halcyon_il_protection = { path = "../../programs/halcyon_il_protection", features = ["cpi"] }
 halcyon_il_quote = { path = "../../crates/halcyon_il_quote" }
 halcyon_kernel = { path = "../../programs/halcyon_kernel", features = ["cpi"] }
+halcyon_sol_autocall_quote = { path = "../../crates/halcyon_sol_autocall_quote" }
 halcyon_sol_autocall = { path = "../../programs/halcyon_sol_autocall", features = ["cpi"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

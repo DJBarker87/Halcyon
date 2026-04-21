@@ -42,8 +42,17 @@ enum Command {
     /// Register the IL Protection product with the kernel. Admin-only.
     RegisterIlProtection(commands::register_il_protection::Args),
 
+    /// Register the Flagship Autocall product with the kernel. Admin-only.
+    RegisterFlagshipAutocall(commands::register_flagship_autocall::Args),
+
     /// Rotate a keeper role's authority. Admin-only.
     RotateKeeper(commands::rotate_keeper::Args),
+
+    /// Resize/migrate the singleton ProtocolConfig account to the current layout.
+    MigrateProtocolConfig(commands::migrate_protocol_config::Args),
+
+    /// Update selected protocol-config fields. Admin-only.
+    SetProtocolConfig(commands::set_protocol_config::Args),
 
     /// Senior-tranche deposit (user flow).
     SeniorDeposit(commands::senior_deposit::Args),
@@ -65,11 +74,19 @@ enum Command {
     /// Sweep accrued treasury fees. Admin-only.
     SweepFees(commands::sweep_fees::Args),
 
+    /// Permissionless: advance a product's `vault_sigma` EWMA from the given
+    /// Pyth feed. First call stamps the initial price + timestamp so product
+    /// `preview_quote` paths can pass the sigma-freshness gate on devnet.
+    UpdateEwma(commands::update_ewma::Args),
+
     /// Simulate `preview_quote` and decode the Anchor return data.
     Preview(commands::preview::Args),
 
     /// Simulate IL Protection `preview_quote` and decode the Anchor return data.
     PreviewIl(commands::preview_il::Args),
+
+    /// Simulate Flagship Autocall `preview_quote` and decode the Anchor return data.
+    PreviewFlagship(commands::preview_flagship::Args),
 
     /// Issue a SOL Autocall policy.
     Buy(commands::buy::Args),
@@ -105,15 +122,22 @@ async fn main() -> Result<()> {
         Command::InitProtocol(a) => commands::init_protocol::run(&ctx, a).await,
         Command::RegisterSolAutocall(a) => commands::register::run(&ctx, a).await,
         Command::RegisterIlProtection(a) => commands::register_il_protection::run(&ctx, a).await,
+        Command::RegisterFlagshipAutocall(a) => {
+            commands::register_flagship_autocall::run(&ctx, a).await
+        }
         Command::RotateKeeper(a) => commands::rotate_keeper::run(&ctx, a).await,
+        Command::MigrateProtocolConfig(a) => commands::migrate_protocol_config::run(&ctx, a).await,
+        Command::SetProtocolConfig(a) => commands::set_protocol_config::run(&ctx, a).await,
         Command::SeniorDeposit(a) => commands::senior_deposit::run(&ctx, a).await,
         Command::SeedJunior(a) => commands::seed_junior::run(&ctx, a).await,
         Command::FundCouponVault(a) => commands::fund_coupon_vault::run(&ctx, a).await,
         Command::FundSleeve(a) => commands::fund_hedge_sleeve::run(&ctx, a).await,
         Command::DefundSleeve(a) => commands::defund_hedge_sleeve::run(&ctx, a).await,
         Command::SweepFees(a) => commands::sweep_fees::run(&ctx, a).await,
+        Command::UpdateEwma(a) => commands::update_ewma::run(&ctx, a).await,
         Command::Preview(a) => commands::preview::run(&ctx, a).await,
         Command::PreviewIl(a) => commands::preview_il::run(&ctx, a).await,
+        Command::PreviewFlagship(a) => commands::preview_flagship::run(&ctx, a).await,
         Command::Buy(a) => commands::buy::run(&ctx, a).await,
         Command::BuyIl(a) => commands::buy_il::run(&ctx, a).await,
         Command::Settle(a) => commands::settle::run(&ctx, a).await,

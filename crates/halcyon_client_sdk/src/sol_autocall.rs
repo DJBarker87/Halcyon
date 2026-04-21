@@ -12,6 +12,7 @@ pub fn preview_quote_ix(
     product_registry_entry: Pubkey,
     vault_sigma: Pubkey,
     regime_signal: Pubkey,
+    reduced_operators: Pubkey,
     pyth_sol: Pubkey,
     notional: u64,
 ) -> Instruction {
@@ -22,6 +23,7 @@ pub fn preview_quote_ix(
             product_registry_entry,
             vault_sigma,
             regime_signal,
+            reduced_operators,
             pyth_sol,
             clock: solana_sdk::sysvar::clock::ID,
         }
@@ -43,11 +45,13 @@ pub async fn simulate_preview_quote(
     let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_sol_autocall::ID);
     let (vault_sigma, _) = pda::vault_sigma(&halcyon_sol_autocall::ID);
     let (regime_signal, _) = pda::regime_signal(&halcyon_sol_autocall::ID);
+    let (reduced_operators, _) = pda::sol_autocall_reduced_operators();
     let ix = preview_quote_ix(
         protocol_config,
         product_registry_entry,
         vault_sigma,
         regime_signal,
+        reduced_operators,
         pyth_sol,
         notional,
     );
@@ -71,6 +75,7 @@ pub fn accept_quote_ix(
     let (protocol_config, _) = pda::protocol_config();
     let (vault_sigma, _) = pda::vault_sigma(&halcyon_sol_autocall::ID);
     let (regime_signal, _) = pda::regime_signal(&halcyon_sol_autocall::ID);
+    let (reduced_operators, _) = pda::sol_autocall_reduced_operators();
     let (vault_state, _) = pda::vault_state();
     let (fee_ledger, _) = pda::fee_ledger();
     let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_sol_autocall::ID);
@@ -90,6 +95,7 @@ pub fn accept_quote_ix(
             protocol_config,
             vault_sigma,
             regime_signal,
+            reduced_operators,
             pyth_sol,
             vault_state,
             fee_ledger,
@@ -101,6 +107,32 @@ pub fn accept_quote_ix(
         }
         .to_account_metas(None),
         data: halcyon_sol_autocall::instruction::AcceptQuote { args }.data(),
+    }
+}
+
+pub fn write_reduced_operators_ix(
+    keeper: &Pubkey,
+    args: halcyon_sol_autocall::WriteReducedOperatorsArgs,
+) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    let (keeper_registry, _) = pda::keeper_registry();
+    let (vault_sigma, _) = pda::vault_sigma(&halcyon_sol_autocall::ID);
+    let (regime_signal, _) = pda::regime_signal(&halcyon_sol_autocall::ID);
+    let (reduced_operators, _) = pda::sol_autocall_reduced_operators();
+
+    Instruction {
+        program_id: halcyon_sol_autocall::ID,
+        accounts: halcyon_sol_autocall::accounts::WriteReducedOperators {
+            keeper: *keeper,
+            protocol_config,
+            keeper_registry,
+            vault_sigma,
+            regime_signal,
+            reduced_operators,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_sol_autocall::instruction::WriteReducedOperators { args }.data(),
     }
 }
 

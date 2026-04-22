@@ -206,6 +206,7 @@ describe("halcyon kernel L1", function () {
         pythSettleStalenessCapSecs: new BN(60),
         quoteTtlSecs: new BN(5),
         sigmaFloorAnnualisedS6: new BN(400_000),
+        sigmaCeilingAnnualisedS6: new BN(800_000),
         solAutocallQuoteShareBps: 7_500,
         solAutocallIssuerMarginBps: 50,
         treasuryDestination: destinationUsdc,
@@ -229,12 +230,15 @@ describe("halcyon kernel L1", function () {
       .rpc();
 
     const cfg = await kernel.account.protocolConfig.fetch(protocolConfig);
-    expect(cfg.version).to.eq(4);
+    expect(cfg.version).to.eq(8);
     expect(cfg.admin.toBase58()).to.eq(admin.publicKey.toBase58());
     expect(cfg.utilizationCapBps.toNumber()).to.eq(9_000);
     expect(cfg.seniorShareBps).to.eq(9_000);
     expect(cfg.juniorShareBps).to.eq(300);
     expect(cfg.treasuryShareBps).to.eq(700);
+    expect(cfg.ewmaRateLimitSecs.toNumber()).to.eq(30);
+    expect(cfg.ilEwmaRateLimitSecs.toString()).to.eq("30");
+    expect(cfg.solAutocallEwmaRateLimitSecs.toString()).to.eq("30");
     expect(cfg.issuancePausedGlobal).to.be.false;
     expect(cfg.settlementPausedGlobal).to.be.false;
     expect(cfg.solAutocallQuoteShareBps).to.eq(7_500);
@@ -384,10 +388,17 @@ describe("halcyon kernel L1", function () {
         pythSettleStalenessCapSecs: null,
         quoteTtlSecs: null,
         ewmaRateLimitSecs: null,
+        ilEwmaRateLimitSecs: null,
+        solAutocallEwmaRateLimitSecs: null,
         seniorCooldownSecs: new BN(0),
         sigmaFloorAnnualisedS6: null,
+        ilSigmaFloorAnnualisedS6: null,
+        solAutocallSigmaFloorAnnualisedS6: null,
+        flagshipSigmaFloorAnnualisedS6: null,
+        sigmaCeilingAnnualisedS6: null,
         k12CorrectionSha256: null,
         dailyKiCorrectionSha256: null,
+        podDeimTableSha256: null,
         premiumSplitsBps: null,
         solAutocallQuoteConfigBps: null,
         treasuryDestination: null,

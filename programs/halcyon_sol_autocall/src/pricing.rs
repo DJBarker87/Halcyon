@@ -22,8 +22,8 @@ use solmath_core::{fp_mul, fp_sqrt, SCALE};
 
 use crate::errors::SolAutocallError;
 use crate::state::{
-    CURRENT_ENGINE_VERSION, KI_BARRIER_BPS, MATURITY_DAYS, NO_AUTOCALL_FIRST_N_OBS,
-    OBSERVATION_COUNT, OBSERVATION_INTERVAL_DAYS, SECONDS_PER_DAY, SolAutocallReducedOperators,
+    SolAutocallReducedOperators, CURRENT_ENGINE_VERSION, KI_BARRIER_BPS, MATURITY_DAYS,
+    NO_AUTOCALL_FIRST_N_OBS, OBSERVATION_COUNT, OBSERVATION_INTERVAL_DAYS, SECONDS_PER_DAY,
 };
 
 #[cfg(target_os = "solana")]
@@ -114,6 +114,10 @@ pub fn compose_pricing_sigma(
     .map_err(|_| error!(HalcyonError::Overflow))?;
 
     Ok(sigma_s6.max(floor_s6))
+}
+
+pub fn protocol_sigma_floor_annualised_s6(config: &ProtocolConfig) -> i64 {
+    config.sigma_floor_for_product_s6(&crate::ID)
 }
 
 /// Call the keeper-fed fixed-product POD-DEIM pricer when the current reduced

@@ -1,0 +1,14 @@
+[Unit]
+Description=Halcyon flagship EWMA updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/halcyon
+EnvironmentFile=/etc/halcyon/env
+ExecStart=/usr/bin/env bash -lc 'exec /opt/halcyon/bin/halcyon --rpc "$HELIUS_DEVNET_RPC" --keypair "$FLAGSHIP_EWMA_KEYPAIR" update-ewma --product flagship --oracle-price "$PYTH_SPY_ACCOUNT"'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halcyon-update-ewma-flagship

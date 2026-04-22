@@ -24,10 +24,10 @@ use crate::autocall_v2::{
     MarkovScheduleStep, NigParams6,
 };
 use crate::autocall_v2_e11::live_quote_uses_e11;
-#[cfg(target_os = "solana")]
-use crate::autocall_v2_e11::solve_fair_coupon_e11_from_const as solve_e11;
 #[cfg(not(target_os = "solana"))]
 use crate::autocall_v2_e11::solve_fair_coupon_e11_cached as solve_e11;
+#[cfg(target_os = "solana")]
+use crate::autocall_v2_e11::solve_fair_coupon_e11_from_const as solve_e11;
 use solmath_core::{SCALE, SCALE_6};
 
 pub const PARITY_N1: usize = 10;

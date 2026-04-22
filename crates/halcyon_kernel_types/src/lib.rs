@@ -32,6 +32,8 @@ pub struct ProtocolConfig {
     pub treasury_share_bps: u16,
     pub senior_cooldown_secs: i64,
     pub ewma_rate_limit_secs: i64,
+    pub il_ewma_rate_limit_secs: u64,
+    pub sol_autocall_ewma_rate_limit_secs: u64,
     pub sigma_staleness_cap_secs: i64,
     pub regime_staleness_cap_secs: i64,
     pub regression_staleness_cap_secs: i64,
@@ -39,6 +41,10 @@ pub struct ProtocolConfig {
     pub pyth_settle_staleness_cap_secs: i64,
     pub quote_ttl_secs: i64,
     pub sigma_floor_annualised_s6: i64,
+    pub il_sigma_floor_annualised_s6: i64,
+    pub sol_autocall_sigma_floor_annualised_s6: i64,
+    pub flagship_sigma_floor_annualised_s6: i64,
+    pub sigma_ceiling_annualised_s6: i64,
     pub sol_autocall_quote_share_bps: u16,
     pub sol_autocall_issuer_margin_bps: u16,
     pub k12_correction_sha256: [u8; 32],
@@ -110,6 +116,17 @@ pub struct Regression {
     pub last_update_slot: u64,
     pub last_update_ts: i64,
     pub sample_count: u32,
+}
+
+/// Mirror of `AutocallSchedule` — keeper-posted quarterly observation schedule.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+pub struct AutocallSchedule {
+    pub version: u8,
+    pub product_program_id: Pubkey,
+    pub issue_date_ts: i64,
+    pub observation_timestamps: [i64; 6],
+    pub last_publish_ts: i64,
+    pub last_publish_slot: u64,
 }
 
 /// Mirror of `PolicyHeader` — one per live policy across every product.

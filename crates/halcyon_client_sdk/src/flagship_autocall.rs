@@ -12,6 +12,7 @@ pub fn preview_quote_ix(
     product_registry_entry: Pubkey,
     vault_sigma: Pubkey,
     regression: Pubkey,
+    autocall_schedule: Pubkey,
     pyth_spy: Pubkey,
     pyth_qqq: Pubkey,
     pyth_iwm: Pubkey,
@@ -24,6 +25,7 @@ pub fn preview_quote_ix(
             product_registry_entry,
             vault_sigma,
             regression,
+            autocall_schedule,
             pyth_spy,
             pyth_qqq,
             pyth_iwm,
@@ -49,11 +51,13 @@ pub async fn simulate_preview_quote(
     let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_flagship_autocall::ID);
     let (vault_sigma, _) = pda::vault_sigma(&halcyon_flagship_autocall::ID);
     let (regression, _) = pda::regression();
+    let (autocall_schedule, _) = pda::autocall_schedule(&halcyon_flagship_autocall::ID);
     let ix = preview_quote_ix(
         protocol_config,
         product_registry_entry,
         vault_sigma,
         regression,
+        autocall_schedule,
         pyth_spy,
         pyth_qqq,
         pyth_iwm,
@@ -81,6 +85,7 @@ pub fn accept_quote_ix(
     let (protocol_config, _) = pda::protocol_config();
     let (vault_sigma, _) = pda::vault_sigma(&halcyon_flagship_autocall::ID);
     let (regression, _) = pda::regression();
+    let (autocall_schedule, _) = pda::autocall_schedule(&halcyon_flagship_autocall::ID);
     let (vault_state, _) = pda::vault_state();
     let (fee_ledger, _) = pda::fee_ledger();
     let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_flagship_autocall::ID);
@@ -100,6 +105,7 @@ pub fn accept_quote_ix(
             protocol_config,
             vault_sigma,
             regression,
+            autocall_schedule,
             pyth_spy,
             pyth_qqq,
             pyth_iwm,

@@ -2,7 +2,7 @@
 
 use anchor_lang::prelude::*;
 
-mod calendar;
+pub mod calendar;
 pub mod errors;
 pub mod instructions;
 mod observation;

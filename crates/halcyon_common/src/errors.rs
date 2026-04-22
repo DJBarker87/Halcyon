@@ -15,6 +15,8 @@ pub enum HalcyonError {
     RegimeStale,
     #[msg("Regression is stale")]
     RegressionStale,
+    #[msg("AutocallSchedule is stale")]
+    AutocallScheduleStale,
     #[msg("Pyth price is stale")]
     PythStale,
     #[msg("EWMA update rate limit not elapsed")]

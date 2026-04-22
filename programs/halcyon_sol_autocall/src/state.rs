@@ -1,7 +1,6 @@
 use anchor_lang::prelude::*;
 use halcyon_sol_autocall_quote::{
-    generated::pod_deim_table::POD_DEIM_TABLE_SHA256,
-    generated::pod_deim_table::D as POD_DEIM_D,
+    generated::pod_deim_table::D as POD_DEIM_D, generated::pod_deim_table::POD_DEIM_TABLE_SHA256,
 };
 
 pub const OBSERVATION_COUNT: usize = 8;

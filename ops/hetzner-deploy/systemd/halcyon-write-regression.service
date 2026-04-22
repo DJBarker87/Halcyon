@@ -1,0 +1,14 @@
+[Unit]
+Description=Halcyon flagship regression bootstrap from local calibration CSVs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/halcyon
+EnvironmentFile=/etc/halcyon/env
+ExecStart=/usr/bin/env bash -lc 'exec /opt/halcyon/bin/halcyon --rpc "$HELIUS_DEVNET_RPC" --keypair "$REGRESSION_KEYPAIR" keepers write-regression --pyth-spy "$PYTH_SPY_ACCOUNT" --pyth-qqq "$PYTH_QQQ_ACCOUNT" --pyth-iwm "$PYTH_IWM_ACCOUNT" --spy-history-source "$REGRESSION_SPY_HISTORY_SOURCE" --qqq-history-source "$REGRESSION_QQQ_HISTORY_SOURCE" --iwm-history-source "$REGRESSION_IWM_HISTORY_SOURCE"'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halcyon-write-regression

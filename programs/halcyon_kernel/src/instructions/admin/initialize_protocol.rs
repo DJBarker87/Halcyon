@@ -19,6 +19,7 @@ pub struct InitializeProtocolArgs {
     pub pyth_settle_staleness_cap_secs: i64,
     pub quote_ttl_secs: i64,
     pub sigma_floor_annualised_s6: i64,
+    pub sigma_ceiling_annualised_s6: i64,
     pub sol_autocall_quote_share_bps: u16,
     pub sol_autocall_issuer_margin_bps: u16,
     pub pod_deim_table_sha256: [u8; 32],
@@ -45,7 +46,7 @@ pub struct InitializeProtocol<'info> {
         seeds = [seeds::PROTOCOL_CONFIG],
         bump,
     )]
-    pub protocol_config: Account<'info, ProtocolConfig>,
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
 
     #[account(
         init,
@@ -54,7 +55,7 @@ pub struct InitializeProtocol<'info> {
         seeds = [seeds::VAULT_STATE],
         bump,
     )]
-    pub vault_state: Account<'info, VaultState>,
+    pub vault_state: Box<Account<'info, VaultState>>,
 
     #[account(
         init,
@@ -63,7 +64,7 @@ pub struct InitializeProtocol<'info> {
         seeds = [seeds::FEE_LEDGER],
         bump,
     )]
-    pub fee_ledger: Account<'info, FeeLedger>,
+    pub fee_ledger: Box<Account<'info, FeeLedger>>,
 
     #[account(
         init,
@@ -72,9 +73,9 @@ pub struct InitializeProtocol<'info> {
         seeds = [seeds::KEEPER_REGISTRY],
         bump,
     )]
-    pub keeper_registry: Account<'info, KeeperRegistry>,
+    pub keeper_registry: Box<Account<'info, KeeperRegistry>>,
 
-    pub usdc_mint: Account<'info, Mint>,
+    pub usdc_mint: Box<Account<'info, Mint>>,
 
     /// CHECK: PDA that owns every kernel-side token account.
     #[account(seeds = [seeds::VAULT_AUTHORITY], bump)]
@@ -88,7 +89,7 @@ pub struct InitializeProtocol<'info> {
         seeds = [seeds::VAULT_USDC, usdc_mint.key().as_ref()],
         bump,
     )]
-    pub vault_usdc: Account<'info, TokenAccount>,
+    pub vault_usdc: Box<Account<'info, TokenAccount>>,
 
     #[account(
         init,
@@ -98,7 +99,7 @@ pub struct InitializeProtocol<'info> {
         seeds = [seeds::TREASURY_USDC, usdc_mint.key().as_ref()],
         bump,
     )]
-    pub treasury_usdc: Account<'info, TokenAccount>,
+    pub treasury_usdc: Box<Account<'info, TokenAccount>>,
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
@@ -119,6 +120,10 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
     config.treasury_share_bps = args.treasury_share_bps;
     config.senior_cooldown_secs = args.senior_cooldown_secs;
     config.ewma_rate_limit_secs = args.ewma_rate_limit_secs;
+    let default_rate_limit = u64::try_from(args.ewma_rate_limit_secs)
+        .map_err(|_| error!(crate::KernelError::BadConfig))?;
+    config.il_ewma_rate_limit_secs = default_rate_limit;
+    config.sol_autocall_ewma_rate_limit_secs = default_rate_limit;
     config.sigma_staleness_cap_secs = args.sigma_staleness_cap_secs;
     config.regime_staleness_cap_secs = args.regime_staleness_cap_secs;
     config.regression_staleness_cap_secs = args.regression_staleness_cap_secs;
@@ -126,6 +131,10 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
     config.pyth_settle_staleness_cap_secs = args.pyth_settle_staleness_cap_secs;
     config.quote_ttl_secs = args.quote_ttl_secs;
     config.sigma_floor_annualised_s6 = args.sigma_floor_annualised_s6;
+    config.il_sigma_floor_annualised_s6 = args.sigma_floor_annualised_s6;
+    config.sol_autocall_sigma_floor_annualised_s6 = args.sigma_floor_annualised_s6;
+    config.flagship_sigma_floor_annualised_s6 = args.sigma_floor_annualised_s6;
+    config.sigma_ceiling_annualised_s6 = args.sigma_ceiling_annualised_s6;
     config.sol_autocall_quote_share_bps = args.sol_autocall_quote_share_bps;
     config.sol_autocall_issuer_margin_bps = args.sol_autocall_issuer_margin_bps;
     config.k12_correction_sha256 = [0u8; 32];
@@ -149,7 +158,7 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
         crate::KernelError::BadConfig
     );
     require!(
-        config.ewma_rate_limit_secs > 0,
+        config.ewma_rate_limits_valid(),
         crate::KernelError::BadConfig
     );
     require!(
@@ -173,10 +182,7 @@ pub fn handler(ctx: Context<InitializeProtocol>, args: InitializeProtocolArgs) -
         crate::KernelError::BadConfig
     );
     require!(config.quote_ttl_secs > 0, crate::KernelError::BadConfig);
-    require!(
-        config.sigma_floor_annualised_s6 > 0,
-        crate::KernelError::BadConfig
-    );
+    require!(config.sigma_bounds_valid(), crate::KernelError::BadConfig);
     require!(
         config.sol_autocall_quote_config_valid(),
         crate::KernelError::BadConfig

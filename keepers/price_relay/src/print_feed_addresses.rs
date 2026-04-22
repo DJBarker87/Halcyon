@@ -15,7 +15,10 @@ use std::str::FromStr;
 const PYTH_PUSH_ORACLE_ID: &str = "pythWSnswVUd12oZpeFP8e9CVaEqJg25g1Vtc2biRsT";
 
 #[derive(Parser, Debug)]
-#[command(name = "print_feed_addresses", about = "Halcyon price relay — print feed PDAs")]
+#[command(
+    name = "print_feed_addresses",
+    about = "Halcyon price relay — print feed PDAs"
+)]
 struct Args {
     /// Shard ID (u16) — stable identifier for this relay instance's
     /// PriceUpdateV2 accounts. Must match `shard_id` in the relay config.

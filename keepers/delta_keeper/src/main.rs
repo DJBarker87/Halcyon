@@ -416,7 +416,8 @@ async fn run_once(client: &KeeperClient, cfg: &KeeperConfig) -> Result<()> {
     .await?;
     let sigma_pricing_s6 = halcyon_flagship_autocall::pricing::compose_pricing_sigma(
         &vault_sigma,
-        protocol_config.sigma_floor_annualised_s6,
+        halcyon_flagship_autocall::pricing::protocol_sigma_floor_annualised_s6(&protocol_config),
+        protocol_config.sigma_ceiling_annualised_s6,
     )?;
 
     let mut policies = list_policy_headers_for_product(&client.rpc, &halcyon_flagship_autocall::ID)

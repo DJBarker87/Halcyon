@@ -52,6 +52,10 @@ pub fn compose_pricing_sigma(
     Ok(sigma_s6.max(floor_s6))
 }
 
+pub fn protocol_sigma_floor_annualised_s6(config: &ProtocolConfig) -> i64 {
+    config.sigma_floor_for_product_s6(&crate::ID)
+}
+
 pub fn solve_quote(
     sigma_pricing_s6: i64,
     insured_notional_usdc: u64,

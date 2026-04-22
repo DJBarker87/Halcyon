@@ -93,7 +93,7 @@ pub fn handler(ctx: Context<WriteReducedOperators>, args: WriteReducedOperatorsA
     let sigma_ann_s6 = compose_pricing_sigma(
         &ctx.accounts.vault_sigma,
         &ctx.accounts.regime_signal,
-        ctx.accounts.protocol_config.sigma_floor_annualised_s6,
+        crate::pricing::protocol_sigma_floor_annualised_s6(&ctx.accounts.protocol_config),
     )?;
     require!(
         (KEEPER_DEIM_SIGMA_MIN_S6..=KEEPER_DEIM_SIGMA_MAX_S6).contains(&sigma_ann_s6),
@@ -146,8 +146,7 @@ pub fn handler(ctx: Context<WriteReducedOperators>, args: WriteReducedOperatorsA
             reduced.version == SolAutocallReducedOperators::CURRENT_VERSION
                 && reduced.sigma_ann_s6 == sigma_ann_s6
                 && reduced.source_vault_sigma_slot == ctx.accounts.vault_sigma.last_update_slot
-                && reduced.source_regime_signal_slot
-                    == ctx.accounts.regime_signal.last_update_slot
+                && reduced.source_regime_signal_slot == ctx.accounts.regime_signal.last_update_slot
                 && reduced.matches_current_tables(),
             SolAutocallError::ReducedOperatorsUploadStateInvalid
         );

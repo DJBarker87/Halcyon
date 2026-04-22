@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Halcyon SOL reduced-operator uploader every minute
+
+[Timer]
+Unit=halcyon-fire-reduced-ops.service
+OnCalendar=*-*-* *:*:40
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

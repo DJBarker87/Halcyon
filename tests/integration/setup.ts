@@ -559,6 +559,7 @@ export async function setupFullProtocol(): Promise<TestContext> {
       pythSettleStalenessCapSecs: new BN(600),
       quoteTtlSecs: new BN(2),
       sigmaFloorAnnualisedS6: new BN(400_000),
+      sigmaCeilingAnnualisedS6: new BN(800_000),
       solAutocallQuoteShareBps: 7_500,
       solAutocallIssuerMarginBps: 50,
       treasuryDestination: adminUsdc,
@@ -591,8 +592,14 @@ export async function setupFullProtocol(): Promise<TestContext> {
       pythSettleStalenessCapSecs: null,
       quoteTtlSecs: null,
       ewmaRateLimitSecs: null,
+      ilEwmaRateLimitSecs: null,
+      solAutocallEwmaRateLimitSecs: null,
       seniorCooldownSecs: null,
       sigmaFloorAnnualisedS6: null,
+      ilSigmaFloorAnnualisedS6: null,
+      solAutocallSigmaFloorAnnualisedS6: null,
+      flagshipSigmaFloorAnnualisedS6: null,
+      sigmaCeilingAnnualisedS6: null,
       k12CorrectionSha256: Array.from(
         Buffer.from(
           "b5faa897dddd970105589a82c5b5a3404c561e51c500ebc56d948a19c8b2ea6e",
@@ -601,10 +608,11 @@ export async function setupFullProtocol(): Promise<TestContext> {
       ),
       dailyKiCorrectionSha256: Array.from(
         Buffer.from(
-          "36402fb7fa411b3c7e3124020dd130618b657cd6dbebe6edb963f23b9f2121b9",
+          "f89ac13789dafe2f933d473799f9b617b666d2ac7682c90bc50f59862e61ee0f",
           "hex"
         )
       ),
+      podDeimTableSha256: null,
       premiumSplitsBps: null,
       solAutocallQuoteConfigBps: null,
       treasuryDestination: null,

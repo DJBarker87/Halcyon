@@ -1,0 +1,17 @@
+{
+  "rpc_endpoint": "https://devnet.helius-rpc.com/?api-key=REPLACE_ME",
+  "keypair_path": "ops/devnet_keys/delta.json",
+  "_signer_requirement": "Must match KeeperRegistry.delta on the target cluster. Do not point this at observation unless both roles resolve to the same pubkey.",
+  "_kernel_program_id": "H71FxCTuVGL13PkzXeVxeTn89xZreFm4AwLu3iZeVtdF",
+  "_flagship_program_id": "E4Atu2kHkzJ1NMATBvoMcy3BDKfsyz418DHCoqQHc3Mc",
+  "pyth_spy": "Dix5qyQ52TtpErut1z6DUqmzVbqNfyCcjf1XvArJnwwY",
+  "pyth_qqq": "4Np4uL4vYhumfDAZeootLniVqrGhaK83Vh9WcQJwANmG",
+  "pyth_iwm": "GoUfqZ5jdJEi4gnLUoajt5PLqHyVzbUAi8KRGaBczYsZ",
+  "merkle_output_path": "/tmp/halcyon_flagship_delta.json",
+  "scan_interval_secs": 30,
+  "backoff_cap_secs": 60,
+  "failure_budget": 5,
+  "_pinata": "Pinata JWT is supplied via the PINATA_JWT environment variable, never in this file.",
+  "pinata_base_url": "https://api.pinata.cloud",
+  "pinata_retries": 3
+}

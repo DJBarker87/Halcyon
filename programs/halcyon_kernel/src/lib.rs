@@ -139,6 +139,20 @@ pub mod halcyon_kernel {
         instructions::oracle::write_regression::handler(ctx, args)
     }
 
+    pub fn write_sigma_value(
+        ctx: Context<WriteSigmaValue>,
+        args: WriteSigmaValueArgs,
+    ) -> Result<()> {
+        instructions::oracle::write_sigma_value::handler(ctx, args)
+    }
+
+    pub fn write_autocall_schedule(
+        ctx: Context<WriteAutocallSchedule>,
+        args: WriteAutocallScheduleArgs,
+    ) -> Result<()> {
+        instructions::oracle::write_autocall_schedule::handler(ctx, args)
+    }
+
     pub fn write_regime_signal(
         ctx: Context<WriteRegimeSignal>,
         args: WriteRegimeSignalArgs,

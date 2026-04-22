@@ -6,14 +6,15 @@ use anchor_spl::{
 use halcyon_common::{seeds, HalcyonError};
 use halcyon_kernel::{
     cpi::accounts::{FinalizePolicy, ReserveAndIssue},
-    state::{ProtocolConfig, Regression, VaultSigma},
+    state::{AutocallSchedule, ProtocolConfig, Regression, VaultSigma},
     ReserveAndIssueArgs,
 };
 
 use crate::pricing::{
-    build_monthly_coupon_schedule, build_quarterly_autocall_schedule, compose_pricing_sigma,
-    hash_product_terms, require_correction_tables_match, require_protocol_unpaused,
-    require_quote_acceptance_bounds, require_regression_fresh, require_sigma_fresh, solve_quote,
+    build_monthly_coupon_schedule, compose_pricing_sigma, hash_product_terms,
+    quarterly_autocall_schedule_from_account, require_autocall_schedule_fresh,
+    require_correction_tables_match, require_protocol_unpaused, require_quote_acceptance_bounds,
+    require_regression_fresh, require_sigma_fresh, solve_quote,
 };
 use crate::state::{
     FlagshipAutocallTerms, ProductStatus, AUTOCALL_BARRIER_BPS, COUPON_BARRIER_BPS,
@@ -108,6 +109,14 @@ pub struct AcceptQuote<'info> {
     #[account(seeds = [seeds::REGRESSION], seeds::program = halcyon_kernel::ID, bump)]
     pub regression: Box<Account<'info, Regression>>,
 
+    #[account(
+        seeds = [seeds::AUTOCALL_SCHEDULE, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
+        bump,
+        constraint = autocall_schedule.product_program_id == crate::ID,
+    )]
+    pub autocall_schedule: Box<Account<'info, AutocallSchedule>>,
+
     /// CHECK: validated by `halcyon_oracles`.
     pub pyth_spy: UncheckedAccount<'info>,
     /// CHECK: validated by `halcyon_oracles`.
@@ -155,6 +164,7 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         now,
         ctx.accounts.protocol_config.regression_staleness_cap_secs,
     )?;
+    require_autocall_schedule_fresh(&ctx.accounts.autocall_schedule, now)?;
     require_correction_tables_match(&ctx.accounts.protocol_config)?;
 
     let pyth_spy = halcyon_oracles::read_pyth_price(
@@ -181,9 +191,14 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
 
     let sigma_pricing_s6 = compose_pricing_sigma(
         &ctx.accounts.vault_sigma,
-        ctx.accounts.protocol_config.sigma_floor_annualised_s6,
+        crate::pricing::protocol_sigma_floor_annualised_s6(&ctx.accounts.protocol_config),
+        ctx.accounts.protocol_config.sigma_ceiling_annualised_s6,
     )?;
-    let quote = solve_quote(sigma_pricing_s6, args.notional_usdc, now)?;
+    let quote = solve_quote(
+        sigma_pricing_s6,
+        args.notional_usdc,
+        &ctx.accounts.autocall_schedule,
+    )?;
 
     require!(
         quote.premium <= args.max_premium,
@@ -216,7 +231,9 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         entry_qqq_price_s6: pyth_qqq.price_s6,
         entry_iwm_price_s6: pyth_iwm.price_s6,
         monthly_coupon_schedule: build_monthly_coupon_schedule(now)?,
-        quarterly_autocall_schedule: build_quarterly_autocall_schedule(now)?,
+        quarterly_autocall_schedule: quarterly_autocall_schedule_from_account(
+            &ctx.accounts.autocall_schedule,
+        )?,
         next_coupon_index: 0,
         next_autocall_index: 0,
         offered_coupon_bps_s6: quote.offered_coupon_bps_s6,

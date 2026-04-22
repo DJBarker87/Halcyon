@@ -27,3 +27,6 @@ halcyon_kernel = { path = "../../programs/halcyon_kernel", features = ["cpi"] }
 halcyon_sol_autocall_quote = { path = "../../crates/halcyon_sol_autocall_quote" }
 halcyon_sol_autocall = { path = "../../programs/halcyon_sol_autocall", features = ["cpi"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+nalgebra = "0.33"
+pyth-solana-receiver-sdk = "=1.1.0"
+halcyon_oracles = { path = "../../crates/halcyon_oracles" }

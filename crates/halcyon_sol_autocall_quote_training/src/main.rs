@@ -35,7 +35,11 @@ fn output_path() -> Result<PathBuf> {
     let parent = output
         .parent()
         .context("generated POD-DEIM file has no parent directory")?;
-    ensure!(parent.exists(), "missing output directory {}", parent.display());
+    ensure!(
+        parent.exists(),
+        "missing output directory {}",
+        parent.display()
+    );
     Ok(output)
 }
 
@@ -45,15 +49,24 @@ fn validate_shapes(tables: &GeneratedPodDeimTables) -> Result<()> {
     let m = tables.training_params.m;
 
     ensure!(tables.grid_reps.len() == n, "grid_reps len mismatch");
-    ensure!(tables.grid_bounds.len() == n - 1, "grid_bounds len mismatch");
+    ensure!(
+        tables.grid_bounds.len() == n - 1,
+        "grid_bounds len mismatch"
+    );
     ensure!(tables.p_ref_at_eim.len() == m, "p_ref_at_eim len mismatch");
     ensure!(tables.b_inv.len() == m * m, "b_inv len mismatch");
     ensure!(tables.eim_rows.len() == m, "eim_rows len mismatch");
     ensure!(tables.eim_cols.len() == m, "eim_cols len mismatch");
     ensure!(tables.atoms_v.len() == m * d * d, "atoms_v len mismatch");
     ensure!(tables.atoms_u.len() == m * d * d, "atoms_u len mismatch");
-    ensure!(tables.p_ref_red_v.len() == d * d, "p_ref_red_v len mismatch");
-    ensure!(tables.p_ref_red_u.len() == d * d, "p_ref_red_u len mismatch");
+    ensure!(
+        tables.p_ref_red_v.len() == d * d,
+        "p_ref_red_v len mismatch"
+    );
+    ensure!(
+        tables.p_ref_red_u.len() == d * d,
+        "p_ref_red_u len mismatch"
+    );
     validate_leg(&tables.v_leg, n, d, "v_leg")?;
     validate_leg(&tables.u_leg, n, d, "u_leg")?;
     Ok(())
@@ -61,11 +74,17 @@ fn validate_shapes(tables: &GeneratedPodDeimTables) -> Result<()> {
 
 fn validate_leg(leg: &GeneratedDeimLeg, n: usize, d: usize, label: &str) -> Result<()> {
     ensure!(leg.d == d, "{label}.d mismatch");
-    ensure!(leg.phi_at_idx.len() == d * d, "{label}.phi_at_idx len mismatch");
+    ensure!(
+        leg.phi_at_idx.len() == d * d,
+        "{label}.phi_at_idx len mismatch"
+    );
     ensure!(leg.pt_inv.len() == d * d, "{label}.pt_inv len mismatch");
     ensure!(leg.phi_atm.len() == d, "{label}.phi_atm len mismatch");
     ensure!(leg.m_ki_red.len() == d * d, "{label}.m_ki_red len mismatch");
-    ensure!(leg.m_nki_red.len() == d * d, "{label}.m_nki_red len mismatch");
+    ensure!(
+        leg.m_nki_red.len() == d * d,
+        "{label}.m_nki_red len mismatch"
+    );
     ensure!(leg.ki_at_idx.len() == d, "{label}.ki_at_idx len mismatch");
     ensure!(leg.cpn_at_idx.len() == d, "{label}.cpn_at_idx len mismatch");
     ensure!(leg.ac_at_idx.len() == d, "{label}.ac_at_idx len mismatch");
@@ -202,12 +221,27 @@ fn render_tables(tables: &GeneratedPodDeimTables, hash: &[u8; 32]) -> String {
         tables.training_params.n_states
     )
     .unwrap();
-    writeln!(&mut out, "pub const D: usize = {};", tables.training_params.d).unwrap();
-    writeln!(&mut out, "pub const M: usize = {};", tables.training_params.m).unwrap();
+    writeln!(
+        &mut out,
+        "pub const D: usize = {};",
+        tables.training_params.d
+    )
+    .unwrap();
+    writeln!(
+        &mut out,
+        "pub const M: usize = {};",
+        tables.training_params.m
+    )
+    .unwrap();
     writeln!(&mut out, "pub const TABLE_SCALE_Q20: i64 = {};", 1i64 << 20).unwrap();
     out.push('\n');
 
-    writeln!(&mut out, "pub const ATM_STATE: usize = {};", tables.atm_state).unwrap();
+    writeln!(
+        &mut out,
+        "pub const ATM_STATE: usize = {};",
+        tables.atm_state
+    )
+    .unwrap();
     writeln!(
         &mut out,
         "pub const KI_STATE_MAX: usize = {};",
@@ -241,7 +275,12 @@ fn render_tables(tables: &GeneratedPodDeimTables, hash: &[u8; 32]) -> String {
 }
 
 fn write_leg(out: &mut String, prefix: &str, leg: &GeneratedDeimLeg) {
-    write_i64_array(out, &format!("{prefix}_PHI_AT_IDX"), "D * D", &leg.phi_at_idx);
+    write_i64_array(
+        out,
+        &format!("{prefix}_PHI_AT_IDX"),
+        "D * D",
+        &leg.phi_at_idx,
+    );
     write_i64_array(out, &format!("{prefix}_PT_INV"), "D * D", &leg.pt_inv);
     write_i64_array(out, &format!("{prefix}_PHI_ATM"), "D", &leg.phi_atm);
     write_i64_array(out, &format!("{prefix}_M_KI_RED"), "D * D", &leg.m_ki_red);

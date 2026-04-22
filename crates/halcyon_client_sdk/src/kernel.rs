@@ -6,7 +6,7 @@ use crate::pda;
 pub use halcyon_kernel::{
     ApplySettlementArgs, InitializeProtocolArgs, PrepareHedgeSwapArgs, RecordHedgeTradeArgs,
     RegisterProductArgs, SetProtocolConfigArgs, SettlementReason, WriteAggregateDeltaArgs,
-    WriteRegimeSignalArgs, WriteRegressionArgs,
+    WriteAutocallScheduleArgs, WriteRegimeSignalArgs, WriteRegressionArgs, WriteSigmaValueArgs,
 };
 
 pub fn initialize_protocol_ix(
@@ -264,6 +264,49 @@ pub fn write_regression_ix(
         }
         .to_account_metas(None),
         data: halcyon_kernel::instruction::WriteRegression { args }.data(),
+    }
+}
+
+pub fn write_sigma_value_ix(keeper: &Pubkey, args: WriteSigmaValueArgs) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    let (keeper_registry, _) = pda::keeper_registry();
+    let (product_registry_entry, _) =
+        pda::product_registry_entry(&halcyon_common::product_ids::FLAGSHIP_AUTOCALL);
+    let (vault_sigma, _) = pda::vault_sigma(&halcyon_common::product_ids::FLAGSHIP_AUTOCALL);
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::WriteSigmaValue {
+            keeper: *keeper,
+            protocol_config,
+            keeper_registry,
+            product_registry_entry,
+            vault_sigma,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::WriteSigmaValue { args }.data(),
+    }
+}
+
+pub fn write_autocall_schedule_ix(
+    keeper: &Pubkey,
+    payer: &Pubkey,
+    args: WriteAutocallScheduleArgs,
+) -> Instruction {
+    let (keeper_registry, _) = pda::keeper_registry();
+    let (product_registry_entry, _) = pda::product_registry_entry(&args.product_program_id);
+    let (autocall_schedule, _) = pda::autocall_schedule(&args.product_program_id);
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::WriteAutocallSchedule {
+            keeper: *keeper,
+            keeper_registry,
+            product_registry_entry,
+            autocall_schedule,
+            payer: *payer,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::WriteAutocallSchedule { args }.data(),
     }
 }
 

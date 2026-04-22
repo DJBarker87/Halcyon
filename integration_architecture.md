@@ -37,7 +37,7 @@
 
 All three product pricers are deterministic fixed-point Rust, validated against reference implementations, and produce the backtested economics documented in the product reports: flagship ~8.4% buyer IRR / ~5.2–5.6% vault occupied-capital return / zero insolvencies over 20 years (one-factor NIG with per-quarter recalibration, 500 bps/obs fair-coupon ceiling); IL Protection 80% loss ratio / 3.0% vault annualised return across 2,027 windows; SOL Autocall 20.7% rolling-reinvest CAGR / 7-of-7 positive vault years.
 
-**Calibration artefacts.** `output/factor_model/spy_qqq_iwm_factor_model.json` contains the flagship calibration: one `common_factor_nig: {alpha, beta, gamma}` object, one `common_factor_delta_scale_*` constant, one `common_factor_loadings` vector (SPY 0.516, QQQ 0.568, IWM 0.641 in the current calibration), one `residual_covariance_daily` matrix, per-asset martingale drifts. This structure proves the model form (see Part 1.3).
+**Calibration artefacts.** The research repo's `halcyon-hedge-lab/output/factor_model/spy_qqq_iwm_factor_model.json` contains the flagship calibration: one `common_factor_nig: {alpha, beta, gamma}` object, one `common_factor_delta_scale_*` constant, one `common_factor_loadings` vector (SPY 0.516, QQQ 0.568, IWM 0.641 in the frozen full-sample calibration), one `residual_covariance_daily` matrix, per-asset martingale drifts. The shipping quote crate currently vendors that frozen factor model inline; it is intentionally left as-is until a deliberate recalibration pass swaps it to the quarterly series. This structure proves the model form (see Part 1.3).
 
 **Localnet scaffolds.** Test-only Anchor experiments, not production-shaped. Treated as throwaway for the integration build.
 
@@ -45,7 +45,7 @@ All three product pricers are deterministic fixed-point Rust, validated against 
 
 No kernel program. No production product programs. No on-chain vault, reserve, tranche, policy-header, or fee-ledger state. No keeper processes beyond the backtest replay engines. No frontend. No TypeScript SDK. No ALTs. No deployed program at devnet or mainnet scale. No cross-program contract between a product and a kernel. No crate decomposition — `halcyon-quote` is one crate containing pricing logic for all three products; target state is one crate per product plus a small number of shared crates.
 
-The daily-KI correction table (separate from the K=12 discretisation correction; see 1.4) is being built but not yet committed; the grid computation is in progress.
+The daily-KI correction table (separate from the K=12 discretisation correction; see 1.4) is checked in. The current production lineage is the hybrid COS/MC source table with upstream provenance SHA-256 `907e9d60af467b0967a43712fd6b6fad63a5237e447b0fe6e635fdc75a94d26a`, which compiles into the derived daily-KI artifact hash `f89ac13789dafe2f933d473799f9b617b666d2ac7682c90bc50f59862e61ee0f`.
 
 ### 1.3 The flagship pricer: one-factor NIG with Gaussian residuals
 
@@ -82,7 +82,7 @@ The flagship's on-chain quote path applies two additive correction tables on top
 
 **K=12 discretisation correction.** Compile-time lookup table in `k12_correction.rs`. Source: `correction[i] = fc_live_K15 − fc_frozen_K12_with_bearish_complement` sampled at 256 σ points. Addresses the error introduced by using the K=12 projected filter instead of a K=15 reference. Catmull-Rom interpolation on σ, ~150 CU at runtime, 2,048 bytes of binary data compiled into the flagship's quote crate (256 × 8 bytes; i64 required by the value range). Applied additively in bps to the K=12 filter's `fair_coupon_bps` output.
 
-**Daily-KI cadence correction.** Separate compile-time lookup, built from a 3D COS spectral method with re-derived Fang-Oosterlee recursion (corrected to include the cross-term the canonical version drops). Addresses the error introduced by evaluating the 80% knock-in barrier only at quarterly observation dates rather than continuously-daily. Validated against 500,000-path Monte Carlo on a 9-cell grid within 1e-3 absolute accuracy. Serializes to canonical JSON; hash committed on-chain as SHA-256 for verifiability-at-recomputation. σ-indexed. Applied additively in bps to the output of the c1 filter + K=12 correction.
+**Daily-KI cadence correction.** Separate compile-time lookup, built from a 3D COS spectral method with re-derived Fang-Oosterlee recursion (corrected to include the cross-term the canonical version drops). Addresses the error introduced by evaluating the 80% knock-in barrier only at quarterly observation dates rather than continuously-daily. Validated against 500,000-path Monte Carlo on a 9-cell grid within 1e-3 absolute accuracy. The current checked-in table is derived from the hybrid COS/MC source-table lineage `907e9d60af467b0967a43712fd6b6fad63a5237e447b0fe6e635fdc75a94d26a`; the derived artifact hash committed on-chain is `f89ac13789dafe2f933d473799f9b617b666d2ac7682c90bc50f59862e61ee0f`. σ-indexed. Applied additively in bps to the output of the c1 filter + K=12 correction.
 
 Both tables are compile-time data in the flagship quote crate's binary. Regenerating either requires a program upgrade (source bins → new crate version → redeploy). This is by design: correction tables are tied to the specific filter geometry and calibration they were built against, and mixing correction versions with filter versions is a silent-miscalibration hazard.
 
@@ -182,7 +182,8 @@ Each product crate has no Solana dependencies — no `solana_program`, no `ancho
 - `HedgeBookState` (one per hedged product) — current token holdings per leg, target holdings from last rebalance, last-rebalance slot/timestamp, cumulative execution costs, last recorded aggregate delta for the event trigger.
 - `AggregateDelta` (flagship only) — 3D aggregate delta vector (Δ_SPY, Δ_QQQ, Δ_IWM), Merkle root over `(note_pubkey, note_delta_at_sum)` pairs, Pyth spot snapshot at compute time, last-update slot/timestamp, live note count, delta-keeper-authority signature. SOL Autocall does not need this — its hedge keeper computes per-note delta on demand via the Richardson pricer.
 - `Regression` (flagship only) — IWM regression coefficients: `β_SPY`, `β_QQQ`, `α`, `r²`, `residual_vol`, `window_start_ts`, `window_end_ts`, `last_update_slot`, `last_update_ts`, `sample_count`. 5-day staleness cap for writes to be accepted by downstream instructions.
-- `VaultSigma` (one per product) — EWMA state: `ewma_var_daily` (45-day span, updated from Pyth log returns), `ewma_last_ln_ratio`, `ewma_last_timestamp`. Updated by a permissionless `update_ewma` instruction with 30-second rate limit.
+- `AutocallSchedule` (flagship only at v1) — keeper-posted quarterly observation timestamps keyed by product program ID: `issue_date_ts`, six `observation_timestamps`, `last_publish_ts`, `last_publish_slot`. This removes the flagship preview path's on-chain NYSE calendar walk; the observation keeper computes the six quarterly timestamps off-chain using the same calendar logic and publishes them into the kernel PDA.
+- `VaultSigma` (one per product) — shared sigma storage surface. IL Protection and SOL Autocall use it as EWMA state: `ewma_var_daily` (45-day span, updated from Pyth log returns), `ewma_last_ln_ratio`, `ewma_last_timestamp`, permissionlessly advanced by `update_ewma` with per-product on-chain throttles from `ProtocolConfig` (IL hourly target cadence, SOL Autocall daily target cadence, fallback generic limiter for anything else). The cadence choice is calibration-driven rather than a different PDA/account model: IL's 30-day insurance backtest was calibrated around more frequent SOL-vol refresh, while SOL Autocall's replay uses daily-close cadence. The pure EWMA math documented in `crates/halcyon_il_quote/src/insurance/ewma.rs` is time-aware (`r² / Δt_days` with `λ = exp(-Δt/τ)`), so small cadence mismatch is not a model-category break, but keepers still aim to match the calibrated cadence where possible. Flagship reuses the same PDA/account layout differently: an observation-authority-gated `write_sigma_value` instruction posts the off-chain `sigma_common` directly into `ewma_var_daily`-compatible form, so the flagship quote path reads the same `VaultSigma` account without paying on-chain EWMA or calendar costs.
 - `RegimeSignal` (one per product that composes pricing sigma from off-chain regime state — currently IL Protection and SOL Autocall) — current fvol value, current regime enum (calm/stress), sigma multiplier (1.30 calm / 2.00 stress), sigma floor (40% annualised), last update timestamp. Written by the regime keeper, not permissionless (fvol requires off-chain historical computation).
 - `FeeLedger` (singleton) — accumulated treasury fees awaiting sweep, per-product breakdown.
 - `KeeperRegistry` (singleton) — authorized pubkeys per role: `observation`, `regression`, `delta` (flagship-only), `hedge` (per hedged product), `regime`. Admin-rotatable.
@@ -198,7 +199,7 @@ Each product crate has no Solana dependencies — no `solana_program`, no `ancho
 
 `ReducedOperators` — SOL Autocall only. Product-owned PDA holding the keeper-fed POD-DEIM reduced operators for the current pricing sigma: source `VaultSigma` / `RegimeSignal` slots, POD-DEIM table hash, and the two `15×15` reduced propagation maps `P_red_v(σ)` / `P_red_u(σ)`. The basis `Φ`, DEIM rows, and reconstruction matrices remain compile-time constants in the quote crate; only the live `P_red(σ)` pair is uploaded.
 
-**On the flagship's three observation schedules.** The flagship product has three distinct observation cadences that serve different purposes, layered as follows. The c1 filter operates on `N_OBS = 6` — the six quarterly autocall observations. This is the only schedule the filter's backward recursion runs on; the filter is what prices the autocall-at-a-quarterly-barrier structure. Monthly coupon observations (18 total) are tracked outside the filter in `ProductTerms` memory-coupon state: on each 21-trading-day boundary, the observation keeper records whether the worst performer is above 100%, accumulating missed coupons or paying out stored ones. Daily KI monitoring (one check per trading day close) is handled via the daily-KI correction table, which converts the filter's discrete-quarterly KI probability into the equivalent daily-continuous-monitoring probability at pricing time; live KI breach events are recorded in `ProductTerms` via `record_ki_event`. So the filter prices 6 quarterly observations; the product layer tracks 18 monthly coupons and daily KI on top.
+**On the flagship's three observation schedules.** The flagship product has three distinct observation cadences that serve different purposes, layered as follows. The c1 filter operates on `N_OBS = 6` — the six quarterly autocall observations. This is the only schedule the filter's backward recursion runs on; the filter is what prices the autocall-at-a-quarterly-barrier structure. Those six timestamps are keeper-posted in `AutocallSchedule` and freshness-gated by `preview_quote` / `accept_quote`, so the quote path no longer burns CU on day-by-day NYSE holiday walking. Monthly coupon observations (18 total) are tracked outside the filter in `ProductTerms` memory-coupon state: on each 21-trading-day boundary, the observation keeper records whether the worst performer is above 100%, accumulating missed coupons or paying out stored ones. Daily KI monitoring (one check per trading day close) is handled via the daily-KI correction table, which converts the filter's discrete-quarterly KI probability into the equivalent daily-continuous-monitoring probability at pricing time; live KI breach events are recorded in `ProductTerms` via `record_ki_event`. So the filter prices 6 quarterly observations; the product layer tracks 18 monthly coupons and daily KI on top.
 
 There is no on-chain `QuoteReceipt`. Quotes are computed by the frontend via the read-only `preview_quote` instruction; the buy transaction (`accept_quote`) recomputes at execution slot against slippage bounds. This eliminates the on-chain quote-commitment surface and removes TTL cleanup logic.
 
@@ -211,7 +212,7 @@ All three products expose the same three-instruction lifecycle. Product-internal
 **`accept_quote`** — the user's buy transaction. Instruction arguments are the product-specific terms plus `max_premium` (buyer will not pay more than this) and `min_max_liability` (buyer will not accept less protection than this). On-chain, the product program:
 
 1. Reads current oracle state (Pyth prices, staleness check)
-2. Reads current config (VaultSigma, RegimeSignal, Regression for flagship)
+2. Reads current config (`VaultSigma`, `RegimeSignal` where applicable, `Regression` + `AutocallSchedule` for flagship)
 3. Calls the product's pricer from the quote crate with current state
 4. Recomputes premium and max liability from the pricer's output plus product-specific spread (quote share, margin, tranche splits)
 5. Checks `premium ≤ max_premium` and `max_liability ≥ min_max_liability`; aborts with `SlippageExceeded` if either fails
@@ -235,16 +236,17 @@ Because the flagship pricer is the most complex, it is worth specifying the on-c
 At `preview_quote` and at `accept_quote` the product computes (all arithmetic in i64/i128 fixed-point; no floating point on-chain):
 
 ```
-1. sigma_pricing_s6 = compose_sigma(VaultSigma, RegimeSignal)   // EWMA + regime multiplier + floor, i64 at SCALE_6
-2. frozen_fair_coupon_bps = quote_frozen_k12(
+1. sigma_pricing_s6 = compose_sigma(VaultSigma)                 // flagship reads keeper-posted sigma_common from VaultSigma, clamped to floor/ceiling, i64 at SCALE_6
+2. schedule = AutocallSchedule.observation_timestamps           // keeper-posted quarterly schedule, freshness-gated
+3. frozen_fair_coupon_bps = quote_frozen_k12(
        entry_prices, sigma_pricing_s6, factor_model_constants, schedule)   // i64, bps
-3. k12_correction_micro_bps = k12_correction_lookup(sigma_pricing_s6)       // i64, micro-bps
-4. daily_ki_correction_micro_bps = daily_ki_correction_lookup(sigma_pricing_s6)   // i64, micro-bps
-5. total_correction_micro_bps = k12_correction_micro_bps + daily_ki_correction_micro_bps
-6. live_fair_coupon_micro_bps = (frozen_fair_coupon_bps * 1_000_000) + total_correction_micro_bps
-7. live_fair_coupon_bps = live_fair_coupon_micro_bps / 1_000_000    // integer divide, preserves precision until the final reduction
-8. premium = apply_quote_share_and_margin(live_fair_coupon_bps, notional)   // i64, bps
-9. max_liability = compute_max_liability(notional, KI_barrier, worst_case_recovery)
+4. k12_correction_micro_bps = k12_correction_lookup(sigma_pricing_s6)       // i64, micro-bps
+5. daily_ki_correction_micro_bps = daily_ki_correction_lookup(sigma_pricing_s6)   // i64, micro-bps
+6. total_correction_micro_bps = k12_correction_micro_bps + daily_ki_correction_micro_bps
+7. live_fair_coupon_micro_bps = (frozen_fair_coupon_bps * 1_000_000) + total_correction_micro_bps
+8. live_fair_coupon_bps = live_fair_coupon_micro_bps / 1_000_000    // integer divide, preserves precision until the final reduction
+9. premium = apply_quote_share_and_margin(live_fair_coupon_bps, notional)   // i64, bps
+10. max_liability = compute_max_liability(notional, KI_barrier, worst_case_recovery)
 ```
 
 Corrections stay in micro-bps right up until the final reduction to bps at step 7. Keeping the accumulated correction in micro-bps preserves precision through the summation (two corrections each with ~6 significant digits combining into a single reduction). No f64 anywhere in the path — SolMath is i64/i128 fixed-point throughout, and the on-chain implementation matches.
@@ -308,17 +310,19 @@ Five keeper processes at v1, each authorized by a rotatable pubkey in `KeeperReg
 - IL Protection: terminal settlement at T+30 days. No intermediate observations.
 - SOL Autocall: observation at each 2-day boundary (8 total).
 
-One process with per-product dispatch handlers sharing scheduling infrastructure.
+One process with per-product dispatch handlers sharing scheduling infrastructure. The same observation keeper authority also posts the flagship `AutocallSchedule` PDA so `preview_quote` can read the six quarterly timestamps without on-chain calendar walking, and authorizes the flagship `write_sigma_value` path that publishes the daily off-chain `sigma_common` into `VaultSigma`.
 
 **Regime keeper.** Daily compute of fvol from historical price history (off-chain). Writes `RegimeSignal` account with the current regime (calm/stress), sigma multiplier (1.30 / 2.00), sigma floor (40% annualised). Runs after the Pyth feed's daily-close window. Keeper-authority-gated write; rejected if the previous regime signal is less than 18 hours old. For the demo SOL Autocall path, this same keeper authority also computes the fixed-product POD-DEIM reduced operators off-chain and uploads the current `P_red_v(σ)` / `P_red_u(σ)` pair to the product's `ReducedOperators` PDA. A dedicated reduced-operator keeper role is deferred to post-v1 hardening; the demo intentionally reuses the regime keeper role to avoid another operational key.
 
 **Regression keeper.** Daily compute of the IWM-vs-SPY/QQQ OLS regression from 252 trading days of history (off-chain history provider: Polygon, Databento, or IEX — single dependency, documented). Sanity-checks the latest close against Pyth (abort if divergence > 1%). Writes `Regression` with `β_SPY`, `β_QQQ`, `α`, `r²`, `residual_vol`, window timestamps, sample count. Keeper-authority-gated write. 5-day staleness cap on the `Regression` account for downstream instructions.
 
+**Flagship sigma keeper.** Daily compute of the flagship `sigma_common` from SPY history using the research methodology: RiskMetrics EWMA on SPY log returns with decay `0.94`, 45-day rolling-mean smoother, annualisation on a 252-trading-day basis, then the factor-variance transform `sigma_common = sqrt(SPY_ewma_vol^2 - Sigma_eps[0,0] * 252) / ell_spy`. The current on-chain `Regression` account does not store `ell_spy` or `Sigma_eps[0,0]`, so v1 pins those two values from the same checked-in full-sample factor-model artifact the shipping flagship quote crate already vendors. The keeper cross-checks a fixed historical fixture before submission, then writes `sigma_common` into the flagship `VaultSigma` PDA through `write_sigma_value`. This is why flagship no longer uses the permissionless EWMA path.
+
 **Delta keeper.** Flagship only. Amortized analytical-gradient delta recomputation per cycle using the filter's frozen-moment machinery. Subscribes to issuance, observation, autocall, KI, and settlement events; wakes on any, plus dual-trigger staleness. Target cadence during US market hours: 15-30 seconds. Writes `AggregateDelta` with Merkle commitment.
 
 **Hedge keeper.** Reads `AggregateDelta` (flagship) or computes per-note delta on demand via the Richardson pricer (SOL Autocall), composes the target, executes Jupiter swap off-chain, calls `record_hedge_trade`. Separate instances per hedged product because cadences and policies differ.
 
-**EWMA updates** are permissionless with a 30-second on-chain rate limit. No dedicated EWMA keeper.
+**EWMA updates** remain permissionless for the products that actually use EWMA directly: IL Protection on an hourly schedule and SOL Autocall on a daily schedule. Flagship is the exception: it keeps the same `VaultSigma` PDA but bypasses `update_ewma`, because the calibrated runtime input is `sigma_common` rather than raw SPY EWMA variance.
 
 ### 2.9 Upgrade and governance posture
 

@@ -10,11 +10,6 @@ use solmath_core::SCALE_6;
 #[cfg(not(target_os = "solana"))]
 const SCALE_Q20_F64: f64 = (1u64 << 20) as f64;
 
-use crate::autocall_v2::{
-    cu_trace, solve_fair_coupon_deim_const, AutocallParams, AutocallPriceResult,
-    AutocallV2Error, DeimFactorsConst, DeimLegConst, E11FactorsConst, MarkovGridInfoConst,
-    NigParams6,
-};
 #[cfg(not(target_os = "solana"))]
 use crate::autocall_v2::{
     assemble_e11_reduced_operators_const, solve_fair_coupon_e11, solve_fair_coupon_e11_const,
@@ -23,6 +18,10 @@ use crate::autocall_v2::{
 #[cfg(not(target_os = "solana"))]
 use crate::autocall_v2::{
     build_markov_grid_info, build_transition_matrix_on_grid_info, AUTOCALL_LOG_6, KNOCK_IN_LOG_6,
+};
+use crate::autocall_v2::{
+    cu_trace, solve_fair_coupon_deim_const, AutocallParams, AutocallPriceResult, AutocallV2Error,
+    DeimFactorsConst, DeimLegConst, E11FactorsConst, MarkovGridInfoConst, NigParams6,
 };
 use crate::generated::pod_deim_table as generated;
 

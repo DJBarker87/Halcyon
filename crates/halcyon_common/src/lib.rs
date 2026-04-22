@@ -12,6 +12,7 @@ pub mod aggregate_delta_signing;
 pub mod errors;
 pub mod events;
 pub mod fixed_point;
+pub mod product_ids;
 pub mod seeds;
 
 pub use aggregate_delta_signing::{
@@ -19,3 +20,4 @@ pub use aggregate_delta_signing::{
 };
 pub use errors::HalcyonError;
 pub use fixed_point::{to_scale_12, to_scale_6, SCALE_12, SCALE_6};
+pub use product_ids::{FLAGSHIP_AUTOCALL, IL_PROTECTION, SOL_AUTOCALL};

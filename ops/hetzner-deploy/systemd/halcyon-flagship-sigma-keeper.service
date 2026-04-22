@@ -1,0 +1,14 @@
+[Unit]
+Description=Halcyon flagship sigma keeper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/halcyon
+EnvironmentFile=/etc/halcyon/env
+ExecStart=/usr/bin/env bash -lc 'exec python3 /opt/halcyon/keepers/flagship_sigma_keeper/flagship_sigma_keeper.py --submit --spy-history-source "$FLAGSHIP_SIGMA_SPY_HISTORY_SOURCE" --crosscheck-history-source "$FLAGSHIP_SIGMA_CROSSCHECK_SOURCE" --cache-path "$FLAGSHIP_SIGMA_CACHE_PATH" --rpc "$HELIUS_DEVNET_RPC" --halcyon-bin /opt/halcyon/bin/halcyon --keypair "$FLAGSHIP_SIGMA_KEYPAIR"'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halcyon-flagship-sigma-keeper

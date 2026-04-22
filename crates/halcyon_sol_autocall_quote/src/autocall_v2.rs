@@ -97,7 +97,13 @@ fn cu_trace_deim_step_end(pass: usize, step: usize) {
     }
     let pass_digit = [b'0' + pass as u8];
     let step_digit = [b'0' + step as u8];
-    cu_trace_parts(&[b"cu_trace:deim:pass", &pass_digit, b":step", &step_digit, b":end"]);
+    cu_trace_parts(&[
+        b"cu_trace:deim:pass",
+        &pass_digit,
+        b":step",
+        &step_digit,
+        b":end",
+    ]);
 }
 
 // Fixed-product POD-DEIM bounds for the Q20 keeper-fed DEIM path.
@@ -120,8 +126,7 @@ const MAX_ABS_PHI_COL_SUM_6: i64 = 6_949_519;
 const MAX_ABS_PHI_AT_IDX_ENTRY_6: i64 = 844_632;
 const MAX_ABS_PT_INV_ENTRY_6: i64 = 2_321_062;
 const MAX_ABS_PT_INV_ROW_SUM_6: i64 = 7_815_264;
-const MAX_ABS_PHI_ENTRY_Q20: i64 =
-    ((MAX_ABS_PHI_ENTRY_6 * SCALE_Q20) + SCALE_6 - 1) / SCALE_6;
+const MAX_ABS_PHI_ENTRY_Q20: i64 = ((MAX_ABS_PHI_ENTRY_6 * SCALE_Q20) + SCALE_6 - 1) / SCALE_6;
 const MAX_ABS_PHI_COL_SUM_Q20: i64 =
     ((MAX_ABS_PHI_COL_SUM_6 * SCALE_Q20) + SCALE_6 - 1) / SCALE_6 + generated::N_STATES as i64;
 const MAX_ABS_PHI_AT_IDX_ENTRY_Q20: i64 =
@@ -136,12 +141,11 @@ const MAX_ABS_REDUCED_FROM_PHI_Q20: i64 =
     ((MAX_ABS_PHI_COL_SUM_Q20 * MAX_ABS_NOTE_VALUE_Q20) + SCALE_Q20 - 1) / SCALE_Q20;
 const MAX_ABS_REDUCED_COEFF_Q20: i64 =
     ((MAX_ABS_PT_INV_ROW_SUM_Q20 * MAX_ABS_NOTE_VALUE_Q20) + SCALE_Q20 - 1) / SCALE_Q20;
-const MAX_ABS_PROPAGATED_REDUCED_COEFF_Q20: i64 = (((generated::D as i64)
-    * MAX_ABS_KEEPER_P_RED_ENTRY_Q20
-    * MAX_ABS_REDUCED_COEFF_Q20)
-    + SCALE_Q20
-    - 1)
-    / SCALE_Q20;
+const MAX_ABS_PROPAGATED_REDUCED_COEFF_Q20: i64 =
+    (((generated::D as i64) * MAX_ABS_KEEPER_P_RED_ENTRY_Q20 * MAX_ABS_REDUCED_COEFF_Q20)
+        + SCALE_Q20
+        - 1)
+        / SCALE_Q20;
 
 #[inline(always)]
 fn scale6_to_q20_round(value_6: i64) -> i64 {
@@ -2903,7 +2907,11 @@ fn solve_fair_coupon_deim_leg_const(
         phi_at_idx_matvec6_fixed(leg.phi_at_idx, &v_u, &mut v_u_at)?;
         phi_at_idx_matvec6_fixed(leg.phi_at_idx, &v_t, &mut v_t_at)?;
         for i in 0..generated::D {
-            hybrid_at[i] = if leg.ki_at_idx[i] { v_t_at[i] } else { v_u_at[i] };
+            hybrid_at[i] = if leg.ki_at_idx[i] {
+                v_t_at[i]
+            } else {
+                v_u_at[i]
+            };
         }
         pt_inv_matvec6_fixed(leg.pt_inv, &hybrid_at, &mut hybrid_red)?;
         deim_matvec6_fixed(p_red, &hybrid_red, &mut e_u, false)?;

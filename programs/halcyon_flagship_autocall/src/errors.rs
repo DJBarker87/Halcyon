@@ -4,6 +4,8 @@ use anchor_lang::prelude::*;
 pub enum FlagshipAutocallError {
     #[msg("flagship sigma floor is invalid")]
     InvalidSigmaFloor,
+    #[msg("flagship sigma ceiling is invalid")]
+    InvalidSigmaCeiling,
     #[msg("flagship sigma is outside the calibrated pricing envelope")]
     SigmaOutOfRange,
     #[msg("flagship quote recomputation mismatch")]

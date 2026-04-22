@@ -1,0 +1,21 @@
+[Unit]
+Description=Halcyon flagship regression keeper (legacy Stooq daemon)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/halcyon
+EnvironmentFile=/etc/halcyon/env
+ExecStart=/opt/halcyon/bin/regression_keeper --config /etc/halcyon/config/regression_keeper.json
+Restart=always
+RestartSec=10s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halcyon-regression-keeper
+
+[Install]
+WantedBy=multi-user.target

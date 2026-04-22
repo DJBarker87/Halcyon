@@ -3,10 +3,10 @@
 //! Pure Rust, zero Solana dependencies. Consumed by the
 //! `halcyon_sol_autocall` program (L2+) and the backtest harness.
 
-pub mod autocall_v2;
-pub mod autocall_v2_e11;
 #[cfg(not(target_os = "solana"))]
 pub mod autocall_hedged;
+pub mod autocall_v2;
+pub mod autocall_v2_e11;
 #[cfg(not(target_os = "solana"))]
 pub mod autocall_v2_parity;
 #[cfg(not(target_os = "solana"))]

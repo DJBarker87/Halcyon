@@ -1,0 +1,14 @@
+[Unit]
+Description=Halcyon SOL reduced-operator uploader
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/halcyon
+EnvironmentFile=/etc/halcyon/env
+ExecStart=/usr/bin/env bash -lc 'exec /opt/halcyon/bin/halcyon --rpc "$HELIUS_DEVNET_RPC" --keypair "$REGIME_KEYPAIR" keepers fire-reduced-ops'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halcyon-fire-reduced-ops

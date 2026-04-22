@@ -108,6 +108,13 @@ pub fn regression() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seeds::REGRESSION], &halcyon_kernel::ID)
 }
 
+pub fn autocall_schedule(product_program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[seeds::AUTOCALL_SCHEDULE, product_program_id.as_ref()],
+        &halcyon_kernel::ID,
+    )
+}
+
 pub fn aggregate_delta(product_program_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(
         &[seeds::AGGREGATE_DELTA, product_program_id.as_ref()],

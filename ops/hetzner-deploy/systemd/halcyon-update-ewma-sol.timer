@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Halcyon SOL EWMA updater every minute
+
+[Timer]
+Unit=halcyon-update-ewma-sol.service
+OnCalendar=*-*-* *:*:10
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

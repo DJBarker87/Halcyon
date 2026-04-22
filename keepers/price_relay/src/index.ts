@@ -27,15 +27,22 @@ import { parseArgs } from "node:util";
 import {
   Connection,
   Keypair,
-  PublicKey,
 } from "@solana/web3.js";
 import { Wallet } from "@coral-xyz/anchor";
 import { HermesClient } from "@pythnetwork/hermes-client";
 import { PythSolanaReceiver } from "@pythnetwork/pyth-solana-receiver";
+import {
+  appendFeedCacheEntry,
+  defaultCacheDir,
+  defaultCacheRetentionDays,
+  maybePruneRelayCache,
+  normaliseCacheFeeds,
+  validateCacheFeeds,
+  type FeedConfig,
+  type RelayCacheConfig,
+} from "./cache";
 
 // ---------- Config ----------
-
-type FeedConfig = { alias: string; id: string };
 
 type RelayConfig = {
   rpc_endpoint: string;
@@ -47,6 +54,9 @@ type RelayConfig = {
   feeds: FeedConfig[];
   failure_budget: number;
   backoff_cap_secs: number;
+  cache_dir: string;
+  cache_retention_days: number;
+  cache_feeds: string[];
 };
 
 function loadConfig(path: string): RelayConfig {
@@ -66,6 +76,13 @@ function loadConfig(path: string): RelayConfig {
       throw new Error(`config at ${path} is missing required field: ${String(key)}`);
     }
   }
+  const feeds = cfg.feeds!;
+  const cacheFeeds = normaliseCacheFeeds(cfg.cache_feeds, feeds);
+  validateCacheFeeds(cacheFeeds, feeds);
+  const cacheRetentionDays = cfg.cache_retention_days ?? defaultCacheRetentionDays();
+  if (!Number.isInteger(cacheRetentionDays) || cacheRetentionDays < 0) {
+    throw new Error(`config at ${path} has invalid cache_retention_days=${String(cfg.cache_retention_days)}`);
+  }
   return {
     rpc_endpoint: cfg.rpc_endpoint!,
     hermes_endpoint: cfg.hermes_endpoint!,
@@ -73,9 +90,12 @@ function loadConfig(path: string): RelayConfig {
     shard_id: cfg.shard_id!,
     scan_interval_secs: cfg.scan_interval_secs!,
     staleness_cap_secs: cfg.staleness_cap_secs ?? 30,
-    feeds: cfg.feeds!,
+    feeds,
     failure_budget: cfg.failure_budget ?? 5,
     backoff_cap_secs: cfg.backoff_cap_secs ?? 60,
+    cache_dir: cfg.cache_dir ?? defaultCacheDir(),
+    cache_retention_days: cacheRetentionDays,
+    cache_feeds: cacheFeeds,
   };
 }
 
@@ -104,6 +124,81 @@ function log(level: LogLevel, msg: string, fields: Record<string, unknown> = {})
 }
 
 // ---------- Main loop ----------
+
+function cacheConfigFromRelayConfig(cfg: RelayConfig): RelayCacheConfig {
+  return {
+    cache_dir: cfg.cache_dir,
+    cache_retention_days: cfg.cache_retention_days,
+    cache_feeds: cfg.cache_feeds,
+    feeds: cfg.feeds,
+  };
+}
+
+function integerString(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error(`non-finite numeric field: ${String(value)}`);
+    }
+    return Math.trunc(value).toString();
+  }
+  if (typeof value === "bigint") {
+    return value.toString();
+  }
+  if (value && typeof value === "object" && "toString" in value && typeof value.toString === "function") {
+    const rendered = value.toString();
+    if (rendered.length > 0 && rendered !== "[object Object]") {
+      return rendered;
+    }
+  }
+  throw new Error(`unsupported integer field type: ${String(value)}`);
+}
+
+async function cachePostedFeeds(cfg: RelayConfig, receiver: PythSolanaReceiver): Promise<void> {
+  const cacheCfg = cacheConfigFromRelayConfig(cfg);
+  for (const feed of cfg.feeds) {
+    if (!cfg.cache_feeds.includes(feed.alias)) {
+      continue;
+    }
+    const account = receiver.getPriceFeedAccountAddress(cfg.shard_id, feed.id);
+    try {
+      const fetched = await receiver.fetchPriceFeedAccount(cfg.shard_id, feed.id);
+      if (fetched === null) {
+        log("WARN", "relay cache fetch returned null", {
+          alias: feed.alias,
+          account: account.toBase58(),
+        });
+        continue;
+      }
+      const priceMessage = fetched.priceMessage;
+      const publishTime = Number(integerString(priceMessage.publishTime));
+      if (!Number.isFinite(publishTime)) {
+        throw new Error(`invalid publish_time ${String(priceMessage.publishTime)}`);
+      }
+      await appendFeedCacheEntry(
+        cacheCfg,
+        {
+          feed_id: feed.id,
+          feed_alias: feed.alias,
+          publish_time: publishTime,
+          price: integerString(priceMessage.price),
+          conf: integerString(priceMessage.conf),
+          exponent: integerString(priceMessage.exponent),
+          account: account.toBase58(),
+        },
+        log,
+      );
+    } catch (error) {
+      log("WARN", "relay cache fetch skipped", {
+        alias: feed.alias,
+        account: account.toBase58(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+}
 
 async function runOnce(
   cfg: RelayConfig,
@@ -150,6 +245,7 @@ async function runOnce(
       account: address.toBase58(),
     });
   }
+  await cachePostedFeeds(cfg, receiver);
   log("INFO", "cycle complete", { txs: signatures.length });
 }
 
@@ -161,7 +257,6 @@ async function runForever(cfg: RelayConfig): Promise<void> {
   const receiver = new PythSolanaReceiver({
     connection,
     wallet,
-    pushOracleShardId: cfg.shard_id,
   });
 
   log("INFO", "price relay starting", {
@@ -170,6 +265,9 @@ async function runForever(cfg: RelayConfig): Promise<void> {
     shard_id: cfg.shard_id,
     feed_count: cfg.feeds.length,
     scan_interval_secs: cfg.scan_interval_secs,
+    cache_dir: cfg.cache_dir,
+    cache_retention_days: cfg.cache_retention_days,
+    cache_feeds: cfg.cache_feeds,
   });
 
   // Pre-compute and log the 5 deterministic PriceUpdateV2 addresses so
@@ -201,8 +299,11 @@ async function runForever(cfg: RelayConfig): Promise<void> {
     stopped = true;
   });
 
+  await maybePruneRelayCache(cacheConfigFromRelayConfig(cfg), log, true);
+
   while (!stopped) {
     try {
+      await maybePruneRelayCache(cacheConfigFromRelayConfig(cfg), log);
       await runOnce(cfg, receiver, hermes);
       consecutiveFailures = 0;
       backoffSecs = 1;
@@ -249,8 +350,8 @@ async function main() {
     const receiver = new PythSolanaReceiver({
       connection,
       wallet,
-      pushOracleShardId: cfg.shard_id,
     });
+    await maybePruneRelayCache(cacheConfigFromRelayConfig(cfg), log, true);
     await runOnce(cfg, receiver, hermes);
     return;
   }

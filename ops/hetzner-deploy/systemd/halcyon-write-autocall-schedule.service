@@ -1,0 +1,14 @@
+[Unit]
+Description=Halcyon flagship autocall schedule publisher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/halcyon
+EnvironmentFile=/etc/halcyon/env
+ExecStart=/usr/bin/env bash -lc 'exec /opt/halcyon/bin/halcyon --rpc "$HELIUS_DEVNET_RPC" --keypair "$OBSERVATION_KEYPAIR" keepers write-autocall-schedule'
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=halcyon-write-autocall-schedule

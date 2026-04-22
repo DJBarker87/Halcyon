@@ -94,7 +94,7 @@ pub fn handler(ctx: Context<PreviewQuote>, insured_notional_usdc: u64) -> Result
     let sigma_pricing_s6 = compose_pricing_sigma(
         &ctx.accounts.vault_sigma,
         &ctx.accounts.regime_signal,
-        ctx.accounts.protocol_config.sigma_floor_annualised_s6,
+        crate::pricing::protocol_sigma_floor_annualised_s6(&ctx.accounts.protocol_config),
     )?;
     let quote = solve_quote(sigma_pricing_s6, insured_notional_usdc, now)?;
 

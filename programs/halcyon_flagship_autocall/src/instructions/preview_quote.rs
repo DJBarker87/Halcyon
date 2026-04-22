@@ -1,10 +1,13 @@
 use anchor_lang::prelude::*;
 use halcyon_common::seeds;
-use halcyon_kernel::state::{ProductRegistryEntry, ProtocolConfig, Regression, VaultSigma};
+use halcyon_kernel::state::{
+    AutocallSchedule, ProductRegistryEntry, ProtocolConfig, Regression, VaultSigma,
+};
 
 use crate::pricing::{
-    compose_pricing_sigma, require_correction_tables_match, require_protocol_unpaused,
-    require_regression_fresh, require_sigma_fresh, solve_quote,
+    compose_pricing_sigma, cu_trace, require_autocall_schedule_fresh,
+    require_correction_tables_match, require_protocol_unpaused, require_regression_fresh,
+    require_sigma_fresh, solve_quote,
 };
 use crate::state::CURRENT_ENGINE_VERSION;
 
@@ -46,6 +49,13 @@ pub struct PreviewQuote<'info> {
     pub vault_sigma: Account<'info, VaultSigma>,
     #[account(seeds = [seeds::REGRESSION], seeds::program = halcyon_kernel::ID, bump)]
     pub regression: Account<'info, Regression>,
+    #[account(
+        seeds = [seeds::AUTOCALL_SCHEDULE, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
+        bump,
+        constraint = autocall_schedule.product_program_id == crate::ID,
+    )]
+    pub autocall_schedule: Account<'info, AutocallSchedule>,
     /// CHECK: validated by `halcyon_oracles`.
     pub pyth_spy: UncheckedAccount<'info>,
     /// CHECK: validated by `halcyon_oracles`.
@@ -57,6 +67,7 @@ pub struct PreviewQuote<'info> {
 
 pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePreview> {
     let now = ctx.accounts.clock.unix_timestamp;
+    cu_trace("flagship preview_quote entry");
 
     require_protocol_unpaused(&ctx.accounts.protocol_config)?;
     require!(
@@ -73,6 +84,7 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
         now,
         ctx.accounts.protocol_config.regression_staleness_cap_secs,
     )?;
+    require_autocall_schedule_fresh(&ctx.accounts.autocall_schedule, now)?;
     require_correction_tables_match(&ctx.accounts.protocol_config)?;
 
     let pyth_spy = halcyon_oracles::read_pyth_price(
@@ -96,14 +108,22 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
         &ctx.accounts.clock,
         ctx.accounts.protocol_config.pyth_quote_staleness_cap_secs,
     )?;
+    cu_trace("flagship after oracle reads");
 
     let sigma_pricing_s6 = compose_pricing_sigma(
         &ctx.accounts.vault_sigma,
-        ctx.accounts.protocol_config.sigma_floor_annualised_s6,
+        crate::pricing::protocol_sigma_floor_annualised_s6(&ctx.accounts.protocol_config),
+        ctx.accounts.protocol_config.sigma_ceiling_annualised_s6,
     )?;
-    let quote = solve_quote(sigma_pricing_s6, notional_usdc, now)?;
+    cu_trace("flagship after sigma compose");
+    let quote = solve_quote(
+        sigma_pricing_s6,
+        notional_usdc,
+        &ctx.accounts.autocall_schedule,
+    )?;
+    cu_trace("flagship after solve_quote");
 
-    Ok(QuotePreview {
+    let preview = QuotePreview {
         premium: quote.premium,
         max_liability: quote.max_liability,
         fair_coupon_bps_s6: quote.fair_coupon_bps_s6,
@@ -117,5 +137,9 @@ pub fn handler(ctx: Context<PreviewQuote>, notional_usdc: u64) -> Result<QuotePr
         beta_spy_s12: ctx.accounts.regression.beta_spy_s12,
         beta_qqq_s12: ctx.accounts.regression.beta_qqq_s12,
         expiry_ts: quote.expiry_ts,
-    })
+    };
+    cu_trace("flagship after QuotePreview construct");
+    cu_trace("flagship preview_quote exit");
+
+    Ok(preview)
 }

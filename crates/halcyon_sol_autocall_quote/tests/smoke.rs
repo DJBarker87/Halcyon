@@ -88,9 +88,7 @@ fn const_pod_deim_tables_match_cached_e11_sweep() {
             .unwrap_or_else(|err| panic!("cached E11 failed at sigma {sigma_ann_6}: {err:?}"));
         let from_const =
             solve_fair_coupon_e11_from_const(sigma_ann_6, 13_040_000, 1_520_000, 2, &contract)
-                .unwrap_or_else(|err| {
-                    panic!("const E11 failed at sigma {sigma_ann_6}: {err:?}")
-                });
+                .unwrap_or_else(|err| panic!("const E11 failed at sigma {sigma_ann_6}: {err:?}"));
 
         assert!(
             cached.fair_coupon_bps.abs_diff(from_const.fair_coupon_bps) <= 1,
@@ -113,22 +111,21 @@ fn precomputed_reduced_operators_match_live_e11_sweep() {
     for sigma_ann_6 in (500_000..=2_500_000).step_by(100_000usize) {
         let live =
             solve_fair_coupon_e11_from_const(sigma_ann_6, 13_040_000, 1_520_000, 2, &contract)
-                .unwrap_or_else(|err| {
-                    panic!("const E11 failed at sigma {sigma_ann_6}: {err:?}")
-                });
-        let reduced =
-            precompute_reduced_operators_from_const(sigma_ann_6, 13_040_000, 1_520_000, 2, &contract)
-                .unwrap_or_else(|err| {
-                    panic!("precompute failed at sigma {sigma_ann_6}: {err:?}")
-                });
+                .unwrap_or_else(|err| panic!("const E11 failed at sigma {sigma_ann_6}: {err:?}"));
+        let reduced = precompute_reduced_operators_from_const(
+            sigma_ann_6,
+            13_040_000,
+            1_520_000,
+            2,
+            &contract,
+        )
+        .unwrap_or_else(|err| panic!("precompute failed at sigma {sigma_ann_6}: {err:?}"));
         let from_precomputed = solve_fair_coupon_deim_from_precomputed_const(
             &reduced.p_red_v,
             &reduced.p_red_u,
             &contract,
         )
-        .unwrap_or_else(|err| {
-            panic!("precomputed DEIM failed at sigma {sigma_ann_6}: {err:?}")
-        });
+        .unwrap_or_else(|err| panic!("precomputed DEIM failed at sigma {sigma_ann_6}: {err:?}"));
 
         assert_eq!(
             live.fair_coupon_bps, from_precomputed.fair_coupon_bps,

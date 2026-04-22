@@ -31,23 +31,25 @@ Every struct has `u8 version` at offset 0 for in-place upgrade migration.
 | treasury_share_bps               | u16      | 2     | 47     |
 | senior_cooldown_secs             | i64      | 8     | 49     |
 | ewma_rate_limit_secs             | i64      | 8     | 57     |
-| sigma_staleness_cap_secs         | i64      | 8     | 65     |
-| regime_staleness_cap_secs        | i64      | 8     | 73     |
-| regression_staleness_cap_secs    | i64      | 8     | 81     |
-| pyth_quote_staleness_cap_secs    | i64      | 8     | 89     |
-| pyth_settle_staleness_cap_secs   | i64      | 8     | 97     |
-| quote_ttl_secs                   | i64      | 8     | 105    |
-| sigma_floor_annualised_s6        | i64      | 8     | 113    |
-| sol_autocall_quote_share_bps     | u16      | 2     | 121    |
-| sol_autocall_issuer_margin_bps   | u16      | 2     | 123    |
-| k12_correction_sha256            | [u8; 32] | 32    | 125    |
-| daily_ki_correction_sha256       | [u8; 32] | 32    | 157    |
-| pod_deim_table_sha256            | [u8; 32] | 32    | 189    |
-| treasury_destination             | Pubkey   | 32    | 221    |
-| hedge_max_slippage_bps_cap       | u16      | 2     | 253    |
-| hedge_defund_destination         | Pubkey   | 32    | 255    |
-| last_update_ts                   | i64      | 8     | 287    |
-| **TOTAL**                        |          | **295** |      |
+| il_ewma_rate_limit_secs          | u64      | 8     | 65     |
+| sol_autocall_ewma_rate_limit_secs| u64      | 8     | 73     |
+| sigma_staleness_cap_secs         | i64      | 8     | 81     |
+| regime_staleness_cap_secs        | i64      | 8     | 89     |
+| regression_staleness_cap_secs    | i64      | 8     | 97     |
+| pyth_quote_staleness_cap_secs    | i64      | 8     | 105    |
+| pyth_settle_staleness_cap_secs   | i64      | 8     | 113    |
+| quote_ttl_secs                   | i64      | 8     | 121    |
+| sigma_floor_annualised_s6        | i64      | 8     | 129    |
+| sol_autocall_quote_share_bps     | u16      | 2     | 137    |
+| sol_autocall_issuer_margin_bps   | u16      | 2     | 139    |
+| k12_correction_sha256            | [u8; 32] | 32    | 141    |
+| daily_ki_correction_sha256       | [u8; 32] | 32    | 173    |
+| pod_deim_table_sha256            | [u8; 32] | 32    | 205    |
+| treasury_destination             | Pubkey   | 32    | 237    |
+| hedge_max_slippage_bps_cap       | u16      | 2     | 269    |
+| hedge_defund_destination         | Pubkey   | 32    | 271    |
+| last_update_ts                   | i64      | 8     | 303    |
+| **TOTAL**                        |          | **311** |      |
 
 `treasury_destination` is the only USDC account `sweep_fees` is allowed to
 route to — K5 allowlist. `hedge_defund_destination` plays the same role for
@@ -58,6 +60,11 @@ one observable state change.
 `hedge_max_slippage_bps_cap` is the protocol-level ceiling on keeper-supplied
 `PrepareHedgeSwapArgs.max_slippage_bps`. Bounds the blast radius of a
 compromised hedge-keeper key.
+
+`ewma_rate_limit_secs` remains the generic fallback. `il_ewma_rate_limit_secs`
+and `sol_autocall_ewma_rate_limit_secs` override it for those specific product
+program IDs so the on-chain write cadence can match each product's calibrated
+backtest assumptions without changing PDA derivation or account topology.
 
 ## ProductRegistryEntry — one per registered product
 
@@ -269,6 +276,18 @@ per-note artifact whose Merkle root matches `merkle_root`).
 | last_update_ts     | i64  | 8     | 89     |
 | sample_count       | u32  | 4     | 97     |
 | **TOTAL**          |      | **101** |      |
+
+## AutocallSchedule — flagship quarterly schedule at v1
+
+| Field                  | Type     | Bytes | Offset |
+|------------------------|----------|-------|--------|
+| version                | u8       | 1     | 0      |
+| product_program_id     | Pubkey   | 32    | 1      |
+| issue_date_ts          | i64      | 8     | 33     |
+| observation_timestamps | [i64; 6] | 48    | 41     |
+| last_publish_ts        | i64      | 8     | 89     |
+| last_publish_slot      | u64      | 8     | 97     |
+| **TOTAL**              |          | **105** |      |
 
 ## VaultSigma — one per product
 

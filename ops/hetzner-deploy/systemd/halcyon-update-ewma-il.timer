@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Halcyon IL EWMA updater every minute
+
+[Timer]
+Unit=halcyon-update-ewma-il.service
+OnCalendar=*-*-* *:*:00
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

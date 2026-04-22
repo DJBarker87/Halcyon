@@ -46,6 +46,9 @@ and edit:
 | `shard_id` | yes | Any u16. Determines the PDA for each feed's PriceUpdateV2. Keep stable. |
 | `scan_interval_secs` | yes | 10s is a good default; 2s is the floor. |
 | `staleness_cap_secs` | yes | Skip posts when the last on-chain publish_time is less than this old. Saves fees. |
+| `cache_dir` | no | Defaults to `/var/lib/halcyon/relay-cache`. One CSV per feed lands here. |
+| `cache_retention_days` | no | Defaults to `450`. Weekly prune keeps enough history for sigma + warmup. |
+| `cache_feeds` | no | Defaults to all configured feed aliases. Lets you disable cache writes for specific feeds. |
 | `feeds` | yes | `{ alias, id }` pairs. Feed IDs live in `crates/halcyon_oracles/src/lib.rs` as hex literals. |
 | `failure_budget` | yes | Exit after this many consecutive cycles fail, so alerting fires. |
 
@@ -96,6 +99,21 @@ Should print `posted` lines for any feeds whose on-chain publish_time
 is stale vs. Hermes. If nothing is stale on the first run (unlikely for
 a brand new shard), it prints `no on-chain updates needed this cycle`.
 
+If cache is enabled, successful post cycles also append one row per feed to:
+
+```text
+{cache_dir}/{feed_alias}.csv
+```
+
+Schema:
+
+```text
+publish_time,price,conf,exponent
+```
+
+The writer dedupes on `publish_time` within each feed file and prunes rows
+older than `cache_retention_days` on startup and then weekly.
+
 ## Run under systemd
 
 ```
@@ -128,3 +146,5 @@ Keep the shard stable once production is running.
   posting; if it's within `staleness_cap_secs` of the Hermes
   publish_time, it skips. This saves fees during weekends / market
   close when equity feeds don't move.
+- **Cache durability**: the relay treats cache writes as best-effort.
+  A failed cache append never rolls back a successful on-chain post.

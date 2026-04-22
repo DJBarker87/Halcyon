@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Halcyon flagship autocall schedule publisher twice daily
+
+[Timer]
+Unit=halcyon-write-autocall-schedule.service
+OnCalendar=*-*-* 00,12:05:00
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

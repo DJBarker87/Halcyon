@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Halcyon flagship sigma keeper daily
+
+[Timer]
+Unit=halcyon-flagship-sigma-keeper.service
+OnCalendar=*-*-* 00:10:00
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

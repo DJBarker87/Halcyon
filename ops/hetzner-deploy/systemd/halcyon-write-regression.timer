@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Halcyon flagship regression bootstrap daily
+
+[Timer]
+Unit=halcyon-write-regression.service
+OnCalendar=*-*-* 00:15:00
+Persistent=true
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

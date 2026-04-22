@@ -26,8 +26,14 @@ pub struct SetProtocolConfigArgs {
     pub pyth_settle_staleness_cap_secs: Option<i64>,
     pub quote_ttl_secs: Option<i64>,
     pub ewma_rate_limit_secs: Option<i64>,
+    pub il_ewma_rate_limit_secs: Option<u64>,
+    pub sol_autocall_ewma_rate_limit_secs: Option<u64>,
     pub senior_cooldown_secs: Option<i64>,
     pub sigma_floor_annualised_s6: Option<i64>,
+    pub il_sigma_floor_annualised_s6: Option<i64>,
+    pub sol_autocall_sigma_floor_annualised_s6: Option<i64>,
+    pub flagship_sigma_floor_annualised_s6: Option<i64>,
+    pub sigma_ceiling_annualised_s6: Option<i64>,
     pub k12_correction_sha256: Option<[u8; 32]>,
     pub daily_ki_correction_sha256: Option<[u8; 32]>,
     pub pod_deim_table_sha256: Option<[u8; 32]>,
@@ -79,11 +85,29 @@ pub fn handler(ctx: Context<SetProtocolConfig>, args: SetProtocolConfigArgs) -> 
     if let Some(x) = args.ewma_rate_limit_secs {
         cfg.ewma_rate_limit_secs = x;
     }
+    if let Some(x) = args.il_ewma_rate_limit_secs {
+        cfg.il_ewma_rate_limit_secs = x;
+    }
+    if let Some(x) = args.sol_autocall_ewma_rate_limit_secs {
+        cfg.sol_autocall_ewma_rate_limit_secs = x;
+    }
     if let Some(x) = args.senior_cooldown_secs {
         cfg.senior_cooldown_secs = x;
     }
     if let Some(x) = args.sigma_floor_annualised_s6 {
         cfg.sigma_floor_annualised_s6 = x;
+    }
+    if let Some(x) = args.il_sigma_floor_annualised_s6 {
+        cfg.il_sigma_floor_annualised_s6 = x;
+    }
+    if let Some(x) = args.sol_autocall_sigma_floor_annualised_s6 {
+        cfg.sol_autocall_sigma_floor_annualised_s6 = x;
+    }
+    if let Some(x) = args.flagship_sigma_floor_annualised_s6 {
+        cfg.flagship_sigma_floor_annualised_s6 = x;
+    }
+    if let Some(x) = args.sigma_ceiling_annualised_s6 {
+        cfg.sigma_ceiling_annualised_s6 = x;
     }
     if let Some(h) = args.k12_correction_sha256 {
         cfg.k12_correction_sha256 = h;
@@ -121,7 +145,7 @@ pub fn handler(ctx: Context<SetProtocolConfig>, args: SetProtocolConfigArgs) -> 
 
     require!(cfg.utilization_cap_bps <= 10_000, KernelError::BadConfig);
     require!(cfg.senior_cooldown_secs >= 0, KernelError::BadConfig);
-    require!(cfg.ewma_rate_limit_secs > 0, KernelError::BadConfig);
+    require!(cfg.ewma_rate_limits_valid(), KernelError::BadConfig);
     require!(cfg.sigma_staleness_cap_secs > 0, KernelError::BadConfig);
     require!(cfg.regime_staleness_cap_secs > 0, KernelError::BadConfig);
     require!(
@@ -137,7 +161,7 @@ pub fn handler(ctx: Context<SetProtocolConfig>, args: SetProtocolConfigArgs) -> 
         KernelError::BadConfig
     );
     require!(cfg.quote_ttl_secs > 0, KernelError::BadConfig);
-    require!(cfg.sigma_floor_annualised_s6 > 0, KernelError::BadConfig);
+    require!(cfg.sigma_bounds_valid(), KernelError::BadConfig);
     require!(
         cfg.sol_autocall_quote_config_valid(),
         KernelError::BadConfig

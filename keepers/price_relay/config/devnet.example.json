@@ -13,6 +13,11 @@
   "_staleness_doc": "If the on-chain publish_time is within this many seconds of the latest Hermes publish_time, the relay skips the post. Saves tx fees when nothing has changed.",
   "staleness_cap_secs": 30,
 
+  "_cache_doc": "Relay-side historical cache. One append-only CSV per feed under cache_dir. Used for future sigma/regression inputs, not by the relay itself.",
+  "cache_dir": "/var/lib/halcyon/relay-cache",
+  "cache_retention_days": 450,
+  "cache_feeds": ["SOL_USD", "USDC_USD", "SPY_USD", "QQQ_USD", "IWM_USD"],
+
   "feeds": [
     { "alias": "SOL_USD",  "id": "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d" },
     { "alias": "USDC_USD", "id": "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a" },

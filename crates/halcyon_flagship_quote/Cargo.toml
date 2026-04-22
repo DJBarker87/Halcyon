@@ -11,7 +11,13 @@ full = [
     "solmath-core/barrier",
     "solmath-core/complex",
     "solmath-core/insurance",
+    "m6r-recip",
 ]
+c1-filter-cu-diag = []
+c1-filter-cu-diag-inner = []
+ki-skip-count = []
+lookup-bench-sbf = []
+m6r-recip = []
 
 [dependencies]
 # Pure-Rust invariant (L0 §4.2): no Solana deps. `halcyon_common` pulls

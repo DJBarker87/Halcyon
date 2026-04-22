@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use halcyon_common::product_ids;
 
 #[account]
 #[derive(InitSpace)]
@@ -13,6 +14,8 @@ pub struct ProtocolConfig {
     pub treasury_share_bps: u16,
     pub senior_cooldown_secs: i64,
     pub ewma_rate_limit_secs: i64,
+    pub il_ewma_rate_limit_secs: u64,
+    pub sol_autocall_ewma_rate_limit_secs: u64,
     pub sigma_staleness_cap_secs: i64,
     pub regime_staleness_cap_secs: i64,
     pub regression_staleness_cap_secs: i64,
@@ -20,6 +23,10 @@ pub struct ProtocolConfig {
     pub pyth_settle_staleness_cap_secs: i64,
     pub quote_ttl_secs: i64,
     pub sigma_floor_annualised_s6: i64,
+    pub il_sigma_floor_annualised_s6: i64,
+    pub sol_autocall_sigma_floor_annualised_s6: i64,
+    pub flagship_sigma_floor_annualised_s6: i64,
+    pub sigma_ceiling_annualised_s6: i64,
     pub sol_autocall_quote_share_bps: u16,
     pub sol_autocall_issuer_margin_bps: u16,
     pub k12_correction_sha256: [u8; 32],
@@ -42,7 +49,7 @@ pub struct ProtocolConfig {
 }
 
 impl ProtocolConfig {
-    pub const CURRENT_VERSION: u8 = 5;
+    pub const CURRENT_VERSION: u8 = 8;
 
     pub fn premium_splits_sum_to_ten_thousand(&self) -> bool {
         self.senior_share_bps as u32 + self.junior_share_bps as u32 + self.treasury_share_bps as u32
@@ -53,8 +60,37 @@ impl ProtocolConfig {
         self.sol_autocall_quote_share_bps <= 10_000 && self.sol_autocall_issuer_margin_bps <= 10_000
     }
 
+    pub fn sigma_bounds_valid(&self) -> bool {
+        self.sigma_floor_annualised_s6 > 0
+            && self.il_sigma_floor_annualised_s6 > 0
+            && self.sol_autocall_sigma_floor_annualised_s6 > 0
+            && self.flagship_sigma_floor_annualised_s6 > 0
+            && self.sigma_ceiling_annualised_s6 >= self.sigma_floor_annualised_s6
+            && self.sigma_ceiling_annualised_s6 >= self.il_sigma_floor_annualised_s6
+            && self.sigma_ceiling_annualised_s6 >= self.sol_autocall_sigma_floor_annualised_s6
+            && self.sigma_ceiling_annualised_s6 >= self.flagship_sigma_floor_annualised_s6
+    }
+
+    pub fn sigma_floor_for_product_s6(&self, product_program_id: &Pubkey) -> i64 {
+        if *product_program_id == product_ids::IL_PROTECTION {
+            self.il_sigma_floor_annualised_s6
+        } else if *product_program_id == product_ids::SOL_AUTOCALL {
+            self.sol_autocall_sigma_floor_annualised_s6
+        } else if *product_program_id == product_ids::FLAGSHIP_AUTOCALL {
+            self.flagship_sigma_floor_annualised_s6
+        } else {
+            self.sigma_floor_annualised_s6
+        }
+    }
+
     pub fn hedge_max_slippage_bps_cap_valid(&self) -> bool {
         self.hedge_max_slippage_bps_cap > 0 && self.hedge_max_slippage_bps_cap <= 10_000
+    }
+
+    pub fn ewma_rate_limits_valid(&self) -> bool {
+        self.ewma_rate_limit_secs > 0
+            && self.il_ewma_rate_limit_secs > 0
+            && self.sol_autocall_ewma_rate_limit_secs > 0
     }
 
     pub fn premium_vault_portion(&self, premium: u64) -> Option<u64> {

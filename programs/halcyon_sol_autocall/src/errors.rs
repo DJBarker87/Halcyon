@@ -38,7 +38,9 @@ pub enum SolAutocallError {
     ReducedOperatorsRangeInvalid,
     #[msg("keeper-fed reduced operator chunk start does not match the current upload offset")]
     ReducedOperatorsOffsetInvalid,
-    #[msg("keeper-fed reduced operator upload state does not match the current sigma or source slots")]
+    #[msg(
+        "keeper-fed reduced operator upload state does not match the current sigma or source slots"
+    )]
     ReducedOperatorsUploadStateInvalid,
     #[msg("pricing sigma is outside the supported keeper-fed POD-DEIM band")]
     PricingSigmaOutOfBand,

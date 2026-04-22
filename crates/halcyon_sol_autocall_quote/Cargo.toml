@@ -11,6 +11,7 @@ full = [
     "solmath-core/barrier",
     "solmath-core/complex",
 ]
+cu_diagnostics = []
 
 [dependencies]
 # Pure-Rust invariant (L0 §4.2): no Solana deps.

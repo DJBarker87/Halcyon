@@ -18,7 +18,7 @@ use solmath_core::{div6, exp6, fp_div, fp_mul, mul6, sqrt6, SolMathError, SCALE,
 
 use crate::generated::pod_deim_table as generated;
 
-#[cfg(target_os = "solana")]
+#[cfg(all(target_os = "solana", feature = "cu_diagnostics"))]
 unsafe extern "C" {
     fn sol_log_compute_units_();
     fn sol_log_(message: *const u8, length: u64);
@@ -26,13 +26,142 @@ unsafe extern "C" {
 
 #[inline(always)]
 pub(crate) fn cu_trace(stage: &'static [u8]) {
-    #[cfg(target_os = "solana")]
+    #[cfg(all(target_os = "solana", feature = "cu_diagnostics"))]
     unsafe {
         sol_log_(stage.as_ptr(), stage.len() as u64);
         sol_log_compute_units_();
     }
-    #[cfg(not(target_os = "solana"))]
+    #[cfg(not(all(target_os = "solana", feature = "cu_diagnostics")))]
     let _ = stage;
+}
+
+#[inline(always)]
+fn cu_trace_parts(parts: &[&[u8]]) {
+    #[cfg(all(target_os = "solana", feature = "cu_diagnostics"))]
+    unsafe {
+        let mut buf = [0u8; 96];
+        let mut len = 0usize;
+        for part in parts {
+            let part_len = part.len();
+            buf[len..len + part_len].copy_from_slice(part);
+            len += part_len;
+        }
+        sol_log_(buf.as_ptr(), len as u64);
+        sol_log_compute_units_();
+    }
+    #[cfg(not(all(target_os = "solana", feature = "cu_diagnostics")))]
+    let _ = parts;
+}
+
+#[inline(always)]
+fn cu_trace_deim_pass(pass: usize, phase: &[u8]) {
+    if phase != b"start" || (pass != 0 && pass != 1) {
+        return;
+    }
+    let pass_digit = [b'0' + pass as u8];
+    cu_trace_parts(&[b"cu_trace:deim:pass", &pass_digit, b":", phase]);
+}
+
+#[inline(always)]
+fn cu_trace_deim_after_terminal_projection(pass: usize) {
+    if pass != 0 {
+        return;
+    }
+    cu_trace(b"cu_trace:deim:after_terminal_projection_pass0");
+}
+
+#[inline(always)]
+fn cu_trace_deim_step_enter(pass: usize, step: usize) {
+    if (pass, step) != (0, 1) {
+        return;
+    }
+    let pass_digit = [b'0' + pass as u8];
+    let step_digit = [b'0' + step as u8];
+    cu_trace_parts(&[
+        b"cu_trace:deim:pass",
+        &pass_digit,
+        b":step",
+        &step_digit,
+        b":enter",
+    ]);
+}
+
+#[inline(always)]
+fn cu_trace_deim_step_end(pass: usize, step: usize) {
+    let should_trace = match (pass, step) {
+        (0, 0) | (0, 1) | (0, 3) | (0, 7) | (1, 7) => true,
+        _ => false,
+    };
+    if !should_trace {
+        return;
+    }
+    let pass_digit = [b'0' + pass as u8];
+    let step_digit = [b'0' + step as u8];
+    cu_trace_parts(&[b"cu_trace:deim:pass", &pass_digit, b":step", &step_digit, b":end"]);
+}
+
+// Fixed-product POD-DEIM bounds for the Q20 keeper-fed DEIM path.
+//
+// The source fixed-product tables were originally analyzed at SCALE_6:
+// - max |Phi| entry = 844_632, max column abs-sum = 6_949_519
+// - max |Phi_idx| entry = 844_632
+// - max |P_T_inv| entry = 2_321_062, max row abs-sum = 7_815_264
+//
+// The generated DEIM tables used by the on-chain path are now stored at Q20
+// (`1 << 20`). We derive safe Q20 upload/runtime bounds directly from the
+// SCALE_6 maxima above. Column and row sums include one-LSB rounding slack per
+// contributing entry after SCALE_6 -> Q20 conversion.
+const SCALE_Q20: i64 = 1 << 20;
+const SCALE_Q20_I128: i128 = 1i128 << 20;
+const MAX_ABS_TERMINAL_STATE_Q20: i64 = 2 * SCALE_Q20;
+const MAX_ABS_NOTE_VALUE_Q20: i64 = 9 * SCALE_Q20;
+const MAX_ABS_PHI_ENTRY_6: i64 = 844_632;
+const MAX_ABS_PHI_COL_SUM_6: i64 = 6_949_519;
+const MAX_ABS_PHI_AT_IDX_ENTRY_6: i64 = 844_632;
+const MAX_ABS_PT_INV_ENTRY_6: i64 = 2_321_062;
+const MAX_ABS_PT_INV_ROW_SUM_6: i64 = 7_815_264;
+const MAX_ABS_PHI_ENTRY_Q20: i64 =
+    ((MAX_ABS_PHI_ENTRY_6 * SCALE_Q20) + SCALE_6 - 1) / SCALE_6;
+const MAX_ABS_PHI_COL_SUM_Q20: i64 =
+    ((MAX_ABS_PHI_COL_SUM_6 * SCALE_Q20) + SCALE_6 - 1) / SCALE_6 + generated::N_STATES as i64;
+const MAX_ABS_PHI_AT_IDX_ENTRY_Q20: i64 =
+    ((MAX_ABS_PHI_AT_IDX_ENTRY_6 * SCALE_Q20) + SCALE_6 - 1) / SCALE_6;
+const MAX_ABS_PT_INV_ENTRY_Q20: i64 =
+    ((MAX_ABS_PT_INV_ENTRY_6 * SCALE_Q20) + SCALE_6 - 1) / SCALE_6;
+const MAX_ABS_PT_INV_ROW_SUM_Q20: i64 =
+    ((MAX_ABS_PT_INV_ROW_SUM_6 * SCALE_Q20) + SCALE_6 - 1) / SCALE_6 + generated::D as i64;
+pub const MAX_ABS_KEEPER_P_RED_ENTRY_Q20: i64 =
+    ((MAX_ABS_PHI_COL_SUM_Q20 * MAX_ABS_PHI_ENTRY_Q20) + SCALE_Q20 - 1) / SCALE_Q20;
+const MAX_ABS_REDUCED_FROM_PHI_Q20: i64 =
+    ((MAX_ABS_PHI_COL_SUM_Q20 * MAX_ABS_NOTE_VALUE_Q20) + SCALE_Q20 - 1) / SCALE_Q20;
+const MAX_ABS_REDUCED_COEFF_Q20: i64 =
+    ((MAX_ABS_PT_INV_ROW_SUM_Q20 * MAX_ABS_NOTE_VALUE_Q20) + SCALE_Q20 - 1) / SCALE_Q20;
+const MAX_ABS_PROPAGATED_REDUCED_COEFF_Q20: i64 = (((generated::D as i64)
+    * MAX_ABS_KEEPER_P_RED_ENTRY_Q20
+    * MAX_ABS_REDUCED_COEFF_Q20)
+    + SCALE_Q20
+    - 1)
+    / SCALE_Q20;
+
+#[inline(always)]
+fn scale6_to_q20_round(value_6: i64) -> i64 {
+    let scaled = value_6 as i128 * SCALE_Q20_I128;
+    let denom = SCALE_6 as i128;
+    if scaled >= 0 {
+        ((scaled + denom / 2) / denom) as i64
+    } else {
+        -(((-scaled) + denom / 2) / denom) as i64
+    }
+}
+
+#[inline(always)]
+fn q20_to_scale6_round(value_q20: i64) -> i64 {
+    let scaled = value_q20 as i128 * SCALE_6 as i128;
+    if scaled >= 0 {
+        ((scaled + SCALE_Q20_I128 / 2) / SCALE_Q20_I128) as i64
+    } else {
+        -(((-scaled) + SCALE_Q20_I128 / 2) / SCALE_Q20_I128) as i64
+    }
 }
 
 // ============================================================
@@ -2662,22 +2791,41 @@ pub fn solve_fair_coupon_deim_const(
     p_red_v_fixed.copy_from_slice(p_red_v);
     p_red_u_fixed.copy_from_slice(p_red_u);
 
-    let e_v0 = solve_fair_coupon_deim_leg_const(
+    let mut redemption_profile_q20 = [SCALE_Q20; generated::N_STATES];
+    for (j, redemption) in redemption_profile_q20
+        .iter_mut()
+        .enumerate()
+        .take(grid_info.n_states)
+    {
+        let rep = grid_info.reps[j];
+        *redemption = if rep < 0 {
+            scale6_to_q20_round(exp6(rep)?)
+        } else {
+            SCALE_Q20
+        };
+    }
+
+    let e_v0_q20 = solve_fair_coupon_deim_leg_const(
         grid_info,
         &factors.v_leg,
         &p_red_v_fixed,
+        &redemption_profile_q20,
         contract,
         0,
         0,
     )?;
-    let e_v1 = solve_fair_coupon_deim_leg_const(
+    let e_v1_q20 = solve_fair_coupon_deim_leg_const(
         grid_info,
         &factors.u_leg,
         &p_red_u_fixed,
+        &redemption_profile_q20,
         contract,
-        SCALE_6,
+        SCALE_Q20,
         1,
     )?;
+
+    let e_v0 = q20_to_scale6_round(e_v0_q20);
+    let e_v1 = q20_to_scale6_round(e_v1_q20);
 
     let e_coupon_count = e_v1 - e_v0;
     let shortfall = if SCALE_6 > e_v0 { SCALE_6 - e_v0 } else { 0 };
@@ -2693,7 +2841,6 @@ pub fn solve_fair_coupon_deim_const(
     } else {
         0
     };
-    cu_trace(b"cu_trace:deim:after_fair_coupon");
 
     Ok(AutocallPriceResult {
         expected_redemption: (e_v0.max(0) as u128) * up,
@@ -2707,11 +2854,14 @@ pub fn solve_fair_coupon_deim_const(
 fn solve_fair_coupon_deim_leg_const(
     grid_info: &MarkovGridInfoConst<'_>,
     leg: &DeimLegConst<'_>,
-    p_red: &E11ReducedMat6,
+    p_red: &E11ReducedMatQ20,
+    redemption_profile_q20: &[i64; generated::N_STATES],
     contract: &AutocallParams,
-    coupon_6: i64,
+    coupon_q20: i64,
     pass: usize,
 ) -> Result<i64, AutocallV2Error> {
+    cu_trace_deim_pass(pass, b"start");
+
     let s = grid_info.n_states;
     debug_assert_eq!(s, generated::N_STATES);
     debug_assert_eq!(leg.d, generated::D);
@@ -2720,21 +2870,16 @@ fn solve_fair_coupon_deim_leg_const(
     let mut val_t_full = [0i64; generated::N_STATES];
     for j in 0..s {
         let rep = grid_info.reps[j];
-        let coupon = if rep >= 0 { coupon_6 } else { 0 };
-        val_u_full[j] = SCALE_6 + coupon;
-        let redemption = if rep < 0 { exp6(rep)? } else { SCALE_6 };
-        val_t_full[j] = redemption + coupon;
+        let coupon = if rep >= 0 { coupon_q20 } else { 0 };
+        val_u_full[j] = SCALE_Q20 + coupon;
+        val_t_full[j] = redemption_profile_q20[j] + coupon;
     }
 
     let mut v_u = [0i64; generated::D];
     let mut v_t = [0i64; generated::D];
     phi_transpose_times_v_fixed(leg.phi, &val_u_full, s, &mut v_u)?;
     phi_transpose_times_v_fixed(leg.phi, &val_t_full, s, &mut v_t)?;
-    if pass == 0 {
-        cu_trace(b"cu_trace:deim:after_terminal_projection_pass0");
-    } else {
-        cu_trace(b"cu_trace:deim:after_terminal_projection_pass1");
-    }
+    cu_trace_deim_after_terminal_projection(pass);
 
     let mut e_t = [0i64; generated::D];
     let mut v_u_at = [0i64; generated::D];
@@ -2748,32 +2893,33 @@ fn solve_fair_coupon_deim_leg_const(
     let mut new_t_at = [0i64; generated::D];
 
     for step in 0..contract.n_obs {
+        cu_trace_deim_step_enter(pass, step);
         let is_day0 = step == contract.n_obs - 1;
         let autocall_suppressed = !is_day0
             && contract.no_autocall_first_n_obs > 0
             && (contract.n_obs - 1 - step) <= contract.no_autocall_first_n_obs;
 
-        deim_matvec6_fixed(p_red, &v_t, &mut e_t)?;
-        deim_matvec6_fixed(leg.phi_at_idx, &v_u, &mut v_u_at)?;
-        deim_matvec6_fixed(leg.phi_at_idx, &v_t, &mut v_t_at)?;
+        deim_matvec6_fixed(p_red, &v_t, &mut e_t, pass == 0 && step == 0)?;
+        phi_at_idx_matvec6_fixed(leg.phi_at_idx, &v_u, &mut v_u_at)?;
+        phi_at_idx_matvec6_fixed(leg.phi_at_idx, &v_t, &mut v_t_at)?;
         for i in 0..generated::D {
             hybrid_at[i] = if leg.ki_at_idx[i] { v_t_at[i] } else { v_u_at[i] };
         }
-        deim_matvec6_fixed(leg.pt_inv, &hybrid_at, &mut hybrid_red)?;
-        deim_matvec6_fixed(p_red, &hybrid_red, &mut e_u)?;
+        pt_inv_matvec6_fixed(leg.pt_inv, &hybrid_at, &mut hybrid_red)?;
+        deim_matvec6_fixed(p_red, &hybrid_red, &mut e_u, false)?;
 
         if is_day0 {
             v_u.copy_from_slice(&e_u);
             v_t.copy_from_slice(&e_t);
         } else {
-            deim_matvec6_fixed(leg.phi_at_idx, &e_u, &mut e_u_at)?;
-            deim_matvec6_fixed(leg.phi_at_idx, &e_t, &mut e_t_at)?;
+            phi_at_idx_matvec6_fixed(leg.phi_at_idx, &e_u, &mut e_u_at)?;
+            phi_at_idx_matvec6_fixed(leg.phi_at_idx, &e_t, &mut e_t_at)?;
 
             for i in 0..generated::D {
-                let cpn = if leg.cpn_at_idx[i] { coupon_6 } else { 0 };
+                let cpn = if leg.cpn_at_idx[i] { coupon_q20 } else { 0 };
                 if !autocall_suppressed && leg.ac_at_idx[i] {
-                    new_u_at[i] = SCALE_6 + cpn;
-                    new_t_at[i] = SCALE_6 + cpn;
+                    new_u_at[i] = SCALE_Q20 + cpn;
+                    new_t_at[i] = SCALE_Q20 + cpn;
                 } else if leg.ki_at_idx[i] {
                     new_u_at[i] = e_t_at[i] + cpn;
                     new_t_at[i] = e_t_at[i] + cpn;
@@ -2783,51 +2929,129 @@ fn solve_fair_coupon_deim_leg_const(
                 }
             }
 
-            deim_matvec6_fixed(leg.pt_inv, &new_u_at, &mut v_u)?;
-            deim_matvec6_fixed(leg.pt_inv, &new_t_at, &mut v_t)?;
+            pt_inv_matvec6_fixed(leg.pt_inv, &new_u_at, &mut v_u)?;
+            pt_inv_matvec6_fixed(leg.pt_inv, &new_t_at, &mut v_t)?;
         }
+        cu_trace_deim_step_end(pass, step);
     }
 
     let mut atm_val: i64 = 0;
     for j in 0..generated::D {
-        atm_val += mul6(leg.phi_atm[j], v_u[j])?;
-    }
-    if pass == 0 {
-        cu_trace(b"cu_trace:deim:after_backward_pass0");
-    } else {
-        cu_trace(b"cu_trace:deim:after_backward_pass1");
+        atm_val += leg.phi_atm[j].wrapping_mul(v_u[j]) >> 20;
     }
     Ok(atm_val)
 }
 
 fn phi_transpose_times_v_fixed(
     phi: &[i64],
-    v: &E11StateVec6,
+    v: &E11StateVecQ20,
     n: usize,
-    out: &mut E11ReducedVec6,
+    out: &mut E11ReducedVecQ20,
 ) -> Result<(), SolMathError> {
+    // Safe wrapping-mul site:
+    // terminal state values are in [0, 2*Q20], and the generated basis has
+    // max |Phi[i,k]| = 885_661 at Q20. So every product satisfies
+    // |Phi[i,k] * v[i]| <= 885_661 * 2_097_152 = 1_857_773_895_872 << i64::MAX.
+    // The projected coefficient bound is
+    // ceil(||phi_col||₁ * 2*Q20 / Q20) = 14_574_298, also far below `i64::MAX`.
+    debug_assert!(MAX_ABS_PHI_ENTRY_Q20 * MAX_ABS_TERMINAL_STATE_Q20 < i64::MAX);
+    debug_assert!(MAX_ABS_PHI_COL_SUM_Q20 * MAX_ABS_TERMINAL_STATE_Q20 / SCALE_Q20 < i64::MAX);
     for k in 0..generated::D {
         let mut acc: i64 = 0;
         for i in 0..n {
-            acc += mul6(phi[i * generated::D + k], v[i])?;
+            acc += phi[i * generated::D + k].wrapping_mul(v[i]) >> 20;
         }
         out[k] = acc;
     }
     Ok(())
 }
 
-fn deim_matvec6_fixed(
+#[inline(always)]
+fn phi_at_idx_matvec6_fixed(
     mat: &[i64],
-    v: &E11ReducedVec6,
-    out: &mut E11ReducedVec6,
+    v: &E11ReducedVecQ20,
+    out: &mut E11ReducedVecQ20,
 ) -> Result<(), SolMathError> {
+    // Safe wrapping-mul site:
+    // `Phi_idx` is only used on reduced coefficient vectors. For this fixed
+    // product, reconstructing a bounded DEIM payoff/continuation vector
+    // (principal + 8 coupons <= 9*Q20) through `P_T_inv` yields
+    // |c| <= 73_754_226. One keeper-fed propagation step through the bounded
+    // `P_red` operator gives |c| <= 6_192_981_229. Therefore every product
+    // satisfies
+    // |Phi_idx[i,j] * c[j]| <= 885_661 * 6_493_869_562 = 5_751_584_331_515_982
+    // which stays far below `i64::MAX`.
+    debug_assert!(MAX_ABS_PHI_AT_IDX_ENTRY_Q20 * MAX_ABS_PROPAGATED_REDUCED_COEFF_Q20 < i64::MAX);
     for i in 0..generated::D {
         let mut acc: i64 = 0;
         let base = i * generated::D;
         for j in 0..generated::D {
-            acc += mul6(mat[base + j], v[j])?;
+            acc += mat[base + j].wrapping_mul(v[j]) >> 20;
         }
         out[i] = acc;
+    }
+    Ok(())
+}
+
+#[inline(always)]
+fn pt_inv_matvec6_fixed(
+    mat: &[i64],
+    v: &E11ReducedVecQ20,
+    out: &mut E11ReducedVecQ20,
+) -> Result<(), SolMathError> {
+    // Safe wrapping-mul site:
+    // `P_T_inv` only reconstructs from DEIM point values. The note payoff is
+    // bounded by principal + 8 coupons <= 9*Q20, so every input here stays
+    // in the bounded DEIM-value regime. With max |P_T_inv[i,j]| = 2_321_062,
+    // every product satisfies
+    // |P_T_inv[i,j] * vals[j]| <= 2_433_810 * 9_437_184 = 22_966_320_343_040
+    // which is far below `i64::MAX`.
+    debug_assert!(MAX_ABS_PT_INV_ENTRY_Q20 * MAX_ABS_NOTE_VALUE_Q20 < i64::MAX);
+    for i in 0..generated::D {
+        let mut acc: i64 = 0;
+        let base = i * generated::D;
+        for j in 0..generated::D {
+            acc += mat[base + j].wrapping_mul(v[j]) >> 20;
+        }
+        out[i] = acc;
+    }
+    Ok(())
+}
+
+fn deim_matvec6_fixed(
+    mat: &[i64],
+    v: &E11ReducedVecQ20,
+    out: &mut E11ReducedVecQ20,
+    trace_probe: bool,
+) -> Result<(), SolMathError> {
+    // Safe wrapping-mul site:
+    // keeper uploads are rejected unless every reduced-operator entry satisfies
+    // |P_red[i,j]| <= 6_154_961 at Q20, using the row-stochastic bound
+    // `P_red = Phiᵀ P Phi`, `|P_red[i,j]| <= ||phi_col||₁ * ||phi_col||∞ / Q20`.
+    // The live recurrence feeds `P_red` with reduced coefficients bounded by
+    // `P_T_inv` reconstruction from a bounded note value vector:
+    // |v_reduced[j]| <= 73_754_226. Therefore every raw product satisfies
+    // |P_red[i,j] * v[j]| <= 6_154_961 * 73_754_226 = 453_950_456_023_686 << i64::MAX,
+    // and the full 15-term accumulation after the Q20 shift remains only about
+    // 6.5e9. A preview-time range check would also work, but we enforce the
+    // upload bound once in `write_reduced_operators` to keep this hot loop free
+    // of runtime validation.
+    debug_assert!(MAX_ABS_REDUCED_FROM_PHI_Q20 <= MAX_ABS_REDUCED_COEFF_Q20);
+    debug_assert!(MAX_ABS_KEEPER_P_RED_ENTRY_Q20 * MAX_ABS_REDUCED_COEFF_Q20 < i64::MAX);
+    debug_assert!(MAX_ABS_PROPAGATED_REDUCED_COEFF_Q20 < i64::MAX);
+    if trace_probe {
+        cu_trace(b"cu_trace:deim:p_red_matvec0:before_first_mul");
+    }
+    for i in 0..generated::D {
+        let mut acc: i64 = 0;
+        let base = i * generated::D;
+        for j in 0..generated::D {
+            acc += mat[base + j].wrapping_mul(v[j]) >> 20;
+        }
+        out[i] = acc;
+    }
+    if trace_probe {
+        cu_trace(b"cu_trace:deim:p_red_matvec0:after_return");
     }
     Ok(())
 }
@@ -3010,18 +3234,18 @@ pub struct E11Factors {
     pub m: usize,
     /// Reduced dimension.
     pub d: usize,
-    /// δP_red atoms for V-leg: `[m × d × d]` flattened, row-major, at SCALE_6.
+    /// δP_red atoms for V-leg: `[m × d × d]` flattened, row-major, at Q20.
     /// These represent the POD modes of (P(σ) − P_ref).
     pub atoms_v: Vec<i64>,
     /// δP_red atoms for U-leg.
     pub atoms_u: Vec<i64>,
-    /// P_ref projected for V-leg: `[d × d]`, row-major, at SCALE_6.
+    /// P_ref projected for V-leg: `[d × d]`, row-major, at Q20.
     pub p_ref_red_v: Vec<i64>,
     /// P_ref projected for U-leg.
     pub p_ref_red_u: Vec<i64>,
-    /// P_ref values at EIM indices, at SCALE_6.  Length m.
+    /// P_ref values at EIM indices, at Q20. Length m.
     pub p_ref_at_eim: Vec<i64>,
-    /// EIM interpolation inverse `B⁻¹`, `[m × m]`, row-major, at SCALE_6.
+    /// EIM interpolation inverse `B⁻¹`, `[m × m]`, row-major, at Q20.
     pub b_inv: Vec<i64>,
     /// EIM row indices in the N×N transition matrix.
     pub eim_rows: Vec<usize>,
@@ -3047,11 +3271,11 @@ pub struct E11FactorsConst<'a> {
     pub eim_cols: &'a [u16],
 }
 
-type E11StateVec6 = [i64; generated::N_STATES];
-type E11ReducedVec6 = [i64; generated::D];
-type E11ReducedMat6 = [i64; generated::D * generated::D];
-type E11InterpVals6 = [i64; generated::M];
-type E11InterpCoeffsHp = [i128; generated::M];
+type E11StateVecQ20 = [i64; generated::N_STATES];
+type E11ReducedVecQ20 = [i64; generated::D];
+type E11ReducedMatQ20 = [i64; generated::D * generated::D];
+type E11InterpValsQ20 = [i64; generated::M];
+type E11InterpCoeffsHpQ20 = [i128; generated::M];
 
 /// Assemble the live σ-dependent reduced operators for the fixed-product
 /// POD-DEIM tables compiled into the binary.
@@ -3060,7 +3284,7 @@ pub fn assemble_e11_reduced_operators_const(
     factors: &E11FactorsConst<'_>,
     nig: &NigParams6,
     grid_info: &MarkovGridInfoConst<'_>,
-) -> Result<(E11ReducedMat6, E11ReducedMat6), AutocallV2Error> {
+) -> Result<(E11ReducedMatQ20, E11ReducedMatQ20), AutocallV2Error> {
     debug_assert_eq!(factors.m, generated::M);
     debug_assert_eq!(factors.d, generated::D);
     debug_assert_eq!(grid_info.n_states, generated::N_STATES);
@@ -3081,8 +3305,8 @@ pub fn assemble_e11_reduced_operators_const(
         } else {
             0i64
         };
-        let p_live = (upper_6 - lower_6).max(0);
-        dp_vals[idx] = p_live - factors.p_ref_at_eim[idx];
+        let p_live_q20 = scale6_to_q20_round((upper_6 - lower_6).max(0));
+        dp_vals[idx] = p_live_q20 - factors.p_ref_at_eim[idx];
     }
     cu_trace(b"cu_trace:e11:after_dp_eval");
 
@@ -3096,20 +3320,20 @@ pub fn assemble_e11_reduced_operators_const(
     }
     cu_trace(b"cu_trace:e11:after_coeff_solve");
 
-    let s6_sq = SCALE_6 as i128 * SCALE_6 as i128;
+    let q20_sq = SCALE_Q20_I128 * SCALE_Q20_I128;
     let mut p_red_v = [0i64; generated::D * generated::D];
     let mut p_red_u = [0i64; generated::D * generated::D];
 
     for k in 0..(generated::D * generated::D) {
-        let mut acc_v = factors.p_ref_red_v[k] as i128 * s6_sq;
-        let mut acc_u = factors.p_ref_red_u[k] as i128 * s6_sq;
+        let mut acc_v = factors.p_ref_red_v[k] as i128 * q20_sq;
+        let mut acc_u = factors.p_ref_red_u[k] as i128 * q20_sq;
         for im in 0..generated::M {
             let atom_base = im * generated::D * generated::D;
             acc_v += c_coeffs_hp[im] * factors.atoms_v[atom_base + k] as i128;
             acc_u += c_coeffs_hp[im] * factors.atoms_u[atom_base + k] as i128;
         }
-        p_red_v[k] = (acc_v / s6_sq) as i64;
-        p_red_u[k] = (acc_u / s6_sq) as i64;
+        p_red_v[k] = (acc_v / q20_sq) as i64;
+        p_red_u[k] = (acc_u / q20_sq) as i64;
     }
     cu_trace(b"cu_trace:e11:after_p_red_assembly");
 
@@ -3134,22 +3358,40 @@ pub fn solve_fair_coupon_e11_const(
     contract: &AutocallParams,
 ) -> Result<AutocallPriceResult, AutocallV2Error> {
     let (p_red_v, p_red_u) = assemble_e11_reduced_operators_const(factors, nig, grid_info)?;
-    let e_v0 = solve_fair_coupon_deim_leg_const(
+    let mut redemption_profile_q20 = [SCALE_Q20; generated::N_STATES];
+    for (j, redemption) in redemption_profile_q20
+        .iter_mut()
+        .enumerate()
+        .take(grid_info.n_states)
+    {
+        let rep = grid_info.reps[j];
+        *redemption = if rep < 0 {
+            scale6_to_q20_round(exp6(rep)?)
+        } else {
+            SCALE_Q20
+        };
+    }
+    let e_v0_q20 = solve_fair_coupon_deim_leg_const(
         grid_info,
         &deim_base.v_leg,
         &p_red_v,
+        &redemption_profile_q20,
         contract,
         0,
         0,
     )?;
-    let e_v1 = solve_fair_coupon_deim_leg_const(
+    let e_v1_q20 = solve_fair_coupon_deim_leg_const(
         grid_info,
         &deim_base.u_leg,
         &p_red_u,
+        &redemption_profile_q20,
         contract,
-        SCALE_6,
+        SCALE_Q20,
         1,
     )?;
+
+    let e_v0 = q20_to_scale6_round(e_v0_q20);
+    let e_v1 = q20_to_scale6_round(e_v1_q20);
 
     let e_coupon_count = e_v1 - e_v0;
     let shortfall = if SCALE_6 > e_v0 { SCALE_6 - e_v0 } else { 0 };

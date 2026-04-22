@@ -96,11 +96,12 @@ pub async fn run(ctx: &CliContext) -> Result<()> {
 
     println!("status: slot={slot}");
     println!(
-        "protocol: admin={} issuance_paused={} settlement_paused={} utilization_cap_bps={}",
+        "protocol: admin={} issuance_paused={} settlement_paused={} utilization_cap_bps={} sigma_floor_annualised_s6={}",
         protocol_config.admin,
         protocol_config.issuance_paused_global,
         protocol_config.settlement_paused_global,
-        protocol_config.utilization_cap_bps
+        protocol_config.utilization_cap_bps,
+        protocol_config.sigma_floor_annualised_s6
     );
     println!(
         "vault: total_senior={} total_junior={} total_reserved_liability={} lifetime_premium_received={}",

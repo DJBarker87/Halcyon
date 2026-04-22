@@ -11,6 +11,10 @@ use crate::client::CliContext;
 
 #[derive(Debug, Default, ClapArgs)]
 pub struct Args {
+    /// Set `ProtocolConfig.sigma_floor_annualised_s6`.
+    #[arg(long)]
+    pub sigma_floor_annualised_s6: Option<i64>,
+
     /// Set `ProtocolConfig.pod_deim_table_sha256` from a 64-char hex string.
     #[arg(long)]
     pub pod_deim_table_sha256: Option<String>,
@@ -60,7 +64,7 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
         (false, Some(value)) => Some(parse_sha256_hex(&value)?),
         (false, None) => None,
     };
-    if pod_hash.is_none() {
+    if pod_hash.is_none() && args.sigma_floor_annualised_s6.is_none() {
         bail!("no protocol-config fields specified");
     }
 
@@ -76,7 +80,7 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
             quote_ttl_secs: None,
             ewma_rate_limit_secs: None,
             senior_cooldown_secs: None,
-            sigma_floor_annualised_s6: None,
+            sigma_floor_annualised_s6: args.sigma_floor_annualised_s6,
             k12_correction_sha256: None,
             daily_ki_correction_sha256: None,
             pod_deim_table_sha256: pod_hash,
@@ -88,10 +92,19 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
         },
     );
     let sig = tx::send_instructions(ctx.rpc.as_ref(), admin, vec![ix]).await?;
-    let pod_hash = pod_hash.expect("checked above");
-    println!(
-        "set-protocol-config: sig={sig} pod_deim_table_sha256={}",
-        format_sha256_hex(&pod_hash)
-    );
+    match (args.sigma_floor_annualised_s6, pod_hash) {
+        (Some(sigma_floor), Some(pod_hash)) => println!(
+            "set-protocol-config: sig={sig} sigma_floor_annualised_s6={sigma_floor} pod_deim_table_sha256={}",
+            format_sha256_hex(&pod_hash)
+        ),
+        (Some(sigma_floor), None) => {
+            println!("set-protocol-config: sig={sig} sigma_floor_annualised_s6={sigma_floor}")
+        }
+        (None, Some(pod_hash)) => println!(
+            "set-protocol-config: sig={sig} pod_deim_table_sha256={}",
+            format_sha256_hex(&pod_hash)
+        ),
+        (None, None) => unreachable!("checked above"),
+    }
     Ok(())
 }

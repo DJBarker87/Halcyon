@@ -16,6 +16,7 @@ pyth-pull = ["halcyon_kernel/pyth-pull", "halcyon_oracles/pyth-pull"]
 mock-pyth = ["halcyon_kernel/mock-pyth", "halcyon_oracles/mock-pyth"]
 # Integration harness: deterministic mock oracles plus shortened schedules.
 integration-test = ["mock-pyth"]
+cu_diagnostics = ["halcyon_sol_autocall_quote/cu_diagnostics"]
 cpi = ["no-entrypoint"]
 no-entrypoint = []
 no-idl = []

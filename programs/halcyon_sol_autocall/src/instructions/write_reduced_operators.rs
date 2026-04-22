@@ -4,6 +4,7 @@
 use anchor_lang::prelude::*;
 use halcyon_common::{seeds, HalcyonError};
 use halcyon_kernel::state::{KeeperRegistry, ProtocolConfig, RegimeSignal, VaultSigma};
+use halcyon_sol_autocall_quote::autocall_v2::MAX_ABS_KEEPER_P_RED_ENTRY_Q20;
 use halcyon_sol_autocall_quote::generated::pod_deim_table::POD_DEIM_TABLE_SHA256;
 
 use crate::{
@@ -117,6 +118,17 @@ pub fn handler(ctx: Context<WriteReducedOperators>, args: WriteReducedOperatorsA
         end <= REDUCED_OPERATOR_LEN,
         SolAutocallError::ReducedOperatorsShapeInvalid
     );
+    // Shipping choice: validate the keeper upload once, then keep the runtime
+    // matvec branch free of per-quote range checks. A preview-time load check
+    // would also be viable, but it would spend compute on every quote instead
+    // of every upload.
+    for value in &values {
+        let abs = value.checked_abs().ok_or(HalcyonError::Overflow)?;
+        require!(
+            abs <= MAX_ABS_KEEPER_P_RED_ENTRY_Q20,
+            SolAutocallError::ReducedOperatorsRangeInvalid
+        );
+    }
 
     let reduced = &mut ctx.accounts.reduced_operators;
     if begin_upload {

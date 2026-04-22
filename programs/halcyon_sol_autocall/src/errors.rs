@@ -34,6 +34,8 @@ pub enum SolAutocallError {
     ReducedOperatorsStale,
     #[msg("keeper-fed reduced operator payload has the wrong shape")]
     ReducedOperatorsShapeInvalid,
+    #[msg("keeper-fed reduced operator payload exceeds the proven safe bound")]
+    ReducedOperatorsRangeInvalid,
     #[msg("keeper-fed reduced operator chunk start does not match the current upload offset")]
     ReducedOperatorsOffsetInvalid,
     #[msg("keeper-fed reduced operator upload state does not match the current sigma or source slots")]

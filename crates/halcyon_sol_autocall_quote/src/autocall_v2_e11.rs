@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use nalgebra::{DMatrix, DVector, SVD};
 #[cfg(not(target_os = "solana"))]
 use solmath_core::SCALE_6;
+#[cfg(not(target_os = "solana"))]
+const SCALE_Q20_F64: f64 = (1u64 << 20) as f64;
 
 use crate::autocall_v2::{
     cu_trace, solve_fair_coupon_deim_const, AutocallParams, AutocallPriceResult,
@@ -131,15 +133,15 @@ pub struct GeneratedDeimLeg {
 impl GeneratedDeimLeg {
     fn from_leg(leg: &DeimLegData) -> Self {
         Self {
-            phi_at_idx: leg.phi_at_idx.clone(),
-            pt_inv: leg.pt_inv.clone(),
-            phi_atm: leg.phi_atm.clone(),
-            m_ki_red: leg.m_ki_red.clone(),
-            m_nki_red: leg.m_nki_red.clone(),
+            phi_at_idx: scale6_vec_to_q20(&leg.phi_at_idx),
+            pt_inv: scale6_vec_to_q20(&leg.pt_inv),
+            phi_atm: scale6_vec_to_q20(&leg.phi_atm),
+            m_ki_red: scale6_vec_to_q20(&leg.m_ki_red),
+            m_nki_red: scale6_vec_to_q20(&leg.m_nki_red),
             ki_at_idx: leg.ki_at_idx.clone(),
             cpn_at_idx: leg.cpn_at_idx.clone(),
             ac_at_idx: leg.ac_at_idx.clone(),
-            phi: leg.phi.clone(),
+            phi: scale6_vec_to_q20(&leg.phi),
             d: leg.d,
         }
     }
@@ -192,14 +194,14 @@ impl GeneratedPodDeimTables {
             atm_state: context.grid_info.atm_state,
             ki_state_max: context.grid_info.ki_state_max,
             ki_boundary_idx: context.grid_info.ki_boundary_idx,
-            p_ref_at_eim: context.factors.p_ref_at_eim.clone(),
-            b_inv: context.factors.b_inv.clone(),
+            p_ref_at_eim: scale6_vec_to_q20(&context.factors.p_ref_at_eim),
+            b_inv: scale6_vec_to_q20(&context.factors.b_inv),
             eim_rows,
             eim_cols,
-            atoms_v: context.factors.atoms_v.clone(),
-            atoms_u: context.factors.atoms_u.clone(),
-            p_ref_red_v: context.factors.p_ref_red_v.clone(),
-            p_ref_red_u: context.factors.p_ref_red_u.clone(),
+            atoms_v: scale6_vec_to_q20(&context.factors.atoms_v),
+            atoms_u: scale6_vec_to_q20(&context.factors.atoms_u),
+            p_ref_red_v: scale6_vec_to_q20(&context.factors.p_ref_red_v),
+            p_ref_red_u: scale6_vec_to_q20(&context.factors.p_ref_red_u),
             v_leg: GeneratedDeimLeg::from_leg(&context.deim_base.v_leg),
             u_leg: GeneratedDeimLeg::from_leg(&context.deim_base.u_leg),
         })
@@ -920,4 +922,28 @@ fn sigma_training_grid() -> Vec<f64> {
 #[cfg(not(target_os = "solana"))]
 fn to_scale6_round(value: f64) -> i64 {
     (value * SCALE_6 as f64).round() as i64
+}
+
+#[cfg(not(target_os = "solana"))]
+fn to_q20_round(value: f64) -> i64 {
+    (value * SCALE_Q20_F64).round() as i64
+}
+
+#[cfg(not(target_os = "solana"))]
+fn scale6_i64_to_q20_round(value_6: i64) -> i64 {
+    let scaled = value_6 as i128 * (1i128 << 20);
+    let denom = SCALE_6 as i128;
+    if scaled >= 0 {
+        ((scaled + denom / 2) / denom) as i64
+    } else {
+        -(((-scaled) + denom / 2) / denom) as i64
+    }
+}
+
+#[cfg(not(target_os = "solana"))]
+fn scale6_vec_to_q20(values: &[i64]) -> Vec<i64> {
+    values
+        .iter()
+        .map(|&value| scale6_i64_to_q20_round(value))
+        .collect()
 }

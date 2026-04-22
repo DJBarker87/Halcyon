@@ -7,6 +7,7 @@ HALCYON_DIR="/opt/halcyon"
 BIN_DIR="${HALCYON_DIR}/bin"
 CONFIG_DIR="/etc/halcyon/config"
 CALIBRATION_DIR="/etc/halcyon/calibration"
+PYTHON_VENV_DIR="${HALCYON_DIR}/.venv"
 
 require_root() {
   if [[ "$(id -u)" -ne 0 ]]; then
@@ -149,7 +150,12 @@ build_binaries() {
   npm ci --no-audit --no-fund
 
   cd "${HALCYON_DIR}"
-  python3 -m pip install -r keepers/flagship_sigma_keeper/requirements.txt
+  local sigma_requirements="${HALCYON_DIR}/keepers/flagship_sigma_keeper/requirements.txt"
+  if grep -Eq '^[[:space:]]*[^#[:space:]]' "${sigma_requirements}"; then
+    python3 -m venv "${PYTHON_VENV_DIR}"
+    "${PYTHON_VENV_DIR}/bin/python" -m pip install --upgrade pip
+    "${PYTHON_VENV_DIR}/bin/python" -m pip install -r "${sigma_requirements}"
+  fi
 }
 
 render_configs() {

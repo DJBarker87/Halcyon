@@ -8,7 +8,7 @@ Type=oneshot
 User=root
 WorkingDirectory=/opt/halcyon
 EnvironmentFile=/etc/halcyon/env
-ExecStart=/usr/bin/env bash -lc 'exec python3 /opt/halcyon/keepers/flagship_sigma_keeper/flagship_sigma_keeper.py --submit --spy-history-source "$FLAGSHIP_SIGMA_SPY_HISTORY_SOURCE" --crosscheck-history-source "$FLAGSHIP_SIGMA_CROSSCHECK_SOURCE" --cache-path "$FLAGSHIP_SIGMA_CACHE_PATH" --rpc "$HELIUS_DEVNET_RPC" --halcyon-bin /opt/halcyon/bin/halcyon --keypair "$FLAGSHIP_SIGMA_KEYPAIR"'
+ExecStart=/usr/bin/env bash -lc 'PYTHON_BIN=/opt/halcyon/.venv/bin/python; if [[ ! -x "$PYTHON_BIN" ]]; then PYTHON_BIN=python3; fi; exec "$PYTHON_BIN" /opt/halcyon/keepers/flagship_sigma_keeper/flagship_sigma_keeper.py --submit --spy-history-source "$FLAGSHIP_SIGMA_SPY_HISTORY_SOURCE" --crosscheck-history-source "$FLAGSHIP_SIGMA_CROSSCHECK_SOURCE" --cache-path "$FLAGSHIP_SIGMA_CACHE_PATH" --rpc "$HELIUS_DEVNET_RPC" --halcyon-bin /opt/halcyon/bin/halcyon --keypair "$FLAGSHIP_SIGMA_KEYPAIR"'
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=halcyon-flagship-sigma-keeper

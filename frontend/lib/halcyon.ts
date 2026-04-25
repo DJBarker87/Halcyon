@@ -86,6 +86,7 @@ const SEEDS = {
   regimeSignal: Buffer.from("regime_signal"),
   regression: Buffer.from("regression"),
   autocallSchedule: Buffer.from("autocall_schedule"),
+  couponSchedule: Buffer.from("coupon_schedule"),
   reducedOperators: Buffer.from("reduced_operators"),
   altRegistry: Buffer.from("alt_registry"),
   couponVault: Buffer.from("coupon_vault"),
@@ -286,6 +287,13 @@ function regressionAddress(kernelProgramId: PublicKey) {
 function autocallScheduleAddress(kernelProgramId: PublicKey, productProgramId: PublicKey) {
   return PublicKey.findProgramAddressSync(
     [SEEDS.autocallSchedule, productProgramId.toBuffer()],
+    kernelProgramId,
+  )[0];
+}
+
+function couponScheduleAddress(kernelProgramId: PublicKey, productProgramId: PublicKey) {
+  return PublicKey.findProgramAddressSync(
+    [SEEDS.couponSchedule, productProgramId.toBuffer()],
     kernelProgramId,
   )[0];
 }
@@ -1296,6 +1304,7 @@ export async function buildBuyTransaction(
       accountMeta(vaultSigma),
       accountMeta(regressionAddress(kernelId)),
       accountMeta(autocallScheduleAddress(kernelId, productId)),
+      accountMeta(couponScheduleAddress(kernelId, productId)),
       accountMeta(feeds.pythSpy),
       accountMeta(feeds.pythQqq),
       accountMeta(feeds.pythIwm),

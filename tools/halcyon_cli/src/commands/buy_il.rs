@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use solana_sdk::{pubkey::Pubkey, signer::Signer};
+use solana_sdk::{signature::Keypair, signer::Signer};
 
 use halcyon_client_sdk::{il_protection, pda, tx};
 
@@ -46,7 +46,7 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
 
     let policy_id = match args.policy_id.as_deref() {
         Some(policy_id) => CliContext::parse_pubkey("policy_id", policy_id)?,
-        None => Pubkey::new_unique(),
+        None => Keypair::new().pubkey(),
     };
     let max_premium = apply_bps_ceil(preview.premium, args.premium_slippage_bps)?;
     let min_max_liability = apply_bps_floor(
@@ -72,7 +72,9 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
             max_expiry_delta_secs: args.max_expiry_delta_secs,
         },
     );
-    let signature = tx::send_instructions(ctx.rpc.as_ref(), buyer, vec![ix]).await?;
+    let signature =
+        tx::send_compute_instructions_with_extra_signers(ctx.rpc.as_ref(), buyer, vec![ix], &[])
+            .await?;
     let (policy, _) = pda::policy(&policy_id);
     let (terms, _) = pda::terms_for(&halcyon_il_protection::ID, &policy_id);
     println!("buy-il: signature={signature}");

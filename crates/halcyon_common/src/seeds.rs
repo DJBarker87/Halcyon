@@ -20,6 +20,7 @@ pub const PENDING_HEDGE_SWAP: &[u8] = b"pending_hedge_swap";
 pub const AGGREGATE_DELTA: &[u8] = b"aggregate_delta";
 pub const REGRESSION: &[u8] = b"regression";
 pub const AUTOCALL_SCHEDULE: &[u8] = b"autocall_schedule";
+pub const COUPON_SCHEDULE: &[u8] = b"coupon_schedule";
 pub const VAULT_SIGMA: &[u8] = b"vault_sigma";
 pub const REGIME_SIGNAL: &[u8] = b"regime_signal";
 pub const REDUCED_OPERATORS: &[u8] = b"reduced_operators";

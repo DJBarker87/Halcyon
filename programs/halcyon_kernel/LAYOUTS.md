@@ -289,6 +289,18 @@ per-note artifact whose Merkle root matches `merkle_root`).
 | last_publish_slot      | u64      | 8     | 97     |
 | **TOTAL**              |          | **105** |      |
 
+## CouponSchedule — flagship monthly schedule at v1
+
+| Field                  | Type      | Bytes | Offset |
+|------------------------|-----------|-------|--------|
+| version                | u8        | 1     | 0      |
+| product_program_id     | Pubkey    | 32    | 1      |
+| issue_date_ts          | i64       | 8     | 33     |
+| observation_timestamps | [i64; 18] | 144   | 41     |
+| last_publish_ts        | i64       | 8     | 185    |
+| last_publish_slot      | u64       | 8     | 193    |
+| **TOTAL**              |           | **201** |      |
+
 ## VaultSigma — one per product
 
 | Field                        | Type   | Bytes | Offset |

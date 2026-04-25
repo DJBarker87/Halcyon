@@ -6,44 +6,43 @@ use anchor_spl::{
 use halcyon_common::{seeds, HalcyonError};
 use halcyon_kernel::{
     cpi::accounts::{FinalizePolicy, ReserveAndIssue},
-    state::{AutocallSchedule, CouponSchedule, ProtocolConfig, Regression, VaultSigma},
+    state::{AutocallSchedule, CouponSchedule, ProtocolConfig},
     ReserveAndIssueArgs,
 };
 
 use crate::pricing::{
-    compose_pricing_sigma, hash_product_terms, monthly_coupon_schedule_from_account,
+    hash_product_terms, monthly_coupon_schedule_from_account,
     quarterly_autocall_schedule_from_account, require_autocall_schedule_fresh,
-    require_correction_tables_match, require_coupon_schedule_fresh,
-    require_coupon_schedule_matches_autocall, require_protocol_unpaused,
-    require_quote_acceptance_bounds, require_regression_fresh, require_sigma_fresh, solve_quote,
+    require_coupon_schedule_fresh, require_coupon_schedule_matches_autocall,
+    require_protocol_unpaused, require_quote_acceptance_bounds, require_sigma_fresh, QuoteOutputs,
 };
 use crate::state::{
-    FlagshipAutocallTerms, ProductStatus, AUTOCALL_BARRIER_BPS, COUPON_BARRIER_BPS,
-    CURRENT_ENGINE_VERSION, KI_BARRIER_BPS,
+    FlagshipAutocallTerms, FlagshipQuoteReceipt, ProductStatus, AUTOCALL_BARRIER_BPS,
+    COUPON_BARRIER_BPS, CURRENT_ENGINE_VERSION, KI_BARRIER_BPS,
 };
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
-pub struct AcceptQuoteArgs {
-    pub policy_id: Pubkey,
-    pub notional_usdc: u64,
+pub struct AcceptPreparedQuoteArgs {
     pub max_premium: u64,
     pub min_max_liability: u64,
     pub min_offered_coupon_bps_s6: i64,
-    pub preview_quote_slot: u64,
     pub max_quote_slot_delta: u64,
-    pub preview_entry_spy_price_s6: i64,
-    pub preview_entry_qqq_price_s6: i64,
-    pub preview_entry_iwm_price_s6: i64,
     pub max_entry_price_deviation_bps: u16,
-    pub preview_expiry_ts: i64,
     pub max_expiry_delta_secs: i64,
 }
 
 #[derive(Accounts)]
-#[instruction(args: AcceptQuoteArgs)]
-pub struct AcceptQuote<'info> {
+pub struct AcceptPreparedQuote<'info> {
     #[account(mut)]
     pub buyer: Signer<'info>,
+
+    #[account(
+        mut,
+        close = buyer,
+        constraint = quote_receipt.version == FlagshipQuoteReceipt::CURRENT_VERSION,
+        constraint = quote_receipt.buyer == buyer.key(),
+    )]
+    pub quote_receipt: Box<Account<'info, FlagshipQuoteReceipt>>,
 
     /// CHECK: kernel-owned `PolicyHeader`, created by `reserve_and_issue`.
     #[account(mut)]
@@ -53,7 +52,7 @@ pub struct AcceptQuote<'info> {
         init,
         payer = buyer,
         space = 8 + FlagshipAutocallTerms::INIT_SPACE,
-        seeds = [seeds::TERMS, args.policy_id.as_ref()],
+        seeds = [seeds::TERMS, quote_receipt.policy_id.as_ref()],
         bump,
     )]
     pub product_terms: Box<Account<'info, FlagshipAutocallTerms>>,
@@ -105,10 +104,7 @@ pub struct AcceptQuote<'info> {
         bump,
         constraint = vault_sigma.product_program_id == crate::ID,
     )]
-    pub vault_sigma: Box<Account<'info, VaultSigma>>,
-
-    #[account(seeds = [seeds::REGRESSION], seeds::program = halcyon_kernel::ID, bump)]
-    pub regression: Box<Account<'info, Regression>>,
+    pub vault_sigma: Box<Account<'info, halcyon_kernel::state::VaultSigma>>,
 
     #[account(
         seeds = [seeds::AUTOCALL_SCHEDULE, crate::ID.as_ref()],
@@ -159,8 +155,9 @@ pub struct AcceptQuote<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
+pub fn handler(ctx: Context<AcceptPreparedQuote>, args: AcceptPreparedQuoteArgs) -> Result<()> {
     let now = ctx.accounts.clock.unix_timestamp;
+    let quote_receipt = &ctx.accounts.quote_receipt;
 
     require_protocol_unpaused(&ctx.accounts.protocol_config)?;
     require_sigma_fresh(
@@ -168,18 +165,12 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         now,
         ctx.accounts.protocol_config.sigma_staleness_cap_secs,
     )?;
-    require_regression_fresh(
-        &ctx.accounts.regression,
-        now,
-        ctx.accounts.protocol_config.regression_staleness_cap_secs,
-    )?;
     require_autocall_schedule_fresh(&ctx.accounts.autocall_schedule, now)?;
     require_coupon_schedule_fresh(&ctx.accounts.coupon_schedule, now)?;
     require_coupon_schedule_matches_autocall(
         &ctx.accounts.coupon_schedule,
         &ctx.accounts.autocall_schedule,
     )?;
-    require_correction_tables_match(&ctx.accounts.protocol_config)?;
 
     let pyth_spy = halcyon_oracles::read_pyth_price(
         &ctx.accounts.pyth_spy.to_account_info(),
@@ -203,16 +194,16 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         ctx.accounts.protocol_config.pyth_quote_staleness_cap_secs,
     )?;
 
-    let sigma_pricing_s6 = compose_pricing_sigma(
-        &ctx.accounts.vault_sigma,
-        crate::pricing::protocol_sigma_floor_annualised_s6(&ctx.accounts.protocol_config),
-        ctx.accounts.protocol_config.sigma_ceiling_annualised_s6,
-    )?;
-    let quote = solve_quote(
-        sigma_pricing_s6,
-        args.notional_usdc,
-        &ctx.accounts.autocall_schedule,
-    )?;
+    let quote = QuoteOutputs {
+        premium: quote_receipt.premium,
+        max_liability: quote_receipt.max_liability,
+        fair_coupon_bps_s6: quote_receipt.fair_coupon_bps_s6,
+        offered_coupon_bps_s6: quote_receipt.offered_coupon_bps_s6,
+        sigma_pricing_s6: quote_receipt.sigma_pricing_s6,
+        quote_slot: quote_receipt.quote_slot,
+        expiry_ts: quote_receipt.expiry_ts,
+        engine_version: CURRENT_ENGINE_VERSION,
+    };
 
     require!(
         quote.premium <= args.max_premium,
@@ -225,25 +216,25 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
     require_quote_acceptance_bounds(
         &quote,
         args.min_offered_coupon_bps_s6,
-        args.preview_quote_slot,
+        quote_receipt.quote_slot,
         args.max_quote_slot_delta,
         pyth_spy.price_s6,
-        args.preview_entry_spy_price_s6,
+        quote_receipt.entry_spy_price_s6,
         pyth_qqq.price_s6,
-        args.preview_entry_qqq_price_s6,
+        quote_receipt.entry_qqq_price_s6,
         pyth_iwm.price_s6,
-        args.preview_entry_iwm_price_s6,
+        quote_receipt.entry_iwm_price_s6,
         args.max_entry_price_deviation_bps,
-        args.preview_expiry_ts,
+        quote_receipt.expiry_ts,
         args.max_expiry_delta_secs,
     )?;
 
     let terms = FlagshipAutocallTerms {
         version: FlagshipAutocallTerms::CURRENT_VERSION,
         policy_header: ctx.accounts.policy_header.key(),
-        entry_spy_price_s6: pyth_spy.price_s6,
-        entry_qqq_price_s6: pyth_qqq.price_s6,
-        entry_iwm_price_s6: pyth_iwm.price_s6,
+        entry_spy_price_s6: quote_receipt.entry_spy_price_s6,
+        entry_qqq_price_s6: quote_receipt.entry_qqq_price_s6,
+        entry_iwm_price_s6: quote_receipt.entry_iwm_price_s6,
         monthly_coupon_schedule: monthly_coupon_schedule_from_account(
             &ctx.accounts.coupon_schedule,
         )?,
@@ -259,11 +250,11 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         missed_coupon_observations: 0,
         ki_latched: false,
         coupons_paid_usdc: 0,
-        beta_spy_s12: ctx.accounts.regression.beta_spy_s12,
-        beta_qqq_s12: ctx.accounts.regression.beta_qqq_s12,
-        alpha_s12: ctx.accounts.regression.alpha_s12,
-        regression_r_squared_s6: ctx.accounts.regression.r_squared_s6,
-        regression_residual_vol_s6: ctx.accounts.regression.residual_vol_s6,
+        beta_spy_s12: quote_receipt.beta_spy_s12,
+        beta_qqq_s12: quote_receipt.beta_qqq_s12,
+        alpha_s12: quote_receipt.alpha_s12,
+        regression_r_squared_s6: quote_receipt.regression_r_squared_s6,
+        regression_residual_vol_s6: quote_receipt.regression_residual_vol_s6,
         k12_correction_sha256: crate::pricing::K12_CORRECTION_SHA256,
         daily_ki_correction_sha256: crate::pricing::DAILY_KI_CORRECTION_SHA256,
         settled_payout_usdc: 0,
@@ -271,7 +262,6 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         status: ProductStatus::Active,
     };
     let terms_hash = hash_product_terms(&terms)?;
-    let vault_deposit_amount = args.notional_usdc;
 
     let bump = ctx.bumps.product_authority;
     let signer_seeds: &[&[&[u8]]] = &[&[seeds::PRODUCT_AUTHORITY, &[bump]]];
@@ -298,13 +288,13 @@ pub fn handler(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
             signer_seeds,
         ),
         ReserveAndIssueArgs {
-            policy_id: args.policy_id,
-            notional: args.notional_usdc,
+            policy_id: quote_receipt.policy_id,
+            notional: quote_receipt.notional_usdc,
             premium: quote.premium,
-            vault_deposit_amount,
+            vault_deposit_amount: quote_receipt.notional_usdc,
             max_liability: quote.max_liability,
             terms_hash,
-            engine_version: CURRENT_ENGINE_VERSION,
+            engine_version: quote.engine_version,
             expiry_ts: quote.expiry_ts,
             shard_id: 0,
         },

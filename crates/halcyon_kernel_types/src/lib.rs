@@ -129,6 +129,17 @@ pub struct AutocallSchedule {
     pub last_publish_slot: u64,
 }
 
+/// Mirror of `CouponSchedule` — keeper-posted monthly coupon observation schedule.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
+pub struct CouponSchedule {
+    pub version: u8,
+    pub product_program_id: Pubkey,
+    pub issue_date_ts: i64,
+    pub observation_timestamps: [i64; 18],
+    pub last_publish_ts: i64,
+    pub last_publish_slot: u64,
+}
+
 /// Mirror of `PolicyHeader` — one per live policy across every product.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct PolicyHeader {

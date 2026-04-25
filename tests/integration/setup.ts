@@ -47,6 +47,7 @@ const SEEDS = {
   regression: Buffer.from("regression"),
   aggregateDelta: Buffer.from("aggregate_delta"),
   autocallSchedule: Buffer.from("autocall_schedule"),
+  couponSchedule: Buffer.from("coupon_schedule"),
   couponVault: Buffer.from("coupon_vault"),
   hedgeSleeve: Buffer.from("hedge_sleeve"),
   hedgeBook: Buffer.from("hedge_book"),
@@ -910,6 +911,10 @@ async function initializeFullProtocol(): Promise<TestContext> {
     .writeAutocallSchedule({
       productProgramId: programs.flagshipAutocall.programId,
       issueDateTs: new BN(manifest.baseTimestamp),
+      couponTimestamps: Array.from(
+        { length: 18 },
+        (_, index) => new BN(manifest.baseTimestamp + (index + 1) * 100)
+      ),
       observationTimestamps: [
         new BN(manifest.baseTimestamp + 300),
         new BN(manifest.baseTimestamp + 600),
@@ -922,6 +927,10 @@ async function initializeFullProtocol(): Promise<TestContext> {
     .accounts({
       autocallSchedule: pda(
         [SEEDS.autocallSchedule, programs.flagshipAutocall.programId.toBuffer()],
+          programs.kernel.programId
+      ),
+      couponSchedule: pda(
+        [SEEDS.couponSchedule, programs.flagshipAutocall.programId.toBuffer()],
         programs.kernel.programId
       ),
       keeper: keepers.observation.publicKey,

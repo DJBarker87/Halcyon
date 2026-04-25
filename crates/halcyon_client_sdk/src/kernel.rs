@@ -385,6 +385,7 @@ pub fn write_autocall_schedule_ix(
     let (keeper_registry, _) = pda::keeper_registry();
     let (product_registry_entry, _) = pda::product_registry_entry(&args.product_program_id);
     let (autocall_schedule, _) = pda::autocall_schedule(&args.product_program_id);
+    let (coupon_schedule, _) = pda::coupon_schedule(&args.product_program_id);
     Instruction {
         program_id: halcyon_kernel::ID,
         accounts: halcyon_kernel::accounts::WriteAutocallSchedule {
@@ -392,6 +393,7 @@ pub fn write_autocall_schedule_ix(
             keeper_registry,
             product_registry_entry,
             autocall_schedule,
+            coupon_schedule,
             payer: *payer,
             system_program: system_program::ID,
         }

@@ -3,19 +3,22 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Droplets, Landmark, LineChart, Presentation, Settings2 } from "lucide-react";
+import {
+  BadgeDollarSign,
+  Droplets,
+  Landmark,
+  LineChart,
+  Presentation,
+  Settings2,
+  Shield,
+  Vault,
+  WalletCards,
+} from "lucide-react";
 
 import { Kingfisher } from "@/components/kingfisher";
-import {
-  EquityIcon,
-  ILIcon,
-  PortfolioIcon,
-  SolIcon,
-  VaultIcon,
-} from "@/components/nav-icons";
 
 import { useRuntimeConfig } from "@/lib/runtime-config";
-import { cn, shortAddress } from "@/lib/format";
+import { cn } from "@/lib/format";
 import { HALCYON_OPEN_RUNTIME_PANEL } from "@/lib/runtime-panel";
 import { ClusterSwitchModal } from "@/components/cluster-switch-modal";
 import { SettingsPanel } from "@/components/settings-panel";
@@ -23,58 +26,54 @@ import { WalletControl } from "@/components/wallet-control";
 
 const NAV_ITEMS = [
   {
-    href: "/demo",
-    label: "Demo",
-    description: "Receipt to collateral",
-    icon: Presentation,
-  },
-  {
     href: "/flagship",
-    label: "Equity Autocall",
-    description: "SPY · QQQ · IWM coupon",
-    icon: EquityIcon,
-  },
-  {
-    href: "/il-protection",
-    label: "IL Protection",
-    description: "SOL/USDC LP cover",
-    icon: ILIcon,
-  },
-  {
-    href: "/sol-autocall",
-    label: "SOL Autocall",
-    description: "Principal-backed SOL note",
-    icon: SolIcon,
+    label: "Buy note",
+    description: "Live coupon terms",
+    icon: BadgeDollarSign,
   },
   {
     href: "/portfolio",
-    label: "Portfolio",
-    description: "Your open positions",
-    icon: PortfolioIcon,
+    label: "My notes",
+    description: "Value and status",
+    icon: WalletCards,
   },
+] as const;
+
+const SECONDARY_ITEMS = [
   {
     href: "/lending-demo",
-    label: "Lending Demo",
-    description: "Receipt collateral desk",
+    label: "Lending demo",
     icon: Landmark,
   },
   {
+    href: "/demo",
+    label: "Receipt demo",
+    icon: Presentation,
+  },
+  {
+    href: "/sol-autocall",
+    label: "SOL note",
+    icon: BadgeDollarSign,
+  },
+  {
+    href: "/il-protection",
+    label: "IL cover",
+    icon: Shield,
+  },
+  {
     href: "/stress-tests",
-    label: "Stress Tests",
-    description: "Backtest explorer",
+    label: "Stress tests",
     icon: LineChart,
   },
   {
     href: "/faucet",
     label: "Faucet",
-    description: "Devnet mockUSDC",
     icon: Droplets,
   },
   {
     href: "/vault",
     label: "Vault",
-    description: "Underwriting capital",
-    icon: VaultIcon,
+    icon: Vault,
   },
 ] as const;
 
@@ -86,12 +85,15 @@ function clusterTone(cluster: "localnet" | "devnet" | "mainnet") {
 
 function pageTitle(pathname: string) {
   const match = NAV_ITEMS.find((item) => pathname.startsWith(item.href));
-  return match?.label ?? "Halcyon";
+  const secondaryMatch = SECONDARY_ITEMS.find((item) => pathname.startsWith(item.href));
+  if (pathname.startsWith("/sol-autocall")) return "SOL note";
+  if (pathname.startsWith("/il-protection")) return "IL cover";
+  return match?.label ?? secondaryMatch?.label ?? "Buyer dashboard";
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { cluster, current } = useRuntimeConfig();
+  const { cluster } = useRuntimeConfig();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
@@ -142,6 +144,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             })}
           </div>
 
+          <details className="mt-3 hidden rounded-md border border-border bg-card lg:block">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center px-3 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground">
+              More tools
+            </summary>
+            <div className="grid gap-1 border-t border-border p-2">
+              {SECONDARY_ITEMS.map((item) => {
+                const Icon = item.icon;
+                const active = pathname.startsWith(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className={cn(
+                      "flex min-h-10 items-center gap-2 rounded-md px-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                      active ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                    )}
+                  >
+                    <Icon className="h-4 w-4" aria-hidden="true" />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          </details>
+
           <div className="mt-5 flex gap-2 overflow-x-auto pb-1 lg:hidden">
             {NAV_ITEMS.map((item) => {
               const active = pathname.startsWith(item.href);
@@ -162,32 +189,35 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             })}
           </div>
 
+          <details className="mt-3 rounded-md border border-border bg-card lg:hidden">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center px-3 text-sm font-medium text-muted-foreground">
+              More tools
+            </summary>
+            <div className="flex gap-2 overflow-x-auto border-t border-border p-2">
+              {SECONDARY_ITEMS.map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="flex min-h-10 shrink-0 items-center rounded-md border border-border bg-background px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                >
+                  {item.label}
+                </Link>
+              ))}
+            </div>
+          </details>
+
           <div className="mt-6 hidden rounded-md border border-border bg-card p-4 lg:block">
             <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-              Connected to
+              Buyer flow
             </div>
-            <div
-              className={cn(
-                "mt-3 inline-flex min-h-10 items-center rounded-md border px-3 text-sm font-medium capitalize",
-                clusterTone(cluster),
-              )}
-            >
-              {cluster === "mainnet" ? "Solana mainnet" : cluster === "devnet" ? "Solana devnet" : "Local validator"}
+            <ol className="mt-3 space-y-3 text-sm text-muted-foreground">
+              <li><span className="font-medium text-foreground">1.</span> Choose notional.</li>
+              <li><span className="font-medium text-foreground">2.</span> Preview live coupon.</li>
+              <li><span className="font-medium text-foreground">3.</span> Track or exit from My notes.</li>
+            </ol>
+            <div className={cn("mt-4 inline-flex min-h-10 items-center rounded-md border px-3 text-sm font-medium capitalize", clusterTone(cluster))}>
+              {cluster}
             </div>
-            <dl className="mt-4 space-y-3 text-sm">
-              <div>
-                <dt className="text-muted-foreground">RPC</dt>
-                <dd className="mt-1 break-all font-mono text-[12px] leading-5 text-foreground">
-                  {current.rpcUrl || "Not set"}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">Protocol</dt>
-                <dd className="mt-1 font-mono text-[12px] text-foreground">
-                  {current.kernelProgramId ? shortAddress(current.kernelProgramId, 6) : "Not set"}
-                </dd>
-              </div>
-            </dl>
           </div>
         </aside>
 

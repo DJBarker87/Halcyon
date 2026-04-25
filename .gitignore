@@ -23,6 +23,8 @@ frontend/.vercel/
 
 # Local tool state
 .claude/*.lock
+AGENTS.md
+CLAUDE.md
 
 # Logs & scratch JSON at repo root
 *.log

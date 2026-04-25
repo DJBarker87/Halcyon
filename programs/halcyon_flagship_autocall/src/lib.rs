@@ -13,6 +13,8 @@ pub mod state;
 
 pub use errors::FlagshipAutocallError;
 #[allow(ambiguous_glob_reexports)]
+pub use instructions::accept_prepared_quote::*;
+#[allow(ambiguous_glob_reexports)]
 pub use instructions::accept_quote::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::advance_midlife_nav::*;
@@ -32,6 +34,8 @@ pub use instructions::debug_midlife_nav::*;
 pub use instructions::execute_retail_redemption::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::prepare_midlife_nav::*;
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::prepare_quote::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::preview_lending_value::*;
 #[allow(ambiguous_glob_reexports)]
@@ -152,6 +156,20 @@ pub mod halcyon_flagship_autocall {
 
     pub fn accept_quote(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         instructions::accept_quote::handler(ctx, args)
+    }
+
+    pub fn prepare_quote(
+        ctx: Context<PrepareQuote>,
+        args: PrepareQuoteArgs,
+    ) -> Result<PreparedQuotePreview> {
+        instructions::prepare_quote::handler(ctx, args)
+    }
+
+    pub fn accept_prepared_quote(
+        ctx: Context<AcceptPreparedQuote>,
+        args: AcceptPreparedQuoteArgs,
+    ) -> Result<()> {
+        instructions::accept_prepared_quote::handler(ctx, args)
     }
 
     pub fn record_coupon_observation(

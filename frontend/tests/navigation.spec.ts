@@ -6,7 +6,8 @@ const ROUTES = [
   { path: "/sol-autocall", heading: "Principal-backed SOL note" },
   { path: "/il-protection", heading: "Two ways to cover impermanent loss on SOL/USDC." },
   { path: "/stress-tests", heading: "Backtest Explorer" },
-  { path: "/portfolio", heading: "Wallet policies across every product" },
+  { path: "/portfolio", heading: "Your notes" },
+  { path: "/lending-demo", heading: "Receipt-token collateral desk" },
   { path: "/faucet", heading: "mockUSDC for judge wallets" },
   { path: "/vault", heading: "Shared kernel capital state" },
 ];

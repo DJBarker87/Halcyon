@@ -7,12 +7,12 @@ use halcyon_flagship_quote::{
     worst_of_c1_filter::quote_c1_filter,
 };
 use halcyon_kernel::state::{
-    AutocallSchedule, PolicyHeader, ProtocolConfig, Regression, VaultSigma,
+    AutocallSchedule, CouponSchedule, PolicyHeader, ProtocolConfig, Regression, VaultSigma,
 };
 use solana_sha256_hasher::hash;
 use solmath_core::{fp_mul, fp_sqrt, SCALE};
 
-use crate::calendar::{issue_trade_date, nth_trading_day_after, trading_close_timestamp_utc};
+use crate::calendar::{issue_trade_date, trading_close_timestamp_utc};
 use crate::errors::FlagshipAutocallError;
 use crate::state::{
     FlagshipAutocallTerms, CURRENT_ENGINE_VERSION, MONTHLY_COUPON_COUNT,
@@ -279,6 +279,12 @@ pub fn quarterly_autocall_schedule_from_account(
     Ok(autocall_schedule.observation_timestamps)
 }
 
+pub fn monthly_coupon_schedule_from_account(
+    coupon_schedule: &CouponSchedule,
+) -> Result<[i64; MONTHLY_COUPON_COUNT]> {
+    Ok(coupon_schedule.observation_timestamps)
+}
+
 pub fn coupon_per_observation_usdc(notional_usdc: u64, offered_coupon_bps_s6: i64) -> Result<u64> {
     require!(
         offered_coupon_bps_s6 >= 0,
@@ -375,6 +381,42 @@ pub fn require_autocall_schedule_fresh(
         .ok_or(HalcyonError::Overflow)?;
     require!(
         age <= AUTOCALL_SCHEDULE_MAX_AGE_SECS,
+        HalcyonError::AutocallScheduleStale
+    );
+    Ok(())
+}
+
+pub fn require_coupon_schedule_fresh(coupon_schedule: &CouponSchedule, now: i64) -> Result<()> {
+    let age = now
+        .checked_sub(coupon_schedule.issue_date_ts)
+        .ok_or(HalcyonError::Overflow)?;
+    require!(
+        age >= 0 && age <= AUTOCALL_SCHEDULE_MAX_AGE_SECS,
+        HalcyonError::AutocallScheduleStale
+    );
+    Ok(())
+}
+
+pub fn require_coupon_schedule_matches_autocall(
+    coupon_schedule: &CouponSchedule,
+    autocall_schedule: &AutocallSchedule,
+) -> Result<()> {
+    require!(
+        coupon_schedule.issue_date_ts == autocall_schedule.issue_date_ts,
+        HalcyonError::AutocallScheduleStale
+    );
+    require!(
+        coupon_schedule.observation_timestamps[2] == autocall_schedule.observation_timestamps[0]
+            && coupon_schedule.observation_timestamps[5]
+                == autocall_schedule.observation_timestamps[1]
+            && coupon_schedule.observation_timestamps[8]
+                == autocall_schedule.observation_timestamps[2]
+            && coupon_schedule.observation_timestamps[11]
+                == autocall_schedule.observation_timestamps[3]
+            && coupon_schedule.observation_timestamps[14]
+                == autocall_schedule.observation_timestamps[4]
+            && coupon_schedule.observation_timestamps[17]
+                == autocall_schedule.observation_timestamps[5],
         HalcyonError::AutocallScheduleStale
     );
     Ok(())
@@ -550,17 +592,26 @@ fn build_schedule_from_boundaries<const N: usize>(
     };
 
     let mut schedule = [0i64; N];
-    for (idx, trading_day_boundary) in boundaries.iter().copied().enumerate() {
-        #[cfg(not(feature = "integration-test"))]
-        schedule_trace_before_nth(idx);
-        #[cfg(not(feature = "integration-test"))]
-        let trading_day = nth_trading_day_after(issue_date, trading_day_boundary)?;
-        #[cfg(not(feature = "integration-test"))]
-        schedule_trace_after_nth(idx);
-        #[cfg(not(feature = "integration-test"))]
-        {
-            schedule[idx] = trading_close_timestamp_utc(trading_day);
-            schedule_trace_after_close(idx);
+    #[cfg(not(feature = "integration-test"))]
+    {
+        let mut boundary_idx = 0usize;
+        let mut trading_day_count = 0u16;
+        let mut cursor = issue_date;
+        while boundary_idx < N {
+            cursor = cursor.add_days(1);
+            if !crate::calendar::is_us_equity_trading_day(cursor) {
+                continue;
+            }
+            trading_day_count = trading_day_count
+                .checked_add(1)
+                .ok_or(HalcyonError::Overflow)?;
+            while boundary_idx < N && trading_day_count == boundaries[boundary_idx] {
+                schedule_trace_before_nth(boundary_idx);
+                schedule_trace_after_nth(boundary_idx);
+                schedule[boundary_idx] = trading_close_timestamp_utc(cursor);
+                schedule_trace_after_close(boundary_idx);
+                boundary_idx += 1;
+            }
         }
     }
     Ok(schedule)

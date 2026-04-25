@@ -226,6 +226,35 @@ impl FlagshipAutocallTerms {
 
 #[account]
 #[derive(InitSpace)]
+pub struct FlagshipQuoteReceipt {
+    pub version: u8,
+    pub buyer: Pubkey,
+    pub policy_id: Pubkey,
+    pub notional_usdc: u64,
+    pub premium: u64,
+    pub max_liability: u64,
+    pub fair_coupon_bps_s6: i64,
+    pub offered_coupon_bps_s6: i64,
+    pub sigma_pricing_s6: i64,
+    pub quote_slot: u64,
+    pub entry_spy_price_s6: i64,
+    pub entry_qqq_price_s6: i64,
+    pub entry_iwm_price_s6: i64,
+    pub expiry_ts: i64,
+    pub created_at: i64,
+    pub beta_spy_s12: i128,
+    pub beta_qqq_s12: i128,
+    pub alpha_s12: i128,
+    pub regression_r_squared_s6: i64,
+    pub regression_residual_vol_s6: i64,
+}
+
+impl FlagshipQuoteReceipt {
+    pub const CURRENT_VERSION: u8 = 1;
+}
+
+#[account]
+#[derive(InitSpace)]
 pub struct RetailRedemptionRequest {
     pub version: u8,
     pub policy_header: Pubkey,

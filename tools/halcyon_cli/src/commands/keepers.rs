@@ -489,11 +489,20 @@ async fn write_autocall_schedule(ctx: &CliContext, args: WriteAutocallScheduleAr
     let keeper = ctx.signer()?;
     let issued_at_ts = args.issued_at_ts.unwrap_or_else(unix_now);
     let (autocall_schedule_pda, _) = pda::autocall_schedule(&halcyon_flagship_autocall::ID);
+    let (coupon_schedule_pda, _) = pda::coupon_schedule(&halcyon_flagship_autocall::ID);
     let existing_schedule = fetch_anchor_account_opt::<halcyon_kernel::state::AutocallSchedule>(
         ctx.rpc.as_ref(),
         &autocall_schedule_pda,
     )
     .await?;
+    let existing_coupon_schedule =
+        fetch_anchor_account_opt::<halcyon_kernel::state::CouponSchedule>(
+            ctx.rpc.as_ref(),
+            &coupon_schedule_pda,
+        )
+        .await?;
+    let coupon_timestamps =
+        halcyon_flagship_autocall::pricing::build_monthly_coupon_schedule(issued_at_ts)?;
     let observation_timestamps =
         halcyon_flagship_autocall::pricing::build_quarterly_autocall_schedule_from_calendar(
             issued_at_ts,
@@ -501,13 +510,18 @@ async fn write_autocall_schedule(ctx: &CliContext, args: WriteAutocallScheduleAr
     let ix_args = halcyon_kernel::WriteAutocallScheduleArgs {
         product_program_id: halcyon_flagship_autocall::ID,
         issue_date_ts: issued_at_ts,
+        coupon_timestamps,
         observation_timestamps,
     };
     let ix = kernel::write_autocall_schedule_ix(&keeper.pubkey(), &keeper.pubkey(), ix_args);
     let signature = tx::send_instructions(ctx.rpc.as_ref(), keeper, vec![ix]).await?;
     println!(
         "keepers write-autocall-schedule: signature={signature} mode={} product={} issue_date_ts={} first_observation_ts={} last_observation_ts={}",
-        if existing_schedule.is_some() { "refresh" } else { "bootstrap" },
+        if existing_schedule.is_some() || existing_coupon_schedule.is_some() {
+            "refresh"
+        } else {
+            "bootstrap"
+        },
         halcyon_flagship_autocall::ID,
         issued_at_ts,
         observation_timestamps[0],

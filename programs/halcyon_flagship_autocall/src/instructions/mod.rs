@@ -1,3 +1,4 @@
+pub mod accept_prepared_quote;
 pub mod accept_quote;
 pub mod advance_midlife_nav;
 pub mod buyback;
@@ -10,6 +11,7 @@ pub mod cancel_retail_redemption;
 pub mod debug_midlife_nav;
 pub mod execute_retail_redemption;
 pub mod prepare_midlife_nav;
+pub mod prepare_quote;
 pub mod preview_lending_value;
 pub mod preview_lending_value_from_checkpoint;
 pub mod preview_quote;

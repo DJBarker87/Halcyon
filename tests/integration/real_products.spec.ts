@@ -23,6 +23,7 @@ import { setupFullProtocol, TestContext } from "./setup";
 
 const SEEDS = {
   autocallSchedule: Buffer.from("autocall_schedule"),
+  couponSchedule: Buffer.from("coupon_schedule"),
   policy: Buffer.from("policy"),
   policyReceipt: Buffer.from("policy_receipt"),
   policyReceiptAuthority: Buffer.from("policy_receipt_authority"),
@@ -1278,6 +1279,13 @@ describe("real product integration", function () {
       ],
       ctx.programs.kernel.programId
     );
+    const couponSchedule = pda(
+      [
+        SEEDS.couponSchedule,
+        ctx.programs.flagshipAutocall.programId.toBuffer(),
+      ],
+      ctx.programs.kernel.programId
+    );
     const previewQuoteAccounts = {
       autocallSchedule,
       clock: SYSVAR_CLOCK_PUBKEY,
@@ -1357,6 +1365,7 @@ describe("real product integration", function () {
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         autocallSchedule,
+        couponSchedule,
       } as any)
       .preInstructions([
         ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
@@ -1518,6 +1527,13 @@ describe("real product integration", function () {
       ],
       ctx.programs.kernel.programId
     );
+    const couponSchedule = pda(
+      [
+        SEEDS.couponSchedule,
+        ctx.programs.flagshipAutocall.programId.toBuffer(),
+      ],
+      ctx.programs.kernel.programId
+    );
     const previewQuoteAccounts = {
       autocallSchedule,
       clock: SYSVAR_CLOCK_PUBKEY,
@@ -1596,6 +1612,7 @@ describe("real product integration", function () {
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
         autocallSchedule,
+        couponSchedule,
       } as any)
       .preInstructions([
         ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),

@@ -6,6 +6,7 @@
 
 pub mod aggregate_delta;
 pub mod autocall_schedule;
+pub mod coupon_schedule;
 pub mod coupon_vault;
 pub mod fee_ledger;
 pub mod hedge_book;
@@ -25,6 +26,7 @@ pub mod vault_state;
 
 pub use aggregate_delta::AggregateDelta;
 pub use autocall_schedule::{AutocallSchedule, AUTOCALL_OBSERVATION_COUNT};
+pub use coupon_schedule::{CouponSchedule, COUPON_OBSERVATION_COUNT};
 pub use coupon_vault::CouponVault;
 pub use fee_ledger::FeeLedger;
 pub use hedge_book::HedgeBookState;

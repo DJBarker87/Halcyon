@@ -9,7 +9,8 @@ use solana_sdk::{
 use crate::{pda, tx};
 
 pub use halcyon_flagship_autocall::{
-    AcceptQuoteArgs, LendingValuePreview, MidlifeNavCheckpointPreview, QuotePreview,
+    AcceptPreparedQuoteArgs, AcceptQuoteArgs, FlagshipQuoteReceipt, LendingValuePreview,
+    MidlifeNavCheckpointPreview, PrepareQuoteArgs, PreparedQuotePreview, QuotePreview,
 };
 
 pub const MIDLIFE_NAV_CHECKPOINT_ACCOUNT_SPACE: usize =
@@ -90,6 +91,40 @@ pub async fn simulate_preview_quote(
     );
     let result = tx::simulate_instruction(rpc, payer, ix).await?;
     tx::decode_return_data(result, &halcyon_flagship_autocall::ID)
+}
+
+pub fn prepare_quote_ix(
+    buyer: &Pubkey,
+    quote_receipt: Pubkey,
+    pyth_spy: Pubkey,
+    pyth_qqq: Pubkey,
+    pyth_iwm: Pubkey,
+    args: PrepareQuoteArgs,
+) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_flagship_autocall::ID);
+    let (vault_sigma, _) = pda::vault_sigma(&halcyon_flagship_autocall::ID);
+    let (regression, _) = pda::regression();
+    let (autocall_schedule, _) = pda::autocall_schedule(&halcyon_flagship_autocall::ID);
+    Instruction {
+        program_id: halcyon_flagship_autocall::ID,
+        accounts: halcyon_flagship_autocall::accounts::PrepareQuote {
+            buyer: *buyer,
+            quote_receipt,
+            protocol_config,
+            product_registry_entry,
+            vault_sigma,
+            regression,
+            autocall_schedule,
+            pyth_spy,
+            pyth_qqq,
+            pyth_iwm,
+            clock: solana_sdk::sysvar::clock::ID,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_flagship_autocall::instruction::PrepareQuote { args }.data(),
+    }
 }
 
 pub fn preview_lending_value_ix(
@@ -306,6 +341,7 @@ pub fn accept_quote_ix(
     let (vault_sigma, _) = pda::vault_sigma(&halcyon_flagship_autocall::ID);
     let (regression, _) = pda::regression();
     let (autocall_schedule, _) = pda::autocall_schedule(&halcyon_flagship_autocall::ID);
+    let (coupon_schedule, _) = pda::coupon_schedule(&halcyon_flagship_autocall::ID);
     let (vault_state, _) = pda::vault_state();
     let (fee_ledger, _) = pda::fee_ledger();
     let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_flagship_autocall::ID);
@@ -326,6 +362,7 @@ pub fn accept_quote_ix(
             vault_sigma,
             regression,
             autocall_schedule,
+            coupon_schedule,
             pyth_spy,
             pyth_qqq,
             pyth_iwm,
@@ -339,6 +376,64 @@ pub fn accept_quote_ix(
         }
         .to_account_metas(None),
         data: halcyon_flagship_autocall::instruction::AcceptQuote { args }.data(),
+    }
+}
+
+pub fn accept_prepared_quote_ix(
+    buyer: &Pubkey,
+    usdc_mint: &Pubkey,
+    quote_receipt: Pubkey,
+    pyth_spy: Pubkey,
+    pyth_qqq: Pubkey,
+    pyth_iwm: Pubkey,
+    args: AcceptPreparedQuoteArgs,
+    receipt: &FlagshipQuoteReceipt,
+) -> Instruction {
+    let buyer_usdc = pda::associated_token_account(buyer, usdc_mint);
+    let (policy_header, _) = pda::policy(&receipt.policy_id);
+    let (product_terms, _) = pda::terms_for(&halcyon_flagship_autocall::ID, &receipt.policy_id);
+    let (product_authority, _) = pda::product_authority_for(&halcyon_flagship_autocall::ID);
+    let (vault_usdc, _) = pda::vault_usdc(usdc_mint);
+    let (treasury_usdc, _) = pda::treasury_usdc(usdc_mint);
+    let (vault_authority, _) = pda::vault_authority();
+    let (protocol_config, _) = pda::protocol_config();
+    let (vault_sigma, _) = pda::vault_sigma(&halcyon_flagship_autocall::ID);
+    let (autocall_schedule, _) = pda::autocall_schedule(&halcyon_flagship_autocall::ID);
+    let (coupon_schedule, _) = pda::coupon_schedule(&halcyon_flagship_autocall::ID);
+    let (vault_state, _) = pda::vault_state();
+    let (fee_ledger, _) = pda::fee_ledger();
+    let (product_registry_entry, _) = pda::product_registry_entry(&halcyon_flagship_autocall::ID);
+
+    Instruction {
+        program_id: halcyon_flagship_autocall::ID,
+        accounts: halcyon_flagship_autocall::accounts::AcceptPreparedQuote {
+            buyer: *buyer,
+            quote_receipt,
+            policy_header,
+            product_terms,
+            product_authority,
+            usdc_mint: *usdc_mint,
+            buyer_usdc,
+            vault_usdc,
+            treasury_usdc,
+            vault_authority,
+            protocol_config,
+            vault_sigma,
+            autocall_schedule,
+            coupon_schedule,
+            pyth_spy,
+            pyth_qqq,
+            pyth_iwm,
+            vault_state,
+            fee_ledger,
+            product_registry_entry,
+            clock: solana_sdk::sysvar::clock::ID,
+            kernel_program: halcyon_kernel::ID,
+            token_program: anchor_spl::token::ID,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_flagship_autocall::instruction::AcceptPreparedQuote { args }.data(),
     }
 }
 

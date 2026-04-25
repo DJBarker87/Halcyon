@@ -33,7 +33,6 @@ import {
   formatPercentFromBpsS6,
   formatPercentFromS6,
   formatUsdcBaseUnits,
-  shortAddress,
   toBaseUnits,
   toNumber,
   toStringValue,
@@ -735,7 +734,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
         </div>
       </section>
 
-      {kind === "flagship" ? (
+      {false && kind === "flagship" ? (
         <FlagshipLifecycleGraphic amountInput={amountInput} preview={preview} />
       ) : null}
 
@@ -761,7 +760,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
               </button>
             </div>
 
-            <div className="mt-6 grid gap-5 lg:grid-cols-2">
+            <div className="mt-6 grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
               <div className="space-y-4">
                 <div className="space-y-2">
                   <label htmlFor={`${kind}-amount`} className="field-label">
@@ -805,31 +804,14 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <label htmlFor={`${kind}-slippage`} className="field-label">
-                    Slippage tolerance
-                  </label>
-                  <div className="relative">
-                    <input
-                      id={`${kind}-slippage`}
-                      type="number"
-                      min={0}
-                      step={1}
-                      inputMode="numeric"
-                      autoComplete="off"
-                      value={slippageBps}
-                      onChange={(event) => setSlippageBps(event.target.value)}
-                      className="field !pr-12"
-                    />
-                    <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
-                      bps
-                    </span>
-                  </div>
+                <div className="rounded-md border border-border bg-card p-4 text-sm leading-6 text-muted-foreground">
+                  The wallet uses default fill protection. If the quote drifts before signing, the transaction fails
+                  instead of buying different terms.
                 </div>
               </div>
 
               <div className="space-y-4">
-                <details className="rounded-md border border-border bg-card p-4">
+                <details className="hidden">
                   <summary className="cursor-pointer list-none text-sm font-medium text-foreground">
                     Advanced safeguards
                   </summary>
@@ -902,13 +884,14 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
 
                 <div className="rounded-md border border-border bg-card p-4">
                   <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                    Selected cluster
+                    Before you sign
                   </div>
-                  <div className="mt-2 text-sm font-medium text-foreground">{cluster}</div>
-                  <div className="mt-2 space-y-1 text-sm text-muted-foreground">
-                    <div>RPC: {current.rpcUrl || "Not set"}</div>
-                    <div>Kernel: {current.kernelProgramId ? shortAddress(current.kernelProgramId, 6) : "Not set"}</div>
-                  </div>
+                  <div className="mt-2 text-sm font-medium text-foreground">Review only three numbers</div>
+                  <ul className="mt-3 space-y-2 text-sm leading-6 text-muted-foreground">
+                    <li>Notional you commit.</li>
+                    <li>Coupon you can earn.</li>
+                    <li>Downside condition at maturity.</li>
+                  </ul>
                 </div>
               </div>
             </div>
@@ -1042,7 +1025,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
                 </section>
               )}
 
-              <section className="surface p-5 sm:p-6">
+              <section className="hidden">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
                     <h2 className="text-xl font-semibold text-foreground">
@@ -1102,49 +1085,22 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
         </section>
 
         <aside className="space-y-6">
-          {kind === "flagship" ? <FlagshipBuyerChecklist /> : null}
-
           <section className="surface p-5">
-            <h2 className="text-lg font-semibold text-foreground">How this quote was priced</h2>
-            <ul className="mt-4 space-y-3 text-sm leading-6 text-muted-foreground">
-              {product.notes.map((note) => (
-                <li key={note}>• {note}</li>
-              ))}
-            </ul>
-          </section>
-
-          <section className="surface p-5">
-            <h2 className="text-lg font-semibold text-foreground">What "on-chain pricing" means here</h2>
+            <h2 className="text-lg font-semibold text-foreground">After purchase</h2>
             <dl className="mt-4 space-y-4 text-sm">
               <div>
-                <dt className="text-muted-foreground">Who computes the coupon</dt>
-                <dd className="mt-1 text-foreground">A Rust program on Solana. No off-chain pricing service.</dd>
+                <dt className="text-muted-foreground">Track value</dt>
+                <dd className="mt-1 text-foreground">Your note appears under My notes.</dd>
               </div>
               <div>
-                <dt className="text-muted-foreground">Can you verify it</dt>
-                <dd className="mt-1 text-foreground">Yes — every quote is reproducible from the open-source pricer plus the on-chain state at its slot.</dd>
+                <dt className="text-muted-foreground">Emergency exit</dt>
+                <dd className="mt-1 text-foreground">Calculate the liquidation price from the on-chain midlife NAV.</dd>
               </div>
               <div>
-                <dt className="text-muted-foreground">Who backs the note</dt>
-                <dd className="mt-1 text-foreground">A shared underwriting vault governed by the protocol's kernel program.</dd>
+                <dt className="text-muted-foreground">Wallet protection</dt>
+                <dd className="mt-1 text-foreground">If the quote changes before signing, the transaction fails safely.</dd>
               </div>
             </dl>
-          </section>
-
-          <section className="surface p-5">
-            <h2 className="text-lg font-semibold text-foreground">Before you sign</h2>
-            <div className="mt-4 space-y-3 text-sm text-muted-foreground">
-              <div className="rounded-md border border-border bg-card p-3">
-                Minimum ticket is $100.
-              </div>
-              <div className="rounded-md border border-border bg-card p-3">
-                Quotes expire — refresh after changing the notional or the advanced safeguards.
-              </div>
-              <div className="rounded-md border border-border bg-card p-3">
-                Your wallet enforces the same tolerances shown here. If the on-chain price drifts outside them, the
-                transaction fails safely without charging you.
-              </div>
-            </div>
           </section>
         </aside>
       </div>

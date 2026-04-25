@@ -1,11 +1,12 @@
 use anchor_lang::prelude::*;
 use halcyon_common::seeds;
 use halcyon_kernel::state::{
-    AutocallSchedule, ProductRegistryEntry, ProtocolConfig, Regression, VaultSigma,
+    AutocallSchedule, CouponSchedule, ProductRegistryEntry, ProtocolConfig, Regression, VaultSigma,
 };
 
 use crate::pricing::{
     compose_pricing_sigma, require_autocall_schedule_fresh, require_correction_tables_match,
+    require_coupon_schedule_fresh, require_coupon_schedule_matches_autocall,
     require_protocol_unpaused, require_regression_fresh, require_sigma_fresh, solve_quote,
 };
 use crate::state::{FlagshipQuoteReceipt, CURRENT_ENGINE_VERSION};
@@ -64,6 +65,13 @@ pub struct PrepareQuote<'info> {
         constraint = autocall_schedule.product_program_id == crate::ID,
     )]
     pub autocall_schedule: Account<'info, AutocallSchedule>,
+    #[account(
+        seeds = [seeds::COUPON_SCHEDULE, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
+        bump,
+        constraint = coupon_schedule.product_program_id == crate::ID,
+    )]
+    pub coupon_schedule: Account<'info, CouponSchedule>,
     /// CHECK: validated by `halcyon_oracles`.
     pub pyth_spy: UncheckedAccount<'info>,
     /// CHECK: validated by `halcyon_oracles`.
@@ -93,6 +101,11 @@ pub fn handler(ctx: Context<PrepareQuote>, args: PrepareQuoteArgs) -> Result<Pre
         ctx.accounts.protocol_config.regression_staleness_cap_secs,
     )?;
     require_autocall_schedule_fresh(&ctx.accounts.autocall_schedule, now)?;
+    require_coupon_schedule_fresh(&ctx.accounts.coupon_schedule, now)?;
+    require_coupon_schedule_matches_autocall(
+        &ctx.accounts.coupon_schedule,
+        &ctx.accounts.autocall_schedule,
+    )?;
     require_correction_tables_match(&ctx.accounts.protocol_config)?;
 
     let pyth_spy = halcyon_oracles::read_pyth_price(
@@ -139,6 +152,9 @@ pub fn handler(ctx: Context<PrepareQuote>, args: PrepareQuoteArgs) -> Result<Pre
         offered_coupon_bps_s6: quote.offered_coupon_bps_s6,
         sigma_pricing_s6: quote.sigma_pricing_s6,
         quote_slot: quote.quote_slot,
+        engine_version: CURRENT_ENGINE_VERSION,
+        autocall_schedule_issue_date_ts: ctx.accounts.autocall_schedule.issue_date_ts,
+        coupon_schedule_issue_date_ts: ctx.accounts.coupon_schedule.issue_date_ts,
         entry_spy_price_s6: pyth_spy.price_s6,
         entry_qqq_price_s6: pyth_qqq.price_s6,
         entry_iwm_price_s6: pyth_iwm.price_s6,

@@ -10,16 +10,22 @@ use halcyon_kernel::{
     ReserveAndIssueArgs,
 };
 
+use crate::errors::FlagshipAutocallError;
 use crate::pricing::{
     hash_product_terms, monthly_coupon_schedule_from_account,
     quarterly_autocall_schedule_from_account, require_autocall_schedule_fresh,
-    require_coupon_schedule_fresh, require_coupon_schedule_matches_autocall,
-    require_protocol_unpaused, require_quote_acceptance_bounds, require_sigma_fresh, QuoteOutputs,
+    require_correction_tables_match, require_coupon_schedule_fresh,
+    require_coupon_schedule_matches_autocall, require_protocol_unpaused,
+    require_quote_acceptance_bounds, require_sigma_fresh, QuoteOutputs,
 };
 use crate::state::{
     FlagshipAutocallTerms, FlagshipQuoteReceipt, ProductStatus, AUTOCALL_BARRIER_BPS,
     COUPON_BARRIER_BPS, CURRENT_ENGINE_VERSION, KI_BARRIER_BPS,
 };
+
+const PREPARED_QUOTE_MAX_AGE_SECS: i64 = 300;
+const PREPARED_QUOTE_MAX_ENTRY_DEVIATION_BPS: u16 = 100;
+const PREPARED_QUOTE_MAX_EXPIRY_DELTA_SECS: i64 = 300;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct AcceptPreparedQuoteArgs {
@@ -160,6 +166,13 @@ pub fn handler(ctx: Context<AcceptPreparedQuote>, args: AcceptPreparedQuoteArgs)
     let quote_receipt = &ctx.accounts.quote_receipt;
 
     require_protocol_unpaused(&ctx.accounts.protocol_config)?;
+    require_correction_tables_match(&ctx.accounts.protocol_config)?;
+    require_prepared_quote_args_within_protocol_caps(&args)?;
+    require_prepared_quote_fresh(quote_receipt.created_at, now)?;
+    require!(
+        quote_receipt.engine_version == CURRENT_ENGINE_VERSION,
+        FlagshipAutocallError::QuoteRecomputeMismatch
+    );
     require_sigma_fresh(
         &ctx.accounts.vault_sigma,
         now,
@@ -170,6 +183,11 @@ pub fn handler(ctx: Context<AcceptPreparedQuote>, args: AcceptPreparedQuoteArgs)
     require_coupon_schedule_matches_autocall(
         &ctx.accounts.coupon_schedule,
         &ctx.accounts.autocall_schedule,
+    )?;
+    require_prepared_quote_schedule_bindings(
+        quote_receipt,
+        &ctx.accounts.autocall_schedule,
+        &ctx.accounts.coupon_schedule,
     )?;
 
     let pyth_spy = halcyon_oracles::read_pyth_price(
@@ -202,7 +220,7 @@ pub fn handler(ctx: Context<AcceptPreparedQuote>, args: AcceptPreparedQuoteArgs)
         sigma_pricing_s6: quote_receipt.sigma_pricing_s6,
         quote_slot: quote_receipt.quote_slot,
         expiry_ts: quote_receipt.expiry_ts,
-        engine_version: CURRENT_ENGINE_VERSION,
+        engine_version: quote_receipt.engine_version,
     };
 
     require!(
@@ -316,4 +334,153 @@ pub fn handler(ctx: Context<AcceptPreparedQuote>, args: AcceptPreparedQuoteArgs)
     ))?;
 
     Ok(())
+}
+
+fn require_prepared_quote_args_within_protocol_caps(args: &AcceptPreparedQuoteArgs) -> Result<()> {
+    require!(
+        args.max_entry_price_deviation_bps <= PREPARED_QUOTE_MAX_ENTRY_DEVIATION_BPS,
+        HalcyonError::SlippageExceeded
+    );
+    require!(
+        args.max_expiry_delta_secs <= PREPARED_QUOTE_MAX_EXPIRY_DELTA_SECS,
+        HalcyonError::SlippageExceeded
+    );
+    Ok(())
+}
+
+fn require_prepared_quote_fresh(created_at: i64, now: i64) -> Result<()> {
+    let receipt_age = now.checked_sub(created_at).ok_or(HalcyonError::Overflow)?;
+    require!(
+        receipt_age >= 0 && receipt_age <= PREPARED_QUOTE_MAX_AGE_SECS,
+        HalcyonError::InvalidQuoteExpiry
+    );
+    Ok(())
+}
+
+fn require_prepared_quote_schedule_bindings(
+    quote_receipt: &FlagshipQuoteReceipt,
+    autocall_schedule: &AutocallSchedule,
+    coupon_schedule: &CouponSchedule,
+) -> Result<()> {
+    require!(
+        quote_receipt.autocall_schedule_issue_date_ts == autocall_schedule.issue_date_ts
+            && quote_receipt.coupon_schedule_issue_date_ts == coupon_schedule.issue_date_ts,
+        HalcyonError::AutocallScheduleStale
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use halcyon_kernel::state::{AUTOCALL_OBSERVATION_COUNT, COUPON_OBSERVATION_COUNT};
+
+    fn default_args() -> AcceptPreparedQuoteArgs {
+        AcceptPreparedQuoteArgs {
+            max_premium: 10_000_000,
+            min_max_liability: 10_000_000,
+            min_offered_coupon_bps_s6: 0,
+            max_quote_slot_delta: 32,
+            max_entry_price_deviation_bps: PREPARED_QUOTE_MAX_ENTRY_DEVIATION_BPS,
+            max_expiry_delta_secs: PREPARED_QUOTE_MAX_EXPIRY_DELTA_SECS,
+        }
+    }
+
+    fn default_receipt() -> FlagshipQuoteReceipt {
+        FlagshipQuoteReceipt {
+            version: FlagshipQuoteReceipt::CURRENT_VERSION,
+            buyer: Pubkey::new_unique(),
+            policy_id: Pubkey::new_unique(),
+            notional_usdc: 10_000_000,
+            premium: 10_000_000,
+            max_liability: 10_000_000,
+            fair_coupon_bps_s6: 0,
+            offered_coupon_bps_s6: 0,
+            sigma_pricing_s6: 0,
+            quote_slot: 1,
+            engine_version: CURRENT_ENGINE_VERSION,
+            autocall_schedule_issue_date_ts: 1_700_000_000,
+            coupon_schedule_issue_date_ts: 1_700_000_000,
+            entry_spy_price_s6: 500_000_000,
+            entry_qqq_price_s6: 500_000_000,
+            entry_iwm_price_s6: 500_000_000,
+            expiry_ts: 1_750_000_000,
+            created_at: 1_700_000_000,
+            beta_spy_s12: 0,
+            beta_qqq_s12: 0,
+            alpha_s12: 0,
+            regression_r_squared_s6: 0,
+            regression_residual_vol_s6: 0,
+        }
+    }
+
+    fn default_autocall_schedule() -> AutocallSchedule {
+        AutocallSchedule {
+            version: AutocallSchedule::CURRENT_VERSION,
+            product_program_id: crate::ID,
+            issue_date_ts: 1_700_000_000,
+            observation_timestamps: [0; AUTOCALL_OBSERVATION_COUNT],
+            last_publish_ts: 1_700_000_000,
+            last_publish_slot: 1,
+        }
+    }
+
+    fn default_coupon_schedule() -> CouponSchedule {
+        CouponSchedule {
+            version: CouponSchedule::CURRENT_VERSION,
+            product_program_id: crate::ID,
+            issue_date_ts: 1_700_000_000,
+            observation_timestamps: [0; COUPON_OBSERVATION_COUNT],
+            last_publish_ts: 1_700_000_000,
+            last_publish_slot: 1,
+        }
+    }
+
+    #[test]
+    fn prepared_quote_age_cap_accepts_recent_receipt() {
+        assert!(require_prepared_quote_fresh(1_000, 1_300).is_ok());
+    }
+
+    #[test]
+    fn prepared_quote_age_cap_rejects_stale_receipt() {
+        assert!(require_prepared_quote_fresh(1_000, 1_301).is_err());
+    }
+
+    #[test]
+    fn prepared_quote_age_cap_rejects_future_receipt() {
+        assert!(require_prepared_quote_fresh(1_001, 1_000).is_err());
+    }
+
+    #[test]
+    fn prepared_quote_tolerance_caps_reject_overwide_client_args() {
+        let mut args = default_args();
+        args.max_entry_price_deviation_bps = PREPARED_QUOTE_MAX_ENTRY_DEVIATION_BPS + 1;
+        assert!(require_prepared_quote_args_within_protocol_caps(&args).is_err());
+
+        let mut args = default_args();
+        args.max_expiry_delta_secs = PREPARED_QUOTE_MAX_EXPIRY_DELTA_SECS + 1;
+        assert!(require_prepared_quote_args_within_protocol_caps(&args).is_err());
+    }
+
+    #[test]
+    fn prepared_quote_schedule_bindings_must_match_receipt() {
+        let receipt = default_receipt();
+        let autocall_schedule = default_autocall_schedule();
+        let coupon_schedule = default_coupon_schedule();
+        assert!(require_prepared_quote_schedule_bindings(
+            &receipt,
+            &autocall_schedule,
+            &coupon_schedule,
+        )
+        .is_ok());
+
+        let mut stale_autocall_schedule = default_autocall_schedule();
+        stale_autocall_schedule.issue_date_ts += 1;
+        assert!(require_prepared_quote_schedule_bindings(
+            &receipt,
+            &stale_autocall_schedule,
+            &coupon_schedule,
+        )
+        .is_err());
+    }
 }

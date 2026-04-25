@@ -106,6 +106,7 @@ pub fn prepare_quote_ix(
     let (vault_sigma, _) = pda::vault_sigma(&halcyon_flagship_autocall::ID);
     let (regression, _) = pda::regression();
     let (autocall_schedule, _) = pda::autocall_schedule(&halcyon_flagship_autocall::ID);
+    let (coupon_schedule, _) = pda::coupon_schedule(&halcyon_flagship_autocall::ID);
     Instruction {
         program_id: halcyon_flagship_autocall::ID,
         accounts: halcyon_flagship_autocall::accounts::PrepareQuote {
@@ -116,6 +117,7 @@ pub fn prepare_quote_ix(
             vault_sigma,
             regression,
             autocall_schedule,
+            coupon_schedule,
             pyth_spy,
             pyth_qqq,
             pyth_iwm,

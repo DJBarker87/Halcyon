@@ -35,18 +35,20 @@ pub fn read_pyth_price(
         OracleError::FeedIdMismatch
     );
 
-    // Staleness and verification. `get_price_no_older_than` enforces both:
-    // VerificationLevel::Full and `publish_time + staleness_cap ≥ now`.
-    let staleness_u64 =
-        u64::try_from(staleness_cap_secs).map_err(|_| error!(OracleError::ScaleOverflow))?;
+    // Keep verification and freshness as separate errors so demo/operator UI
+    // can distinguish an unverified receiver update from a market-closed feed.
+    require!(
+        update.verification_level.gte(VerificationLevel::Full),
+        OracleError::InsufficientVerification
+    );
     let price = update
-        .get_price_no_older_than_with_custom_verification_level(
-            clock,
-            staleness_u64,
-            feed_id,
-            VerificationLevel::Full,
-        )
-        .map_err(|_| error!(OracleError::InsufficientVerification))?;
+        .get_price_unchecked(feed_id)
+        .map_err(|_| error!(OracleError::FeedIdMismatch))?;
+    let max_age = price
+        .publish_time
+        .checked_add(staleness_cap_secs)
+        .ok_or_else(|| error!(OracleError::ScaleOverflow))?;
+    require!(max_age >= clock.unix_timestamp, OracleError::PythPriceStale);
 
     PriceSnapshot::from_raw(
         price.price,

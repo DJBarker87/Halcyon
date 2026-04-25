@@ -30,7 +30,7 @@ Run the faucet:
 RPC_URL=https://api.devnet.solana.com \
 MOCK_USDC_MINT=<printed mint> \
 MOCK_USDC_FAUCET_KEYPAIR_PATH=ops/devnet_keys/mock-usdc-faucet.json \
-MOCK_USDC_FAUCET_ALLOWED_ORIGINS=https://halcyon.xyz \
+MOCK_USDC_FAUCET_ALLOWED_ORIGINS=https://halcyonprotocol.xyz,https://www.halcyonprotocol.xyz \
 npm start
 ```
 
@@ -38,5 +38,5 @@ Set the frontend build env:
 
 ```bash
 NEXT_PUBLIC_USDC_MINT_DEVNET=<printed mint>
-NEXT_PUBLIC_MOCK_USDC_FAUCET_URL=https://<faucet-host>
+NEXT_PUBLIC_MOCK_USDC_FAUCET_URL=/faucet-api
 ```

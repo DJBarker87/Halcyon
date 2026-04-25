@@ -65,6 +65,7 @@ pub fn preview_lending_value_ix(
     regime_signal: Pubkey,
     policy_header: Pubkey,
     product_terms: Pubkey,
+    midlife_matrices: Pubkey,
     pyth_sol: Pubkey,
 ) -> Instruction {
     Instruction {
@@ -75,6 +76,7 @@ pub fn preview_lending_value_ix(
             regime_signal,
             policy_header,
             product_terms,
+            midlife_matrices,
             pyth_sol,
             clock: solana_sdk::sysvar::clock::ID,
         }
@@ -93,12 +95,14 @@ pub async fn simulate_preview_lending_value(
     let (protocol_config, _) = pda::protocol_config();
     let (vault_sigma, _) = pda::vault_sigma(&halcyon_sol_autocall::ID);
     let (regime_signal, _) = pda::regime_signal(&halcyon_sol_autocall::ID);
+    let (midlife_matrices, _) = pda::sol_autocall_midlife_matrices();
     let ix = preview_lending_value_ix(
         protocol_config,
         vault_sigma,
         regime_signal,
         policy_address,
         policy.product_terms,
+        midlife_matrices,
         pyth_sol,
     );
     let result = tx::simulate_instruction(rpc, payer, ix).await?;

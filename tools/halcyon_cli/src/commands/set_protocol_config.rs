@@ -8,6 +8,7 @@ use halcyon_flagship_autocall::pricing::{
     DAILY_KI_CORRECTION_SHA256 as CURRENT_DAILY_KI_CORRECTION_SHA256,
     K12_CORRECTION_SHA256 as CURRENT_K12_CORRECTION_SHA256,
 };
+use halcyon_kernel::PremiumSplitsBps;
 use halcyon_sol_autocall_quote::generated::pod_deim_table::POD_DEIM_TABLE_SHA256;
 use solana_sdk::signer::Signer;
 
@@ -78,6 +79,22 @@ pub struct Args {
     /// Set `ProtocolConfig.pod_deim_table_sha256` to the checked-in current table hash.
     #[arg(long, default_value_t = false)]
     pub pod_deim_table_sha256_current: bool,
+
+    /// Set `ProtocolConfig.senior_share_bps` as part of the premium split.
+    #[arg(long)]
+    pub premium_senior_share_bps: Option<u16>,
+
+    /// Set `ProtocolConfig.junior_share_bps` as part of the premium split.
+    #[arg(long)]
+    pub premium_junior_share_bps: Option<u16>,
+
+    /// Set `ProtocolConfig.treasury_share_bps` as part of the premium split.
+    #[arg(long)]
+    pub premium_treasury_share_bps: Option<u16>,
+
+    /// Simulate the config update without submitting it.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
 }
 
 fn parse_sha256_hex(input: &str) -> Result<[u8; 32]> {
@@ -145,9 +162,25 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
         (false, Some(value)) => Some(parse_sha256_hex(&value)?),
         (false, None) => None,
     };
+    let premium_splits_bps = match (
+        args.premium_senior_share_bps,
+        args.premium_junior_share_bps,
+        args.premium_treasury_share_bps,
+    ) {
+        (None, None, None) => None,
+        (Some(senior_bps), Some(junior_bps), Some(treasury_bps)) => Some(PremiumSplitsBps {
+            senior_bps,
+            junior_bps,
+            treasury_bps,
+        }),
+        _ => bail!(
+            "set all three premium split fields: --premium-senior-share-bps, --premium-junior-share-bps, --premium-treasury-share-bps"
+        ),
+    };
     if pod_hash.is_none()
         && k12_hash.is_none()
         && daily_ki_hash.is_none()
+        && premium_splits_bps.is_none()
         && args.sigma_floor_annualised_s6.is_none()
         && args.sigma_ceiling_annualised_s6.is_none()
         && args.il_sigma_floor_annualised_s6.is_none()
@@ -184,13 +217,24 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
             k12_correction_sha256: k12_hash,
             daily_ki_correction_sha256: daily_ki_hash,
             pod_deim_table_sha256: pod_hash,
-            premium_splits_bps: None,
+            premium_splits_bps,
             sol_autocall_quote_config_bps: None,
             treasury_destination: None,
             hedge_max_slippage_bps_cap: None,
             hedge_defund_destination: None,
         },
     );
+    if args.dry_run {
+        let result = tx::simulate_instructions(ctx.rpc.as_ref(), admin, vec![ix], &[]).await?;
+        println!(
+            "set-protocol-config dry-run: units_consumed={}",
+            result
+                .units_consumed
+                .map(|units| units.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        );
+        return Ok(());
+    }
     let sig = tx::send_instructions(ctx.rpc.as_ref(), admin, vec![ix]).await?;
     let mut fields = Vec::new();
     if let Some(value) = args.sigma_floor_annualised_s6 {
@@ -222,6 +266,13 @@ pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     }
     if let Some(value) = args.sol_autocall_ewma_rate_limit_secs {
         fields.push(format!("sol_autocall_ewma_rate_limit_secs={value}"));
+    }
+    if let (Some(senior), Some(junior), Some(treasury)) = (
+        args.premium_senior_share_bps,
+        args.premium_junior_share_bps,
+        args.premium_treasury_share_bps,
+    ) {
+        fields.push(format!("premium_splits_bps={senior}/{junior}/{treasury}"));
     }
     if let Some(hash) = k12_hash {
         fields.push(format!(

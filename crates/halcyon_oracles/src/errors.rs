@@ -16,4 +16,6 @@ pub enum OracleError {
     ScaleOverflow,
     #[msg("mock-pyth account discriminator mismatch")]
     MockDiscriminatorMismatch,
+    #[msg("Pyth publish_time is older than the configured staleness cap")]
+    PythPriceStale,
 }

@@ -16,7 +16,7 @@ Methodology:
 Cross-check:
 
 - The script verifies the fixed-date target `2026-04-10`
-- Reference `sigma_s6 = 248703`
+- Reference `sigma_s6 = 251857`
 - Exact match is ideal; a residual drift below `1%` is accepted to allow for
   small Yahoo/Pyth series differences during migration
 - If the drift is `>= 1%`, the script exits non-zero and does not submit

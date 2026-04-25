@@ -8,7 +8,9 @@ import math
 import os
 import subprocess
 import sys
+import time
 import urllib.parse
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -33,6 +35,8 @@ from calibration import (
 
 USER_AGENT = "Mozilla/5.0 (compatible; Halcyon Flagship Sigma Keeper)"
 PYTH_MAX_HISTORY_RANGE_DAYS = 364
+PYTH_CACHE_FRESH_GRACE_DAYS = 3
+PYTH_HTTP_MAX_ATTEMPTS = 6
 
 
 @dataclass(frozen=True)
@@ -120,12 +124,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    cache_path = Path(args.cache_path) if args.cache_path else None
     if not args.skip_crosscheck:
-        run_crosscheck(args.crosscheck_history_source, args.pyth_benchmarks_base_url)
+        crosscheck_cache_path = (
+            cache_path if args.crosscheck_history_source == args.spy_history_source else None
+        )
+        run_crosscheck(args.crosscheck_history_source, args.pyth_benchmarks_base_url, crosscheck_cache_path)
 
     history = load_history(
         args.spy_history_source,
-        Path(args.cache_path),
+        cache_path,
         args.pyth_benchmarks_base_url,
         args.date,
     )
@@ -138,10 +146,10 @@ def main() -> int:
     return 0
 
 
-def run_crosscheck(source: str, benchmarks_base_url: str) -> None:
+def run_crosscheck(source: str, benchmarks_base_url: str, cache_path: Path | None) -> None:
     history = load_history(
         source,
-        cache_path=None,
+        cache_path=cache_path,
         benchmarks_base_url=benchmarks_base_url,
         end_date=CROSSCHECK_DATE,
     )
@@ -216,6 +224,36 @@ def fetch_pyth_history(
 
     rows: dict[str, PricePoint] = {}
     chunk_start = start
+    if cache_path is not None and cache_path.exists():
+        try:
+            cached_rows = [
+                point
+                for point in read_history_csv(cache_path)
+                if start <= point.timestamp.date() <= final_date
+            ]
+        except (OSError, ValueError) as exc:
+            print(
+                json.dumps(
+                    {
+                        "cache_path": str(cache_path),
+                        "cache_status": "ignored",
+                        "reason": str(exc),
+                    },
+                    sort_keys=True,
+                ),
+                file=sys.stderr,
+            )
+        else:
+            for point in cached_rows:
+                rows[point.timestamp.date().isoformat()] = point
+            if rows:
+                cached_last = max(date.fromisoformat(day) for day in rows)
+                if cached_last >= final_date:
+                    return sorted(rows.values(), key=lambda row: row.timestamp)
+                if end_date is None and (final_date - cached_last).days <= PYTH_CACHE_FRESH_GRACE_DAYS:
+                    return sorted(rows.values(), key=lambda row: row.timestamp)
+                chunk_start = cached_last + timedelta(days=1)
+
     while chunk_start <= final_date:
         chunk_end = min(chunk_start + timedelta(days=PYTH_MAX_HISTORY_RANGE_DAYS), final_date)
         chunk_rows = fetch_pyth_history_chunk(symbol, chunk_start, chunk_end, benchmarks_base_url)
@@ -245,8 +283,7 @@ def resolve_pyth_symbol(identifier: str, benchmarks_base_url: str) -> str:
         f"{benchmarks_base_url.rstrip('/')}/v1/price_feeds/{feed_id}",
         headers={"User-Agent": USER_AGENT},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.load(response)
+    payload = fetch_json_with_retry(request)
     return payload.get("attributes", {}).get("symbol", SPY_PYTH_SYMBOL)
 
 
@@ -274,8 +311,7 @@ def fetch_pyth_history_chunk(
         f"{benchmarks_base_url.rstrip('/')}/v1/shims/tradingview/history?{query}",
         headers={"User-Agent": USER_AGENT},
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        payload = json.load(response)
+    payload = fetch_json_with_retry(request)
     if payload.get("s") != "ok":
         raise ValueError(f"Pyth Benchmarks history error for {symbol}: {payload}")
 
@@ -291,6 +327,25 @@ def fetch_pyth_history_chunk(
         if point.close > 0.0 and math.isfinite(point.close):
             rows.append(point)
     return rows
+
+
+def fetch_json_with_retry(request: urllib.request.Request) -> object:
+    for attempt in range(PYTH_HTTP_MAX_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                return json.load(response)
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or attempt + 1 >= PYTH_HTTP_MAX_ATTEMPTS:
+                raise
+            retry_after = exc.headers.get("retry-after")
+            try:
+                sleep_secs = float(retry_after) if retry_after else 0.0
+            except ValueError:
+                sleep_secs = 0.0
+            if sleep_secs <= 0.0:
+                sleep_secs = min(2.0 ** attempt, 30.0)
+            time.sleep(sleep_secs)
+    raise RuntimeError("unreachable")
 
 
 def read_history_csv(path: Path) -> list[PricePoint]:

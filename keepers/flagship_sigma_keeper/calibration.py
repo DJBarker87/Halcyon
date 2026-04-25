@@ -24,9 +24,9 @@ SPY_PYTH_FEED_ID = "0x19e09bb805456ada3979a7d1cbb4b6d63babc3a0f8e8a9509f68afa5c4
 SPY_PYTH_SYMBOL = "Equity.US.SPY/USD"
 PYTH_HISTORY_START_DATE = "2006-04-11"
 
-# Fixed-date cross-check from the checked-in SPY history artifact.
+# Fixed-date cross-check from Pyth Benchmarks SPY history.
 CROSSCHECK_DATE = "2026-04-10"
-CROSSCHECK_EXPECTED_SIGMA_S6 = 248703
+CROSSCHECK_EXPECTED_SIGMA_S6 = 251857
 CROSSCHECK_MAX_SIGMA_DRIFT_PCT = 1.0
 
 # Provenance notes:

@@ -335,6 +335,16 @@ const FRIENDLY: Record<string, Partial<Pick<MappedError, "title" | "body" | "ret
     body: "The Pyth price feed powering this quote hasn't updated recently. Wait a moment and try again.",
     retryable: true,
   },
+  PythPriceStale: {
+    title: "Oracle price is stale.",
+    body: "The latest verified Pyth publish-time is older than this cluster's quote staleness cap. Keep the relay running; for SPY/QQQ/IWM demos, the cap must allow weekends and market holidays.",
+    retryable: true,
+  },
+  InsufficientVerification: {
+    title: "Oracle update is not verified.",
+    body: "The Pyth receiver account is not fully verified. If this appears during an equity demo, also check feed age because older deployed programs may label stale prices this way.",
+    retryable: true,
+  },
   PythPublishTimeStale: {
     title: "Oracle price is stale.",
     body: "The Pyth publish-time on one of the underlyings is older than the cluster's staleness cap. Wait for a fresh price.",

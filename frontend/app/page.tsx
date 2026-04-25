@@ -37,7 +37,7 @@ export default function LandingPage() {
             <ArrowRight className="h-4 w-4" aria-hidden="true" />
           </Link>
           <a
-            href="https://github.com/DJB8787/colosseumfinal/blob/main/halcyon_whitepaper_v9.md"
+            href="https://github.com/DJBarker87/Halcyon/blob/main/halcyon_whitepaper_v9.md"
             target="_blank"
             rel="noreferrer"
             className="inline-flex min-h-12 items-center gap-2 rounded-md border border-border bg-background px-5 text-sm font-semibold text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:text-base"
@@ -208,10 +208,10 @@ export default function LandingPage() {
       {/* Footer */}
       <section className="border-t border-border pt-8 text-sm text-muted-foreground">
         <div className="flex flex-wrap gap-6">
-          <a href="https://github.com/DJB8787/colosseumfinal" target="_blank" rel="noreferrer" className="hover:text-foreground">GitHub</a>
-          <a href="https://github.com/DJB8787/colosseumfinal/blob/main/halcyon_whitepaper_v9.md" target="_blank" rel="noreferrer" className="hover:text-foreground">Whitepaper</a>
-          <a href="https://github.com/DJB8787/colosseumfinal/blob/main/ARCHITECTURE.md" target="_blank" rel="noreferrer" className="hover:text-foreground">Architecture</a>
-          <a href="https://github.com/DJB8787/colosseumfinal/blob/main/docs/audit" target="_blank" rel="noreferrer" className="hover:text-foreground">Audit</a>
+          <a href="https://github.com/DJBarker87/Halcyon" target="_blank" rel="noreferrer" className="hover:text-foreground">GitHub</a>
+          <a href="https://github.com/DJBarker87/Halcyon/blob/main/halcyon_whitepaper_v9.md" target="_blank" rel="noreferrer" className="hover:text-foreground">Whitepaper</a>
+          <a href="https://github.com/DJBarker87/Halcyon/blob/main/ARCHITECTURE.md" target="_blank" rel="noreferrer" className="hover:text-foreground">Architecture</a>
+          <a href="https://github.com/DJBarker87/Halcyon/blob/main/docs/audit" target="_blank" rel="noreferrer" className="hover:text-foreground">Audit</a>
           <a href="https://crates.io/crates/solmath" target="_blank" rel="noreferrer" className="hover:text-foreground">solmath on crates.io</a>
         </div>
       </section>

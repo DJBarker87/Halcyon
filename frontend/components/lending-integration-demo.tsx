@@ -2,30 +2,24 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { BN } from "@coral-xyz/anchor";
 import {
   AlertCircle,
   ArrowUpRight,
   BadgeDollarSign,
   Coins,
-  Copy,
   Loader2,
   RefreshCcw,
   ShieldCheck,
   Siren,
 } from "lucide-react";
-import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey, type VersionedTransaction } from "@solana/web3.js";
-import bs58 from "bs58";
+import { PublicKey, type Keypair, type VersionedTransaction } from "@solana/web3.js";
 
 import {
-  buildMockLendingBorrowTransaction,
-  buildMockLendingMarkerTransaction,
   buildWrapPolicyReceiptTransaction,
   executeCheckpointedMockLendingBorrow,
   executeCheckpointedWrappedFlagshipLiquidation,
   fetchPortfolio,
   policyReceiptMintAddress,
-  simulatePreview,
   type PortfolioEntry,
 } from "@/lib/halcyon";
 import { cn, field, formatUsdcBaseUnits, shortAddress, toNumber } from "@/lib/format";
@@ -48,7 +42,6 @@ type DemoLoan = {
   debt: number;
   health: number;
   state: LoanState;
-  source: "live" | "demo";
   wrapped: boolean;
 };
 
@@ -63,44 +56,6 @@ type LoanActionResult = {
   transactionCount?: number;
   maxUnitsConsumed?: number;
 };
-
-const DEVNET_DEMO_WALLET_STORAGE_KEY = "halcyon-devnet-demo-wallet-v1";
-const DEVNET_DEMO_WALLET_MIN_BALANCE = 0.02 * LAMPORTS_PER_SOL;
-const DEVNET_DEMO_WALLET_AIRDROP = Math.round(0.05 * LAMPORTS_PER_SOL);
-const DEVNET_FAUCET_URL = "https://faucet.solana.com/";
-
-const DEMO_LOANS: DemoLoan[] = [
-  {
-    id: "demo-1",
-    policyAddress: "Unavailable",
-    productTermsAddress: "Unavailable",
-    borrower: "8rMmhLp2kFy6uBETEi9T7V9Q8SAP8cLUb2D4EhmgcKyK",
-    receiptMint: "AJAQcAqthGL2BXj9kUQEsPcyEV2cyuh4zF5UuRh3M2Zx",
-    receiptTokenAccount: "9Kdoqv4HrouCWfjpRWdaCoBgw7MpzbFSmykJpPTZYnVd",
-    positionNotional: 1_000_000_000,
-    lendingValue: 700_000_000,
-    debt: 0,
-    health: Number.POSITIVE_INFINITY,
-    state: "available",
-    source: "demo",
-    wrapped: true,
-  },
-  {
-    id: "demo-2",
-    policyAddress: "Unavailable",
-    productTermsAddress: "Unavailable",
-    borrower: "DHzuFbTJszrgwd2X96S3MBKGvQz2b2rVbBudDG1dkC6q",
-    receiptMint: "3RYQPx3GucRtgYaVryRVjzm6eduSbtJkmCdgR18XfLVy",
-    receiptTokenAccount: "HqPVwjfy5j5joBp9SsLT8JL2hxeJFtKMzvc5r8e2bTBG",
-    positionNotional: 750_000_000,
-    lendingValue: 480_000_000,
-    debt: 0,
-    health: Number.POSITIVE_INFINITY,
-    state: "available",
-    source: "demo",
-    wrapped: true,
-  },
-];
 
 const LENDING_FLOW_STEPS = [
   {
@@ -150,43 +105,8 @@ function hasLivePolicyAccounts(loan: DemoLoan) {
   return loan.policyAddress !== "Unavailable" && loan.productTermsAddress !== "Unavailable";
 }
 
-function lendingValueFromQuote(data: Record<string, unknown>, fallback: number) {
-  const maxLiability = toNumber(field(data, "maxLiability"));
-  if (!maxLiability) return fallback;
-  return Math.round(maxLiability * 0.7);
-}
-
 function isOpenLoan(loan: DemoLoan) {
   return loan.state !== "available" && loan.state !== "liquidated";
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function keypairFromSecret(value: string) {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const raw =
-    trimmed.startsWith("[")
-      ? new Uint8Array(JSON.parse(trimmed) as number[])
-      : trimmed.includes(",")
-        ? new Uint8Array(trimmed.split(",").map((item) => Number(item.trim())))
-        : bs58.decode(trimmed);
-  return Keypair.fromSecretKey(raw);
-}
-
-function devnetDemoWallet() {
-  const configuredSecret = process.env.NEXT_PUBLIC_DEVNET_DEMO_WALLET_SECRET_KEY?.trim();
-  if (configuredSecret) return keypairFromSecret(configuredSecret);
-  if (typeof window === "undefined") return null;
-
-  const stored = window.localStorage.getItem(DEVNET_DEMO_WALLET_STORAGE_KEY);
-  if (stored) return keypairFromSecret(stored);
-
-  const generated = Keypair.generate();
-  window.localStorage.setItem(DEVNET_DEMO_WALLET_STORAGE_KEY, JSON.stringify(Array.from(generated.secretKey)));
-  return generated;
 }
 
 function solscanClusterSuffix(cluster: ClusterId) {
@@ -280,7 +200,6 @@ function liveLoanFromEntry(entry: PortfolioEntry, config: ReturnType<typeof useR
     debt: 0,
     health: Number.POSITIVE_INFINITY,
     state: "available",
-    source: "live",
     wrapped: false,
   };
 }
@@ -290,16 +209,12 @@ export function LendingIntegrationDemo() {
   const { connected, publicKey, sendTransaction } = useWallet();
   const { current, cluster } = useRuntimeConfig();
   const [liveLoans, setLiveLoans] = useState<DemoLoan[]>([]);
-  const [demoLoans, setDemoLoans] = useState<DemoLoan[]>(DEMO_LOANS);
   const [wrapped, setWrapped] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(false);
   const [actionId, setActionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastSignature, setLastSignature] = useState<string | null>(null);
   const [loanTransactions, setLoanTransactions] = useState<Record<string, LoanTransaction>>({});
-  const [devWalletAddress, setDevWalletAddress] = useState<string | null>(null);
-  const [devWalletBalanceLamports, setDevWalletBalanceLamports] = useState<number | null>(null);
-  const [copiedDevWallet, setCopiedDevWallet] = useState(false);
 
   const missingConfig = useMemo(() => {
     const missing: string[] = [];
@@ -339,33 +254,7 @@ export function LendingIntegrationDemo() {
     void loadLiveLoans();
   }, [connected, publicKey, connection, current, missingConfig.length]);
 
-  useEffect(() => {
-    if (cluster !== "devnet") {
-      setDevWalletAddress(null);
-      setDevWalletBalanceLamports(null);
-      return;
-    }
-    try {
-      const signer = devnetDemoWallet();
-      const address = signer?.publicKey.toBase58() ?? null;
-      setDevWalletAddress(address);
-      if (!signer) {
-        setDevWalletBalanceLamports(null);
-        return;
-      }
-      connection
-        .getBalance(signer.publicKey, "confirmed")
-        .then(setDevWalletBalanceLamports)
-        .catch(() => setDevWalletBalanceLamports(null));
-    } catch {
-      setDevWalletAddress(null);
-      setDevWalletBalanceLamports(null);
-    }
-  }, [cluster, connection]);
-
-  const loans = liveLoans.length
-    ? liveLoans.map((loan) => ({ ...loan, wrapped: wrapped[loan.id] ?? loan.wrapped }))
-    : demoLoans;
+  const loans = liveLoans.map((loan) => ({ ...loan, wrapped: wrapped[loan.id] ?? loan.wrapped }));
 
   const totals = useMemo(() => {
     return loans.reduce(
@@ -381,11 +270,6 @@ export function LendingIntegrationDemo() {
       { collateral: 0, debt: 0, open: 0, liquidatable: 0 },
     );
   }, [loans]);
-  const devWalletNeedsFunding =
-    cluster === "devnet" &&
-    devWalletBalanceLamports !== null &&
-    devWalletBalanceLamports < DEVNET_DEMO_WALLET_MIN_BALANCE;
-
   async function sendAndConfirm(tx: VersionedTransaction, signers: Keypair[] = []) {
     if (signers.length > 0) tx.sign(signers);
     const simulation = await connection.simulateTransaction(tx, {
@@ -401,76 +285,6 @@ export function LendingIntegrationDemo() {
     return signature;
   }
 
-  async function sendWithDevWallet(tx: VersionedTransaction, signer: Keypair, signers: Keypair[] = []) {
-    tx.sign([signer, ...signers]);
-    const simulation = await connection.simulateTransaction(tx, {
-      sigVerify: false,
-      replaceRecentBlockhash: true,
-      commitment: "confirmed",
-    });
-    if (simulation.value.err) {
-      throw new Error(`Simulation failed: ${JSON.stringify(simulation.value.err)}`);
-    }
-    const signature = await connection.sendRawTransaction(tx.serialize(), {
-      preflightCommitment: "confirmed",
-    });
-    await connection.confirmTransaction(signature, "confirmed");
-    connection
-      .getBalance(signer.publicKey, "confirmed")
-      .then(setDevWalletBalanceLamports)
-      .catch(() => setDevWalletBalanceLamports(null));
-    return signature;
-  }
-
-  async function ensureDevWalletFunded(address: PublicKey) {
-    let balance = await connection.getBalance(address, "confirmed");
-    setDevWalletBalanceLamports(balance);
-    if (balance >= DEVNET_DEMO_WALLET_MIN_BALANCE) return;
-
-    const airdropConnection =
-      current.rpcUrl.includes("api.devnet.solana.com")
-        ? connection
-        : new Connection("https://api.devnet.solana.com", "confirmed");
-    let signature: string;
-    try {
-      signature = await airdropConnection.requestAirdrop(address, DEVNET_DEMO_WALLET_AIRDROP);
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message : String(cause);
-      throw new Error(
-        `Devnet faucet could not fund the demo wallet. Add devnet SOL to ${address.toBase58()} and retry. Faucet detail: ${message}`,
-      );
-    }
-    const latestBlockhash = await airdropConnection.getLatestBlockhash("confirmed");
-    await airdropConnection.confirmTransaction({ signature, ...latestBlockhash }, "confirmed");
-
-    for (let attempt = 0; attempt < 8; attempt += 1) {
-      balance = await connection.getBalance(address, "confirmed");
-      setDevWalletBalanceLamports(balance);
-      if (balance >= DEVNET_DEMO_WALLET_MIN_BALANCE) return;
-      await delay(500);
-    }
-    throw new Error(
-      `Devnet demo wallet is still waiting for faucet SOL. Add devnet SOL to ${address.toBase58()} and retry.`,
-    );
-  }
-
-  async function refreshDevWalletBalance() {
-    if (!devWalletAddress) return;
-    try {
-      const balance = await connection.getBalance(new PublicKey(devWalletAddress), "confirmed");
-      setDevWalletBalanceLamports(balance);
-    } catch {
-      setDevWalletBalanceLamports(null);
-    }
-  }
-
-  async function copyDevWalletAddress() {
-    if (!devWalletAddress || typeof navigator === "undefined") return;
-    await navigator.clipboard.writeText(devWalletAddress);
-    setCopiedDevWallet(true);
-    window.setTimeout(() => setCopiedDevWallet(false), 1500);
-  }
-
   function rememberLoanTransaction(loan: DemoLoan, signature: string, label: string) {
     setLastSignature(signature);
     setLoanTransactions((items) => ({
@@ -479,137 +293,64 @@ export function LendingIntegrationDemo() {
     }));
   }
 
-  async function submitMockLoanAction(
+  async function submitLoanAction(
     loan: DemoLoan,
-    action: "tokenize" | "borrow" | "liquidate",
+    action: "borrow" | "liquidate",
   ): Promise<LoanActionResult | null> {
-    const markerRecipient = new PublicKey(loan.borrower);
-
-    async function buildActionTransaction(payer: PublicKey, includeMemo: boolean) {
-      if (action !== "borrow") {
-        const memoByAction = {
-          tokenize: `Halcyon mock loan tokenization ${loan.id}; receipt ${loan.receiptMint}`,
-          liquidate: `Halcyon mock loan liquidation ${loan.id}; receipt ${loan.receiptMint}`,
-        } satisfies Record<Exclude<typeof action, "borrow">, string>;
-        return {
-          tx: await buildMockLendingMarkerTransaction(
-            connection,
-            payer,
-            markerRecipient,
-            memoByAction[action],
-            includeMemo,
-          ),
-        };
-      }
-
-      if (hasLivePolicyAccounts(loan)) {
-        throw new Error("Live Flagship borrowing must use checkpointed pricing.");
-      }
-
-      const notionalBaseUnits = new BN(Math.max(1, loan.positionNotional || loan.lendingValue));
-      const preview = await simulatePreview(connection, current, "flagship", notionalBaseUnits);
-      const pricedLendingValue = lendingValueFromQuote(preview.data, loan.lendingValue);
-      const debt = borrowDebtForLoan({ ...loan, lendingValue: pricedLendingValue });
-      const quoteSlot = toNumber(field(preview.data, "quoteSlot"));
-      const spyPrice = toNumber(field(preview.data, "entrySpyPriceS6"));
-      const qqqPrice = toNumber(field(preview.data, "entryQqqPriceS6"));
-      const iwmPrice = toNumber(field(preview.data, "entryIwmPriceS6"));
-      const memo = `Halcyon mock loan borrow ${loan.id}; pricing preview_quote; quote_slot ${quoteSlot}; spy ${spyPrice}; qqq ${qqqPrice}; iwm ${iwmPrice}; receipt ${loan.receiptMint}; lending_value ${pricedLendingValue}; debt ${debt}`;
-      return {
-        pricedLendingValue,
-        tx: await buildMockLendingBorrowTransaction(
-          connection,
-          current,
-          payer,
-          markerRecipient,
-          memo,
-          includeMemo,
-          {
-            mode: "flagshipQuote",
-            notionalBaseUnits,
-          },
-        ),
-      };
+    if (!publicKey) {
+      setError("Connect a wallet to send the loan transaction.");
+      return null;
+    }
+    if (!hasLivePolicyAccounts(loan)) {
+      throw new Error("Live policy and terms accounts are required. No fallback collateral is available.");
     }
 
-    async function executeCheckpointedAction(
-      payer: PublicKey,
-      includeMemo: boolean,
-      sendCheckpointTransaction: (transaction: VersionedTransaction, signers: Keypair[]) => Promise<string>,
-    ): Promise<LoanActionResult | null> {
-      if (!hasLivePolicyAccounts(loan) || action === "tokenize") return null;
+    const markerRecipient = new PublicKey(loan.borrower);
+    const policyAddress = new PublicKey(loan.policyAddress);
+    const productTermsAddress = new PublicKey(loan.productTermsAddress);
+    const includeMemo = cluster !== "localnet";
 
-      const policyAddress = new PublicKey(loan.policyAddress);
-      const productTermsAddress = new PublicKey(loan.productTermsAddress);
-
-      if (action === "borrow") {
-        const estimatedDebt = borrowDebtForLoan(loan);
-        const memo = `Halcyon mock loan borrow ${loan.id}; pricing checkpointed preview_lending_value; policy ${loan.policyAddress}; receipt ${loan.receiptMint}; estimated_debt ${estimatedDebt}`;
-        const execution = await executeCheckpointedMockLendingBorrow({
-          connection,
-          config: current,
-          payer,
-          markerRecipient,
-          memo,
-          includeMemo,
-          policyAddress,
-          productTermsAddress,
-          sendTransaction: sendCheckpointTransaction,
-        });
-        const pricedLendingValue =
-          toNumber(field(execution.preview, "lendingValuePayoutUsdc")) || loan.lendingValue;
-        return {
-          signature: execution.signatures[execution.signatures.length - 1],
-          pricedLendingValue,
-          transactionCount: execution.signatures.length,
-          maxUnitsConsumed: execution.maxUnitsConsumed,
-        };
-      }
-
-      const execution = await executeCheckpointedWrappedFlagshipLiquidation({
+    if (action === "borrow") {
+      const estimatedDebt = borrowDebtForLoan(loan);
+      const memo = `Halcyon lending borrow ${loan.id}; pricing checkpointed preview_lending_value; policy ${loan.policyAddress}; receipt ${loan.receiptMint}; estimated_debt ${estimatedDebt}`;
+      const execution = await executeCheckpointedMockLendingBorrow({
         connection,
         config: current,
-        holder: payer,
+        payer: publicKey,
+        markerRecipient,
+        memo,
+        includeMemo,
         policyAddress,
         productTermsAddress,
-        sendTransaction: sendCheckpointTransaction,
+        sendTransaction: (transaction, signers) => sendAndConfirm(transaction, signers),
       });
+      const pricedLendingValue =
+        toNumber(field(execution.preview, "lendingValuePayoutUsdc")) || loan.lendingValue;
       return {
         signature: execution.signatures[execution.signatures.length - 1],
+        pricedLendingValue,
         transactionCount: execution.signatures.length,
         maxUnitsConsumed: execution.maxUnitsConsumed,
       };
     }
 
-    if (cluster === "devnet") {
-      const signer = devnetDemoWallet();
-      if (!signer) throw new Error("Devnet demo wallet is not configured.");
-      setDevWalletAddress(signer.publicKey.toBase58());
-      await ensureDevWalletFunded(signer.publicKey);
-      const checkpointed = await executeCheckpointedAction(signer.publicKey, true, (tx, signers) =>
-        sendWithDevWallet(tx, signer, signers),
-      );
-      if (checkpointed) return checkpointed;
-      const { tx, pricedLendingValue } = await buildActionTransaction(signer.publicKey, true);
-      return { signature: await sendWithDevWallet(tx, signer), pricedLendingValue };
-    }
-
-    if (!publicKey) {
-      setError("Connect a wallet to send the mock loan transaction.");
-      return null;
-    }
-
-    const checkpointed = await executeCheckpointedAction(publicKey, cluster !== "localnet", (tx, signers) =>
-      sendAndConfirm(tx, signers),
-    );
-    if (checkpointed) return checkpointed;
-
-    const { tx, pricedLendingValue } = await buildActionTransaction(publicKey, cluster !== "localnet");
-    return { signature: await sendAndConfirm(tx), pricedLendingValue };
+    const execution = await executeCheckpointedWrappedFlagshipLiquidation({
+      connection,
+      config: current,
+      holder: publicKey,
+      policyAddress,
+      productTermsAddress,
+      sendTransaction: (transaction, signers) => sendAndConfirm(transaction, signers),
+    });
+    return {
+      signature: execution.signatures[execution.signatures.length - 1],
+      transactionCount: execution.signatures.length,
+      maxUnitsConsumed: execution.maxUnitsConsumed,
+    };
   }
 
   async function handleWrap(loan: DemoLoan) {
-    if (loan.source !== "demo" && !publicKey) {
+    if (!publicKey) {
       setError("Connect a wallet to tokenize collateral.");
       return;
     }
@@ -618,18 +359,13 @@ export function LendingIntegrationDemo() {
     setError(null);
     setLastSignature(null);
     try {
-      const result =
-        loan.source === "demo"
-          ? await submitMockLoanAction(loan, "tokenize")
-          : {
-              signature: await sendAndConfirm(
-                await buildWrapPolicyReceiptTransaction(connection, current, publicKey!, new PublicKey(loan.policyAddress)),
-              ),
-            };
-      if (!result) return;
+      const result = {
+        signature: await sendAndConfirm(
+          await buildWrapPolicyReceiptTransaction(connection, current, publicKey, new PublicKey(loan.policyAddress)),
+        ),
+      };
       setWrapped((values) => ({ ...values, [loan.id]: true }));
-      setDemoLoans((items) => items.map((item) => (item.id === loan.id ? { ...item, wrapped: true } : item)));
-      rememberLoanTransaction(loan, result.signature, loan.source === "demo" ? "Mock tokenization tx" : "Tokenization tx");
+      rememberLoanTransaction(loan, result.signature, "Tokenization tx");
     } catch (cause) {
       const mapped = mapSolanaError(cause);
       setError(`${mapped.title} ${mapped.body}`);
@@ -643,8 +379,8 @@ export function LendingIntegrationDemo() {
       setError("Tokenize the position receipt before opening a loan.");
       return;
     }
-    if (loan.source !== "demo" && !publicKey) {
-      setError("Connect a wallet to open a fake loan against live collateral.");
+    if (!publicKey) {
+      setError("Connect a wallet to open a loan against live collateral.");
       return;
     }
 
@@ -652,7 +388,7 @@ export function LendingIntegrationDemo() {
     setError(null);
     setLastSignature(null);
     try {
-      const result = await submitMockLoanAction(loan, "borrow");
+      const result = await submitLoanAction(loan, "borrow");
       if (!result) return;
 
       const lendingValue = result.pricedLendingValue ?? loan.lendingValue;
@@ -665,37 +401,20 @@ export function LendingIntegrationDemo() {
           ? `Checkpointed loan tx (${result.transactionCount} tx)`
           : "Live-priced loan tx",
       );
-      if (loan.source === "demo") {
-        setDemoLoans((items) =>
-          items.map((item) =>
-            item.id === loan.id
-              ? {
-                  ...item,
-                  lendingValue,
-                  debt,
-                  health,
-                  state: healthState(health),
-                  wrapped: true,
-                }
-              : item,
-          ),
-        );
-      } else {
-        setLiveLoans((items) =>
-          items.map((item) =>
-            item.id === loan.id
-              ? {
-                  ...item,
-                  lendingValue,
-                  debt,
-                  health,
-                  state: healthState(health),
-                  wrapped: true,
-                }
-              : item,
-          ),
-        );
-      }
+      setLiveLoans((items) =>
+        items.map((item) =>
+          item.id === loan.id
+            ? {
+                ...item,
+                lendingValue,
+                debt,
+                health,
+                state: healthState(health),
+                wrapped: true,
+              }
+            : item,
+        ),
+      );
     } catch (cause) {
       const mapped = mapSolanaError(cause);
       setError(`${mapped.title} ${mapped.body}`);
@@ -706,10 +425,10 @@ export function LendingIntegrationDemo() {
 
   async function handleLiquidate(loan: DemoLoan) {
     if (!isOpenLoan(loan)) {
-      setError("Open a fake loan before sending liquidation.");
+      setError("Open a loan before sending liquidation.");
       return;
     }
-    if (loan.source !== "demo" && !publicKey) {
+    if (!publicKey) {
       setError("Connect a wallet to send the liquidation transaction.");
       return;
     }
@@ -718,30 +437,20 @@ export function LendingIntegrationDemo() {
     setError(null);
     setLastSignature(null);
     try {
-      const result = await submitMockLoanAction(loan, "liquidate");
+      const result = await submitLoanAction(loan, "liquidate");
       if (!result) return;
       rememberLoanTransaction(
         loan,
         result.signature,
-        loan.source === "demo"
-          ? "Fake liquidation tx"
-          : result.transactionCount
-            ? `Checkpointed buyback (${result.transactionCount} tx)`
-            : "Checkpointed buyback",
+        result.transactionCount
+          ? `Checkpointed buyback (${result.transactionCount} tx)`
+          : "Checkpointed buyback",
       );
-      if (loan.source === "demo") {
-        setDemoLoans((items) =>
-          items.map((item) =>
-            item.id === loan.id ? { ...item, state: "liquidated", debt: 0, health: Number.POSITIVE_INFINITY } : item,
-          ),
-        );
-      } else {
-        setLiveLoans((items) =>
-          items.map((item) =>
-            item.id === loan.id ? { ...item, state: "liquidated", debt: 0, health: Number.POSITIVE_INFINITY } : item,
-          ),
-        );
-      }
+      setLiveLoans((items) =>
+        items.map((item) =>
+          item.id === loan.id ? { ...item, state: "liquidated", debt: 0, health: Number.POSITIVE_INFINITY } : item,
+        ),
+      );
     } catch (cause) {
       const mapped = mapSolanaError(cause);
       setError(`${mapped.title} ${mapped.body}`);
@@ -764,7 +473,7 @@ export function LendingIntegrationDemo() {
               Receipt-token collateral desk
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-muted-foreground">
-              Take a position receipt SPL token, run checkpointed on-chain pricing, open a fake loan against it, then
+              Take a live position receipt SPL token, run checkpointed on-chain pricing, open a loan against it, then
               liquidate live collateral through the Flagship buyback path.
             </p>
           </div>
@@ -848,76 +557,9 @@ export function LendingIntegrationDemo() {
         </section>
       )}
 
-      {cluster === "devnet" && (
+      {!connected && (
         <section className="rounded-md border border-border bg-card p-4 text-sm leading-6 text-muted-foreground">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="font-medium text-foreground">Devnet demo wallet active</div>
-              <div className="mt-1">
-                Mock borrow and liquidation actions use the dev wallet, so the demo loan flow does not require a
-                connected browser wallet.
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={refreshDevWalletBalance}
-              className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-background px-3 font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-            >
-              <RefreshCcw className="h-4 w-4" aria-hidden="true" />
-              Refresh balance
-            </button>
-          </div>
-          {devWalletAddress ? (
-            <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-              <div className="min-w-0 rounded-md border border-border bg-background p-3">
-                <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                  Dev wallet address
-                </div>
-                <div className="mt-2 break-all font-mono text-xs text-foreground sm:text-sm">{devWalletAddress}</div>
-                <div className="mt-2 flex flex-wrap items-center gap-3">
-                  <SolscanAccountLink address={devWalletAddress} cluster={cluster}>
-                    View account
-                  </SolscanAccountLink>
-                  <span className="tabular text-foreground">
-                    {devWalletBalanceLamports === null
-                      ? "Balance unknown"
-                      : `${(devWalletBalanceLamports / LAMPORTS_PER_SOL).toFixed(4)} devnet SOL`}
-                  </span>
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={copyDevWalletAddress}
-                  className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-background px-3 font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                >
-                  <Copy className="h-4 w-4" aria-hidden="true" />
-                  {copiedDevWallet ? "Copied" : "Copy address"}
-                </button>
-                <a
-                  href={DEVNET_FAUCET_URL}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-foreground px-3 font-medium text-background transition-colors hover:bg-foreground/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                >
-                  Open faucet
-                  <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
-                </a>
-              </div>
-            </div>
-          ) : null}
-          <div className="mt-1">
-            {devWalletBalanceLamports !== null && devWalletBalanceLamports < DEVNET_DEMO_WALLET_MIN_BALANCE
-              ? "This wallet needs devnet SOL before it can pay transaction fees."
-            : "Borrow actions run the checkpointed Flagship NAV path, then write a 1-lamport borrower marker plus memo on devnet."}
-          </div>
-        </section>
-      )}
-
-      {!connected && cluster !== "devnet" && (
-        <section className="rounded-md border border-border bg-card p-4 text-sm leading-6 text-muted-foreground">
-          Switch the runtime to devnet for the no-wallet demo. On this cluster, connect a wallet to send mock loan
-          marker transactions.
+          Connect a wallet with an active flagship note. This page does not render fallback collateral accounts.
         </section>
       )}
 
@@ -988,9 +630,7 @@ export function LendingIntegrationDemo() {
                   const wrapping = actionId === `wrap-${loan.id}`;
                   const borrowing = actionId === `borrow-${loan.id}`;
                   const liquidating = actionId === `liquidate-${loan.id}`;
-                  const canUseDevWallet = loan.source === "demo" && cluster === "devnet";
-                  const needsConnectedWallet = !canUseDevWallet;
-                  const walletUnavailable = (needsConnectedWallet && !connected) || (canUseDevWallet && devWalletNeedsFunding);
+                  const walletUnavailable = !connected;
                   const canBorrow = loan.wrapped && loan.state === "available";
                   const canLiquidate = loan.wrapped && isOpenLoan(loan);
                   const loanTx = loanTransactions[loan.id];
@@ -1098,16 +738,12 @@ export function LendingIntegrationDemo() {
                               ) : (
                                 <Siren className="h-4 w-4" aria-hidden="true" />
                               )}
-                              {loan.state === "liquidated"
-                                ? "Liquidated"
-                                : loan.source === "demo"
-                                  ? "Liquidate"
-                                  : "Buy back"}
+                              {loan.state === "liquidated" ? "Liquidated" : "Buy back"}
                             </button>
                           ) : null}
                           {walletUnavailable ? (
                             <div className="basis-full text-xs text-muted-foreground">
-                              {canUseDevWallet ? "Fund the dev wallet, then refresh balance." : "Wallet required on this cluster."}
+                              Wallet required on this cluster.
                             </div>
                           ) : null}
                           {loanTx ? (

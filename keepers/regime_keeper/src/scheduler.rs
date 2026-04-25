@@ -8,6 +8,7 @@ use crate::config::KeeperConfig;
 use crate::rpc::KeeperClient;
 
 const REGIME_WRITE_MIN_GAP_SECS: i64 = 18 * 60 * 60;
+const USER_AGENT: &str = "Mozilla/5.0 (compatible; Halcyon Regime Keeper)";
 
 fn unix_now() -> i64 {
     SystemTime::now()
@@ -95,7 +96,12 @@ struct CoinGeckoMarketChart {
 }
 
 async fn fetch_fvol_s6(history_url: &str) -> Result<i64> {
-    let response = reqwest::get(history_url).await?.error_for_status()?;
+    let response = reqwest::Client::new()
+        .get(history_url)
+        .header(reqwest::header::USER_AGENT, USER_AGENT)
+        .send()
+        .await?
+        .error_for_status()?;
     let chart: CoinGeckoMarketChart = response.json().await?;
     let closes = chart
         .prices

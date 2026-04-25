@@ -66,12 +66,48 @@ check_key_history() {
   fi
 }
 
+check_sol_balance_min() {
+  local label="$1"
+  local keypair_path="$2"
+  local min_sol="$3"
+
+  if [[ ! -f "${keypair_path}" ]]; then
+    echo "FAIL balance ${label} key missing at ${keypair_path}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local pubkey
+  pubkey="$(solana address -k "${keypair_path}")"
+  local output
+  output="$(solana balance -k "${keypair_path}" --url "${HELIUS_DEVNET_RPC}" 2>&1 || true)"
+  local balance_sol
+  balance_sol="$(awk '{print $1}' <<<"${output}")"
+
+  if python3 - "${balance_sol}" "${min_sol}" <<'PY'
+import sys
+try:
+    balance = float(sys.argv[1])
+    minimum = float(sys.argv[2])
+except Exception:
+    sys.exit(2)
+sys.exit(0 if balance >= minimum else 1)
+PY
+  then
+    echo "PASS balance ${label} (${pubkey}) ${balance_sol} SOL >= ${min_sol} SOL"
+  else
+    echo "FAIL balance ${label} (${pubkey}) ${balance_sol:-<unknown>} SOL < ${min_sol} SOL"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
 main() {
   load_env
 
   if is_enabled "${ENABLE_PRICE_RELAY:-1}"; then
     check_unit halcyon-price-relay.service
     check_key_history price-relay "${PRICE_RELAY_KEYPAIR}"
+    check_sol_balance_min price-relay "${PRICE_RELAY_KEYPAIR}" "${PRICE_RELAY_MIN_BALANCE_SOL:-0.25}"
   fi
   if is_enabled "${ENABLE_OBSERVATION_KEEPER:-1}"; then
     check_unit halcyon-observation-keeper.service

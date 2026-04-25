@@ -104,6 +104,10 @@ pub fn sol_autocall_reduced_operators() -> (Pubkey, u8) {
     reduced_operators_for(&halcyon_sol_autocall::ID)
 }
 
+pub fn sol_autocall_midlife_matrices() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[seeds::MIDLIFE_MATRICES], &halcyon_sol_autocall::ID)
+}
+
 pub fn regression() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seeds::REGRESSION], &halcyon_kernel::ID)
 }

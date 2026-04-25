@@ -12,6 +12,17 @@ use solana_sdk::{
     signer::Signer,
     transaction::{Transaction, VersionedTransaction},
 };
+use std::time::Duration;
+
+const RPC_RETRY_ATTEMPTS: usize = 5;
+
+fn is_retryable_rpc_throttle(message: &str) -> bool {
+    message.contains("429") || message.contains("Too Many Requests")
+}
+
+fn retry_delay(attempt: usize) -> Duration {
+    Duration::from_millis(250 * 2u64.pow(attempt.saturating_sub(1) as u32))
+}
 
 fn simulate_heap_frame_bytes() -> Result<Option<u32>> {
     let Some(raw) = std::env::var_os("HALCYON_SIM_HEAP_FRAME_BYTES") else {
@@ -38,10 +49,20 @@ pub async fn send_instructions_with_extra_signers(
     instructions: Vec<Instruction>,
     extra_signers: &[&Keypair],
 ) -> Result<Signature> {
-    let recent_blockhash = rpc
-        .get_latest_blockhash()
-        .await
-        .context("latest blockhash")?;
+    let mut blockhash_attempt = 1;
+    let recent_blockhash = loop {
+        match rpc.get_latest_blockhash().await {
+            Ok(blockhash) => break blockhash,
+            Err(err)
+                if blockhash_attempt < RPC_RETRY_ATTEMPTS
+                    && is_retryable_rpc_throttle(&err.to_string()) =>
+            {
+                tokio::time::sleep(retry_delay(blockhash_attempt)).await;
+                blockhash_attempt += 1;
+            }
+            Err(err) => return Err(err).context("latest blockhash"),
+        }
+    };
     let mut signers: Vec<&dyn Signer> = Vec::with_capacity(extra_signers.len() + 1);
     signers.push(signer);
     for extra in extra_signers {
@@ -53,9 +74,20 @@ pub async fn send_instructions_with_extra_signers(
         &signers,
         recent_blockhash,
     );
-    rpc.send_and_confirm_transaction(&tx)
-        .await
-        .context("sending transaction")
+    let mut send_attempt = 1;
+    loop {
+        match rpc.send_and_confirm_transaction(&tx).await {
+            Ok(signature) => return Ok(signature),
+            Err(err)
+                if send_attempt < RPC_RETRY_ATTEMPTS
+                    && is_retryable_rpc_throttle(&err.to_string()) =>
+            {
+                tokio::time::sleep(retry_delay(send_attempt)).await;
+                send_attempt += 1;
+            }
+            Err(err) => return Err(err).context("sending transaction"),
+        }
+    }
 }
 
 pub async fn send_compute_instructions_with_extra_signers(

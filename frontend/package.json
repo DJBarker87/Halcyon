@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "deploy:cloudflare": "npm run build && CLOUDFLARE_ACCOUNT_ID=1d4d5fbdb010f0a63608ee6399bf8806 wrangler pages deploy out --project-name halcyon --branch main"
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",

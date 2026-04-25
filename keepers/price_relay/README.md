@@ -114,6 +114,37 @@ publish_time,price,conf,exponent
 The writer dedupes on `publish_time` within each feed file and prunes rows
 older than `cache_retention_days` on startup and then weekly.
 
+## Demo freshness
+
+For a live demo, run the relay continuously. A one-shot `--once` proves the
+posting path works, but it does not keep the receiver accounts fresh during a
+recording session:
+
+```
+cd keepers/price_relay
+npm run start:devnet
+```
+
+SOL/USDC publish 24/7. SPY/QQQ/IWM do not; their latest Pyth benchmark update
+can be Friday's market close throughout the weekend. The protocol's quote-time
+staleness cap must account for that or the flagship equity demo will reject a
+fully verified, market-closed price as stale.
+
+For devnet demo deployments, use a market-closed quote cap and keep the
+settlement cap tight:
+
+```
+NO_DNA=1 cargo run -p halcyon_cli -- \
+  --rpc https://api.devnet.solana.com \
+  --keypair ~/.config/solana/id.json \
+  set-protocol-config \
+  --pyth-quote-staleness-cap-secs 604800
+```
+
+Do not loosen `pyth_settle_staleness_cap_secs`; settlement/observation should
+stay at `60`. Long term, split quote staleness by product/feed so SOL stays
+tight while equity benchmark quotes allow market closures.
+
 ## Run under systemd
 
 ```

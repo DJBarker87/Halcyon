@@ -67,10 +67,7 @@ pub fn read_pyth_price(
         .publish_ts
         .checked_add(staleness_cap_secs)
         .ok_or_else(|| error!(OracleError::ScaleOverflow))?;
-    require!(
-        max_age >= clock.unix_timestamp,
-        OracleError::InsufficientVerification
-    );
+    require!(max_age >= clock.unix_timestamp, OracleError::PythPriceStale);
 
     Ok(PriceSnapshot {
         price_s6: acct.price_s6,
@@ -193,6 +190,43 @@ mod tests {
 
         let err = read_pyth_price(&info, &feed_id, &expected_owner, &clock, 10).unwrap_err();
         assert_eq!(err, error!(OracleError::InvalidOwner));
+    }
+
+    #[test]
+    fn rejects_stale_publish_time_as_stale() {
+        let feed_id = [0xdd; 32];
+        let acct = MockPriceAccount {
+            feed_id,
+            price_s6: 150_000_000,
+            conf_s6: 100_000,
+            expo: -6,
+            publish_ts: 1_700_000_000,
+            publish_slot: 99,
+        };
+        let key = Pubkey::new_unique();
+        let owner = Pubkey::new_unique();
+        let mut lamports = 0u64;
+        let mut data = encode(&acct);
+        let info = AccountInfo::new(
+            &key,
+            false,
+            false,
+            &mut lamports,
+            &mut data,
+            &owner,
+            false,
+            0,
+        );
+        let clock = Clock {
+            slot: 123,
+            epoch_start_timestamp: 0,
+            epoch: 0,
+            leader_schedule_epoch: 0,
+            unix_timestamp: acct.publish_ts + 11,
+        };
+
+        let err = read_pyth_price(&info, &feed_id, &owner, &clock, 10).unwrap_err();
+        assert_eq!(err, error!(OracleError::PythPriceStale));
     }
 
     #[test]

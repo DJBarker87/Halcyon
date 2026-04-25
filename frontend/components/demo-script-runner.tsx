@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { BN } from "@coral-xyz/anchor";
 import { PublicKey } from "@solana/web3.js";
@@ -14,50 +14,334 @@ import {
   PanelRightOpen,
   Play,
   ReceiptText,
+  RefreshCw,
   ShieldCheck,
   X,
 } from "lucide-react";
 
-import { buildDemoPriceAndIssueLoanTransaction } from "@/lib/halcyon";
-import { cn, formatUsdcBaseUnits, shortAddress } from "@/lib/format";
+import {
+  buildDemoPriceAndIssueLoanTransaction,
+  missingFieldsForKind,
+  simulatePreview,
+} from "@/lib/halcyon";
+import {
+  cn,
+  field,
+  formatPercentFromBpsS6,
+  formatPercentFromS6,
+  shortAddress,
+  toNumber,
+  toStringValue,
+} from "@/lib/format";
 import { useRuntimeConfig } from "@/lib/runtime-config";
 import { mapSolanaError } from "@/lib/tx-errors";
+import type { ProductKind } from "@/lib/types";
 
 type ProductKey = "equity" | "sol" | "lp";
 type BorrowStage = "idle" | "computing" | "ready" | "sending" | "confirmed" | "error";
 
+type QuoteState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ready"; data: Record<string, unknown>; quoteSlot: number; fetchedAt: number }
+  | { status: "error"; error: string };
+
+type ReceiptRow = {
+  label: string;
+  value: string;
+  tone?: "primary" | "neutral";
+  source: string;
+};
+
+type DetailTile = {
+  symbol: string;
+  value: string;
+  source: string;
+};
+
+type BorrowQuote = {
+  notionalBaseUnits: BN;
+  fairValueBaseUnits: BN;
+  lendingValueBaseUnits: BN;
+  maxBorrowBaseUnits: BN;
+  debtBaseUnits: BN;
+  sourceSlot: BN;
+};
+
+type LastTx = {
+  signature: string;
+  slot: number | null;
+  unitsConsumed: number | null;
+};
+
 const RECEIPT_MINT = new PublicKey("AJAQcAqthGL2BXj9kUQEsPcyEV2cyuh4zF5UuRh3M2Zx");
 const DEMO_BORROWER = new PublicKey("8rMmhLp2kFy6uBETEi9T7V9Q8SAP8cLUb2D4EhmgcKyK");
-const DEFAULT_MARK_TX = "3rtbvWudzWGLya3dtKo9iRb2GzawbLpaSnqBBFq9TuLbpzNeyYRyGxUXfS4jivwAFR5bZLVjGUc7YwCfF1AXhy77";
+
+function usdBase(value: number) {
+  return new BN(Math.round(value * 1_000_000).toString());
+}
 
 const PRODUCTS = {
   equity: {
+    kind: "flagship",
     label: "Equity Autocall",
     route: "/flagship",
     underlying: "SPY / QQQ / IWM",
     receipt: "Live devnet note receipt",
+    notionalBaseUnits: usdBase(10_000),
   },
   sol: {
+    kind: "solAutocall",
     label: "SOL Autocall",
     route: "/sol-autocall",
     underlying: "SOL",
     receipt: "Shipping product receipt",
+    notionalBaseUnits: usdBase(5_000),
   },
   lp: {
+    kind: "ilProtection",
     label: "LP Protection",
     route: "/il-protection",
     underlying: "SOL/USDC LP",
     receipt: "Protection quote receipt",
+    notionalBaseUnits: usdBase(18_500),
   },
-} satisfies Record<ProductKey, { label: string; route: string; underlying: string; receipt: string }>;
+} satisfies Record<
+  ProductKey,
+  {
+    kind: ProductKind;
+    label: string;
+    route: string;
+    underlying: string;
+    receipt: string;
+    notionalBaseUnits: BN;
+  }
+>;
+
+const INITIAL_QUOTES: Record<ProductKey, QuoteState> = {
+  equity: { status: "idle" },
+  sol: { status: "idle" },
+  lp: { status: "idle" },
+};
 
 function explorerTxUrl(signature: string, cluster: string) {
   const suffix = cluster === "mainnet" ? "" : `?cluster=${cluster === "localnet" ? "devnet" : cluster}`;
   return `https://solscan.io/tx/${signature}${suffix}`;
 }
 
-function usdBase(value: number) {
-  return new BN(Math.round(value * 1_000_000).toString());
+function toIntegerBigInt(value: unknown) {
+  const stringValue = toStringValue(value);
+  if (/^-?\d+$/.test(stringValue)) return BigInt(stringValue);
+  const numeric = toNumber(value);
+  if (!Number.isFinite(numeric)) return 0n;
+  return BigInt(Math.trunc(numeric));
+}
+
+function baseUnitsBn(value: unknown) {
+  const stringValue = toStringValue(value);
+  if (/^\d+$/.test(stringValue)) return new BN(stringValue);
+  const numeric = toNumber(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return new BN(0);
+  return new BN(Math.trunc(numeric).toString());
+}
+
+function formatUsdcBaseUnitsExact(value: unknown, minimumFractionDigits = 0) {
+  const raw = toIntegerBigInt(value);
+  const negative = raw < 0n;
+  const absolute = negative ? -raw : raw;
+  const whole = absolute / 1_000_000n;
+  const fraction = absolute % 1_000_000n;
+  const amount = Number(whole) + Number(fraction) / 1_000_000;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits,
+    maximumFractionDigits: 2,
+  }).format(negative ? -amount : amount);
+}
+
+function formatCouponCash(notionalBaseUnits: unknown, couponBpsS6: unknown) {
+  const notional = toIntegerBigInt(notionalBaseUnits);
+  const bpsS6 = toIntegerBigInt(couponBpsS6);
+  if (notional <= 0n || bpsS6 <= 0n) return "$0";
+  const couponBaseUnits = (notional * bpsS6) / 10_000n / 1_000_000n;
+  return formatUsdcBaseUnitsExact(couponBaseUnits, 2);
+}
+
+function formatUsdPriceS6(value: unknown) {
+  const price = toNumber(value) / 1_000_000;
+  if (!Number.isFinite(price) || price <= 0) return "Unavailable";
+  return `$${price.toFixed(price >= 100 ? 2 : 4)}`;
+}
+
+function formatSlot(value: unknown) {
+  const slot = toNumber(value);
+  return slot > 0 ? slot.toLocaleString() : "Unavailable";
+}
+
+function formatTimestamp(value: unknown) {
+  const seconds = toNumber(value);
+  if (!seconds) return "Unavailable";
+  return new Date(seconds * 1000).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function formatFlagshipEntryBasket(data: Record<string, unknown>) {
+  return [
+    ["SPY", field(data, "entrySpyPriceS6")],
+    ["QQQ", field(data, "entryQqqPriceS6")],
+    ["IWM", field(data, "entryIwmPriceS6")],
+  ]
+    .map(([symbol, price]) => `${symbol} ${formatUsdPriceS6(price)}`)
+    .join(" / ");
+}
+
+function sourceSlotFor(state: QuoteState) {
+  if (state.status !== "ready") return new BN(0);
+  return new BN(String(Math.max(0, Math.trunc(state.quoteSlot))));
+}
+
+function deriveBorrowQuote(state: QuoteState) {
+  if (state.status !== "ready") {
+    throw new Error("Run a live equity preview before building the lending transaction.");
+  }
+  const fairValueBaseUnits = baseUnitsBn(field(state.data, "maxLiability"));
+  if (fairValueBaseUnits.lte(new BN(0))) {
+    throw new Error("The flagship program returned no liability to lend against.");
+  }
+
+  const lendingValueBaseUnits = fairValueBaseUnits.muln(70).divn(100);
+  const maxBorrowBaseUnits = lendingValueBaseUnits.muln(80).divn(100);
+
+  return {
+    notionalBaseUnits: PRODUCTS.equity.notionalBaseUnits,
+    fairValueBaseUnits,
+    lendingValueBaseUnits,
+    maxBorrowBaseUnits,
+    debtBaseUnits: maxBorrowBaseUnits,
+    sourceSlot: sourceSlotFor(state),
+  } satisfies BorrowQuote;
+}
+
+function receiptRowsFor(product: ProductKey, quote: QuoteState): ReceiptRow[] {
+  if (quote.status === "loading" || quote.status === "idle") {
+    return [
+      { label: "Quote status", value: "Loading live preview", tone: "primary", source: "on-chain simulateTransaction" },
+      { label: "Program", value: PRODUCTS[product].kind, source: "configured deployment" },
+      { label: "Data source", value: "No fallback values", source: "unavailable until RPC returns" },
+    ];
+  }
+  if (quote.status === "error") {
+    return [
+      { label: "Quote status", value: "Unavailable", tone: "primary", source: "RPC/program error" },
+      { label: "Reason", value: quote.error, source: "runtime error" },
+      { label: "Fallback", value: "None", source: "synthetic data disabled" },
+    ];
+  }
+
+  const data = quote.data;
+  if (product === "sol") {
+    return [
+      {
+        label: "Principal escrowed",
+        value: formatUsdcBaseUnitsExact(field(data, "maxLiability")),
+        tone: "primary",
+        source: "sol_autocall.preview_quote",
+      },
+      {
+        label: "Coupon if paid",
+        value: formatCouponCash(field(data, "maxLiability"), field(data, "offeredCouponBpsS6")),
+        source: "sol_autocall.preview_quote",
+      },
+      {
+        label: "Entry SOL",
+        value: formatUsdPriceS6(field(data, "entryPriceS6")),
+        source: "Pyth account read by program",
+      },
+    ];
+  }
+
+  if (product === "lp") {
+    return [
+      {
+        label: "30-day premium",
+        value: formatUsdcBaseUnitsExact(field(data, "premium"), 2),
+        tone: "primary",
+        source: "il_protection.preview_quote",
+      },
+      {
+        label: "Maximum cover",
+        value: formatUsdcBaseUnitsExact(field(data, "maxLiability")),
+        source: "il_protection.preview_quote",
+      },
+      {
+        label: "Pricing volatility",
+        value: formatPercentFromS6(field(data, "sigmaPricingS6")),
+        source: "vault sigma state",
+      },
+    ];
+  }
+
+  return [
+    {
+      label: "Program mark",
+      value: formatUsdcBaseUnitsExact(field(data, "maxLiability")),
+      tone: "primary",
+      source: "flagship.preview_quote",
+    },
+    {
+      label: "Coupon if paid",
+      value: formatCouponCash(field(data, "maxLiability"), field(data, "offeredCouponBpsS6")),
+      source: "flagship.preview_quote",
+    },
+    {
+      label: "Entry basket",
+      value: formatFlagshipEntryBasket(data),
+      source: "Pyth accounts read by program",
+    },
+  ];
+}
+
+function detailTilesFor(product: ProductKey, quote: QuoteState): DetailTile[] {
+  if (quote.status !== "ready") {
+    const source = quote.status === "error" ? "unavailable" : "waiting for RPC";
+    return [
+      { symbol: "Quote slot", value: "Unavailable", source },
+      { symbol: "Engine", value: "Unavailable", source },
+      { symbol: "Expiry", value: "Unavailable", source },
+    ];
+  }
+
+  const data = quote.data;
+  if (product === "equity") {
+    return [
+      { symbol: "SPY", value: formatUsdPriceS6(field(data, "entrySpyPriceS6")), source: "Pyth" },
+      { symbol: "QQQ", value: formatUsdPriceS6(field(data, "entryQqqPriceS6")), source: "Pyth" },
+      { symbol: "IWM", value: formatUsdPriceS6(field(data, "entryIwmPriceS6")), source: "Pyth" },
+    ];
+  }
+  if (product === "sol") {
+    return [
+      { symbol: "Quote slot", value: formatSlot(quote.quoteSlot), source: "program return" },
+      { symbol: "Coupon rate", value: formatPercentFromBpsS6(field(data, "offeredCouponBpsS6")), source: "program return" },
+      { symbol: "Expiry", value: formatTimestamp(field(data, "expiryTs")), source: "program return" },
+    ];
+  }
+  return [
+    { symbol: "Entry SOL", value: formatUsdPriceS6(field(data, "entrySolPriceS6")), source: "Pyth" },
+    { symbol: "Entry USDC", value: formatUsdPriceS6(field(data, "entryUsdcPriceS6")), source: "Pyth" },
+    { symbol: "Premium rate", value: formatPercentFromS6(field(data, "loadedPremiumFractionS6")), source: "program return" },
+  ];
+}
+
+function closeStatus(state: QuoteState) {
+  if (state.status === "ready") return `preview_quote slot ${formatSlot(state.quoteSlot)}`;
+  if (state.status === "loading") return "Loading live preview";
+  if (state.status === "error") return "Unavailable on current RPC";
+  return "Awaiting preview";
 }
 
 export function DemoScriptRunner() {
@@ -65,54 +349,58 @@ export function DemoScriptRunner() {
   const { connected, publicKey, sendTransaction } = useWallet();
   const { cluster, current } = useRuntimeConfig();
   const [activeProduct, setActiveProduct] = useState<ProductKey>("equity");
-  const [fairValue, setFairValue] = useState(10_240);
-  const [solFairValue, setSolFairValue] = useState(5_018);
-  const [solPrice, setSolPrice] = useState(148.32);
-  const [basket, setBasket] = useState({ spy: 512.44, qqq: 438.12, iwm: 202.18 });
-  const [couponAccrued, setCouponAccrued] = useState(84.72);
+  const [quotes, setQuotes] = useState<Record<ProductKey, QuoteState>>(INITIAL_QUOTES);
   const [modalOpen, setModalOpen] = useState(false);
   const [borrowStage, setBorrowStage] = useState<BorrowStage>("idle");
+  const [borrowQuote, setBorrowQuote] = useState<BorrowQuote | null>(null);
   const [cuCounter, setCuCounter] = useState(0);
-  const [lastTx, setLastTx] = useState(DEFAULT_MARK_TX);
+  const [lastTx, setLastTx] = useState<LastTx | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
 
   const active = PRODUCTS[activeProduct];
-  const markSourceLabel = `Computed by Halcyon pricer on Solana. Last update: tx ${shortAddress(lastTx, 8)}`;
+  const activeQuote = quotes[activeProduct];
+
+  const loadQuote = useCallback(
+    async (product: ProductKey): Promise<QuoteState> => {
+      const config = PRODUCTS[product];
+      const missing = missingFieldsForKind(config.kind, current);
+      if (missing.length > 0) {
+        const state: QuoteState = {
+          status: "error",
+          error: `Missing ${missing.map((fieldInfo) => fieldInfo.label).join(", ")}`,
+        };
+        setQuotes((existing) => ({ ...existing, [product]: state }));
+        return state;
+      }
+
+      setQuotes((existing) => ({ ...existing, [product]: { status: "loading" } }));
+      try {
+        const preview = await simulatePreview(connection, current, config.kind, config.notionalBaseUnits);
+        const quoteSlot = toNumber(field(preview.data, "quoteSlot")) || (await connection.getSlot("confirmed"));
+        const state: QuoteState = {
+          status: "ready",
+          data: preview.data,
+          quoteSlot,
+          fetchedAt: Date.now(),
+        };
+        setQuotes((existing) => ({ ...existing, [product]: state }));
+        return state;
+      } catch (cause) {
+        const mapped = mapSolanaError(cause);
+        const state: QuoteState = {
+          status: "error",
+          error: `${mapped.title} ${mapped.body}`,
+        };
+        setQuotes((existing) => ({ ...existing, [product]: state }));
+        return state;
+      }
+    },
+    [connection, current],
+  );
 
   useEffect(() => {
-    const timer = window.setInterval(() => {
-      setBasket((currentBasket) => ({
-        spy: currentBasket.spy + (Math.random() - 0.45) * 0.18,
-        qqq: currentBasket.qqq + (Math.random() - 0.5) * 0.2,
-        iwm: currentBasket.iwm + (Math.random() - 0.48) * 0.12,
-      }));
-      setFairValue((value) => value + (Math.random() - 0.48) * 4);
-      setSolFairValue((value) => value + (Math.random() - 0.5) * 2);
-      setSolPrice((value) => value + (Math.random() - 0.5) * 0.08);
-      setCouponAccrued((value) => value + 0.03);
-    }, 1400);
-
-    return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    if (!modalOpen || borrowStage !== "computing") return;
-
-    setCuCounter(180_000);
-    const interval = window.setInterval(() => {
-      setCuCounter((value) => Math.min(1_270_000, value + 94_000));
-    }, 140);
-    const timeout = window.setTimeout(() => {
-      window.clearInterval(interval);
-      setCuCounter(1_270_000);
-      setBorrowStage("ready");
-    }, 1700);
-
-    return () => {
-      window.clearInterval(interval);
-      window.clearTimeout(timeout);
-    };
-  }, [modalOpen, borrowStage]);
+    void loadQuote(activeProduct);
+  }, [activeProduct, loadQuote]);
 
   useEffect(() => {
     if (!modalOpen) return;
@@ -123,32 +411,36 @@ export function DemoScriptRunner() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [modalOpen]);
 
-  const receiptRows = useMemo(() => {
-    if (activeProduct === "sol") {
-      return [
-        { label: "Fair value", value: formatUsdcBaseUnits(usdBase(solFairValue)), tone: "primary" },
-        { label: "Coupon accrual", value: "$12.08", tone: "neutral" },
-        { label: "SOL price", value: `$${solPrice.toFixed(2)}`, tone: "neutral" },
-      ];
-    }
-    if (activeProduct === "lp") {
-      return [
-        { label: "30-day premium", value: "0.42 SOL", tone: "primary" },
-        { label: "Covered notional", value: "$18,500", tone: "neutral" },
-        { label: "Payoff trigger", value: "IL > 2.5%", tone: "neutral" },
-      ];
-    }
-    return [
-      { label: "Fair value", value: formatUsdcBaseUnits(usdBase(fairValue)), tone: "primary" },
-      { label: "Coupon accrual", value: `$${couponAccrued.toFixed(2)}`, tone: "neutral" },
-      { label: "Worst-of basket", value: "$202.18", tone: "neutral" },
-    ];
-  }, [activeProduct, couponAccrued, fairValue, solFairValue, solPrice]);
+  const receiptRows = useMemo(() => receiptRowsFor(activeProduct, activeQuote), [activeProduct, activeQuote]);
+  const detailTiles = useMemo(() => detailTilesFor(activeProduct, activeQuote), [activeProduct, activeQuote]);
 
-  function openBorrowModal() {
+  const markSourceLabel =
+    activeQuote.status === "ready"
+      ? `${active.label} values came from ${active.kind}.preview_quote on ${cluster} at slot ${formatSlot(
+          activeQuote.quoteSlot,
+        )}. ${lastTx ? `Latest signed tx: ${shortAddress(lastTx.signature, 8)}.` : "No signed borrow tx yet."}`
+      : activeQuote.status === "error"
+        ? `No fallback mark is rendered. ${activeQuote.error}`
+        : `Waiting for ${active.kind}.preview_quote on ${cluster}.`;
+
+  async function prepareBorrowQuote() {
     setModalOpen(true);
     setBorrowStage("computing");
     setTxError(null);
+    setCuCounter(0);
+
+    try {
+      const quoteState = quotes.equity.status === "ready" ? quotes.equity : await loadQuote("equity");
+      const derived = deriveBorrowQuote(quoteState);
+      setBorrowQuote(derived);
+      setBorrowStage("ready");
+      return derived;
+    } catch (cause) {
+      const mapped = mapSolanaError(cause);
+      setBorrowStage("error");
+      setTxError(`${mapped.title} ${mapped.body}`);
+      return null;
+    }
   }
 
   async function sendBorrow() {
@@ -163,20 +455,22 @@ export function DemoScriptRunner() {
       return;
     }
 
+    const pricing = borrowQuote ?? (await prepareBorrowQuote());
+    if (!pricing) return;
+
     setBorrowStage("sending");
     setTxError(null);
     try {
-      const slot = await connection.getSlot("confirmed");
       const transaction = await buildDemoPriceAndIssueLoanTransaction(connection, current, publicKey, {
         receiptMint: RECEIPT_MINT,
         borrower: DEMO_BORROWER,
-        loanId: new BN(Date.now()),
-        notionalBaseUnits: usdBase(10_000),
-        fairValueBaseUnits: usdBase(10_240),
-        lendingValueBaseUnits: usdBase(6_300),
-        maxBorrowBaseUnits: usdBase(5_040),
-        debtBaseUnits: usdBase(5_040),
-        sourceSlot: new BN(slot),
+        loanId: new BN(Date.now().toString()),
+        notionalBaseUnits: pricing.notionalBaseUnits,
+        fairValueBaseUnits: pricing.fairValueBaseUnits,
+        lendingValueBaseUnits: pricing.lendingValueBaseUnits,
+        maxBorrowBaseUnits: pricing.maxBorrowBaseUnits,
+        debtBaseUnits: pricing.debtBaseUnits,
+        sourceSlot: pricing.sourceSlot,
         includeMemo: cluster !== "localnet",
       });
 
@@ -188,11 +482,26 @@ export function DemoScriptRunner() {
       if (simulation.value.err) {
         throw new Error(`Simulation failed: ${JSON.stringify(simulation.value.err)}`);
       }
-      setCuCounter(simulation.value.unitsConsumed ?? 1_270_000);
+      setCuCounter(simulation.value.unitsConsumed ?? 0);
 
       const signature = await sendTransaction(transaction, connection, { preflightCommitment: "confirmed" });
       await connection.confirmTransaction(signature, "confirmed");
-      setLastTx(signature);
+
+      let slot: number | null = null;
+      let unitsConsumed: number | null = simulation.value.unitsConsumed ?? null;
+      try {
+        const confirmed = await connection.getTransaction(signature, {
+          commitment: "confirmed",
+          maxSupportedTransactionVersion: 0,
+        });
+        slot = confirmed?.slot ?? null;
+        unitsConsumed = confirmed?.meta?.computeUnitsConsumed ?? unitsConsumed;
+      } catch {
+        // The signature is still enough for the explorer; RPCs can lag on getTransaction.
+      }
+
+      setLastTx({ signature, slot, unitsConsumed });
+      if (unitsConsumed) setCuCounter(unitsConsumed);
       setBorrowStage("confirmed");
     } catch (cause) {
       const mapped = mapSolanaError(cause);
@@ -213,18 +522,24 @@ export function DemoScriptRunner() {
               Live devnet note receipt
             </h1>
             <p className="mt-3 text-sm leading-6 text-muted-foreground sm:text-base">
-              Open here for the recording, then move right into collateral pricing, stress tests, SOL autocall, and LP protection.
+              The demo page now renders live program previews or landed wallet transactions only. Missing data stays unavailable.
             </p>
           </div>
-          <a
-            href={explorerTxUrl(lastTx, cluster)}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          >
-            Latest tx
-            <ExternalLink className="h-4 w-4" aria-hidden="true" />
-          </a>
+          {lastTx ? (
+            <a
+              href={explorerTxUrl(lastTx.signature, cluster)}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
+              Latest signed tx
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+            </a>
+          ) : (
+            <div className="inline-flex min-h-10 items-center rounded-md border border-border bg-background px-3 text-sm font-medium text-muted-foreground">
+              No signed tx yet
+            </div>
+          )}
         </div>
 
         <div className="mt-6 flex flex-wrap gap-2">
@@ -258,17 +573,27 @@ export function DemoScriptRunner() {
                 <p className="mt-1 text-sm text-muted-foreground">{active.underlying}</p>
               </div>
               <div className="group relative">
-                <a
-                  href={explorerTxUrl(lastTx, cluster)}
-                  target="_blank"
-                  rel="noreferrer"
-                  aria-label={markSourceLabel}
-                  className="inline-flex min-h-10 items-center gap-2 rounded-md border border-success-700/30 bg-success-50 px-3 text-sm font-medium text-success-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                >
-                  <ShieldCheck className="h-4 w-4" aria-hidden="true" />
-                  Mark Source: on-chain
-                </a>
-                <div className="pointer-events-none absolute right-0 top-12 z-20 hidden w-72 rounded-md border border-border bg-popover p-3 text-xs leading-5 text-popover-foreground shadow-lg group-hover:block group-focus-within:block">
+                {lastTx ? (
+                  <a
+                    href={explorerTxUrl(lastTx.signature, cluster)}
+                    target="_blank"
+                    rel="noreferrer"
+                    aria-label={markSourceLabel}
+                    className="inline-flex min-h-10 items-center gap-2 rounded-md border border-success-700/30 bg-success-50 px-3 text-sm font-medium text-success-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                  >
+                    <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                    Mark Source: signed tx
+                  </a>
+                ) : (
+                  <span
+                    aria-label={markSourceLabel}
+                    className="inline-flex min-h-10 items-center gap-2 rounded-md border border-success-700/30 bg-success-50 px-3 text-sm font-medium text-success-700"
+                  >
+                    <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+                    Mark Source: on-chain preview
+                  </span>
+                )}
+                <div className="pointer-events-none absolute right-0 top-12 z-20 hidden w-80 rounded-md border border-border bg-popover p-3 text-xs leading-5 text-popover-foreground shadow-lg group-hover:block group-focus-within:block">
                   {markSourceLabel}
                 </div>
               </div>
@@ -281,36 +606,35 @@ export function DemoScriptRunner() {
                 <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{row.label}</div>
                 <div
                   className={cn(
-                    "mt-2 whitespace-nowrap font-mono text-base font-semibold tabular-nums sm:text-lg",
+                    "mt-2 break-words font-mono text-base font-semibold tabular-nums sm:text-lg",
                     row.tone === "primary" ? "text-primary" : "text-foreground",
                   )}
                 >
                   {row.value}
                 </div>
+                <SourcePill>{row.source}</SourcePill>
               </div>
             ))}
           </div>
+          {activeQuote.status === "error" ? (
+            <div className="border-t border-border px-5 py-4 sm:px-6">
+              <button
+                type="button"
+                onClick={() => void loadQuote(activeProduct)}
+                className="inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              >
+                <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                Retry live preview
+              </button>
+            </div>
+          ) : null}
 
           <div className="border-t border-border p-5 sm:p-6">
-            {activeProduct === "equity" ? (
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Ticker symbol="SPY" value={basket.spy} />
-                <Ticker symbol="QQQ" value={basket.qqq} />
-                <Ticker symbol="IWM" value={basket.iwm} />
-              </div>
-            ) : activeProduct === "sol" ? (
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Ticker symbol="SOL" value={solPrice} />
-                <Ticker symbol="Coupon" value={2.18} suffix="%" />
-                <Ticker symbol="Observations" value={8} decimals={0} />
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-3">
-                <Ticker symbol="Pool" value={18_500} prefix="$" decimals={0} />
-                <Ticker symbol="Premium" value={0.42} suffix=" SOL" />
-                <Ticker symbol="Max cover" value={3_250} prefix="$" decimals={0} />
-              </div>
-            )}
+            <div className="grid gap-3 sm:grid-cols-3">
+              {detailTiles.map((tile) => (
+                <Ticker key={tile.symbol} symbol={tile.symbol} value={tile.value} source={tile.source} />
+              ))}
+            </div>
           </div>
         </div>
 
@@ -322,7 +646,7 @@ export function DemoScriptRunner() {
           <div className="mt-5 rounded-md border border-border bg-background p-4">
             <div className="text-sm font-semibold text-foreground">Collateral: no supported assets</div>
             <p className="mt-2 text-sm leading-6 text-muted-foreground">
-              Drag the Halcyon receipt here, then let the protocol price it on-chain.
+              The borrow proof is wallet-signed and includes preview_quote, price_note, and issue_loan in one devnet transaction.
             </p>
           </div>
           <button
@@ -338,11 +662,12 @@ export function DemoScriptRunner() {
           </button>
           <button
             type="button"
-            onClick={openBorrowModal}
-            className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            onClick={() => void prepareBorrowQuote()}
+            disabled={activeProduct !== "equity"}
+            className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
             <Play className="h-4 w-4" aria-hidden="true" />
-            Price this collateral
+            {activeProduct === "equity" ? "Price this collateral" : "Switch to equity receipt to borrow"}
           </button>
         </aside>
       </section>
@@ -356,14 +681,19 @@ export function DemoScriptRunner() {
       <section className="surface p-5 sm:p-6">
         <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Close frame</div>
         <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <CloseCard title="Equity Autocall" status="Live devnet pricing" />
-          <CloseCard title="SOL Autocall" status="Shipping now" />
-          <CloseCard title="LP Protection" status="Same engine" />
+          <CloseCard title="Equity Autocall" status={closeStatus(quotes.equity)} />
+          <CloseCard title="SOL Autocall" status={closeStatus(quotes.sol)} />
+          <CloseCard title="LP Protection" status={closeStatus(quotes.lp)} />
         </div>
         <div className="mt-5 flex flex-wrap gap-4 text-sm text-muted-foreground">
-          <span>halcyon.xyz</span>
-          <a className="underline underline-offset-4 hover:text-foreground" href="https://github.com/djbarker87/halcyon" target="_blank" rel="noreferrer">
-            github.com/djbarker87/halcyon
+          <span>halcyonprotocol.xyz</span>
+          <a
+            className="underline underline-offset-4 hover:text-foreground"
+            href="https://github.com/DJBarker87/Halcyon"
+            target="_blank"
+            rel="noreferrer"
+          >
+            github.com/DJBarker87/Halcyon
           </a>
           <span>Solana devnet</span>
         </div>
@@ -400,28 +730,38 @@ export function DemoScriptRunner() {
               <div className="space-y-4">
                 <div className="rounded-md border border-border bg-background p-4">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-sm font-semibold text-foreground">
-                      {borrowStage === "computing" ? "Computing on-chain..." : "Computed on-chain"}
-                    </div>
+                    <div className="text-sm font-semibold text-foreground">{borrowStageLabel(borrowStage)}</div>
                     <div className="font-mono text-sm tabular-nums text-muted-foreground">
-                      CU {cuCounter.toLocaleString()}
+                      {cuCounter > 0 ? `CU ${cuCounter.toLocaleString()}` : "CU measured after preflight"}
                     </div>
                   </div>
                   <div className="mt-4 h-2 overflow-hidden rounded-full bg-secondary">
                     <div
                       className="h-full rounded-full bg-primary transition-[width]"
-                      style={{ width: `${Math.min(100, (cuCounter / 1_270_000) * 100)}%` }}
+                      style={{ width: cuCounter > 0 ? `${Math.min(100, (cuCounter / 1_400_000) * 100)}%` : "0%" }}
                     />
                   </div>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-3">
-                  <MetricTile label="Fair value" value="$10,240" />
-                  <MetricTile label="Lending value" value="$6,300" />
-                  <MetricTile label="Max borrow" value="$5,040" />
+                  <MetricTile
+                    label="Program mark"
+                    value={borrowQuote ? formatUsdcBaseUnitsExact(borrowQuote.fairValueBaseUnits) : "Unavailable"}
+                    source="flagship.preview_quote"
+                  />
+                  <MetricTile
+                    label="Lending value"
+                    value={borrowQuote ? formatUsdcBaseUnitsExact(borrowQuote.lendingValueBaseUnits) : "Unavailable"}
+                    source="70% policy haircut"
+                  />
+                  <MetricTile
+                    label="Max borrow"
+                    value={borrowQuote ? formatUsdcBaseUnitsExact(borrowQuote.maxBorrowBaseUnits) : "Unavailable"}
+                    source="80% of lending value"
+                  />
                 </div>
 
-                {borrowStage === "error" && txError ? (
+                {txError ? (
                   <div className="rounded-md border border-destructive/30 bg-destructive/10 p-4 text-sm leading-6 text-destructive">
                     {txError}
                   </div>
@@ -429,14 +769,14 @@ export function DemoScriptRunner() {
 
                 {borrowStage === "confirmed" ? (
                   <div className="rounded-md border border-success-700/30 bg-success-50 p-4 text-sm font-medium text-success-700">
-                    Loan issued. Priced and originated in 1 transaction.
+                    Loan issued. preview_quote, price_note, and issue_loan landed in 1 transaction.
                   </div>
                 ) : null}
 
                 <button
                   type="button"
                   onClick={sendBorrow}
-                  disabled={borrowStage !== "ready" && borrowStage !== "error"}
+                  disabled={!borrowQuote || borrowStage === "computing" || borrowStage === "sending"}
                   aria-busy={borrowStage === "sending"}
                   className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-foreground px-4 text-sm font-semibold text-background transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
@@ -447,7 +787,7 @@ export function DemoScriptRunner() {
                   ) : (
                     <HandCoins className="h-4 w-4" aria-hidden="true" />
                   )}
-                  Borrow $5,040
+                  {borrowQuote ? `Borrow ${formatUsdcBaseUnitsExact(borrowQuote.maxBorrowBaseUnits)}` : "Borrow"}
                 </button>
               </div>
 
@@ -455,21 +795,35 @@ export function DemoScriptRunner() {
                 <div className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
                   Explorer pane
                 </div>
-                <div className="mt-3 break-all font-mono text-xs text-foreground">{lastTx}</div>
+                {lastTx ? (
+                  <>
+                    <div className="mt-3 break-all font-mono text-xs text-foreground">{lastTx.signature}</div>
+                    <div className="mt-3 grid gap-2 text-xs text-muted-foreground">
+                      <div>Slot: {lastTx.slot ? lastTx.slot.toLocaleString() : "pending RPC index"}</div>
+                      <div>CU consumed: {lastTx.unitsConsumed ? lastTx.unitsConsumed.toLocaleString() : "pending RPC index"}</div>
+                    </div>
+                  </>
+                ) : (
+                  <p className="mt-3 text-sm leading-6 text-muted-foreground">
+                    No transaction hash is shown until your wallet signs and devnet confirms the borrow transaction.
+                  </p>
+                )}
                 <div className="mt-4 space-y-2">
-                  <InstructionRow name="preview_quote" detail="Flagship pricer" />
+                  <InstructionRow name="preview_quote" detail="Flagship program" />
                   <InstructionRow name="price_note" detail="Lending consumer" />
                   <InstructionRow name="issue_loan" detail="Lending consumer" />
                 </div>
-                <a
-                  href={explorerTxUrl(lastTx, cluster)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-                >
-                  Open transaction
-                  <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                </a>
+                {lastTx ? (
+                  <a
+                    href={explorerTxUrl(lastTx.signature, cluster)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-4 inline-flex min-h-10 items-center gap-2 rounded-md border border-border bg-card px-3 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                  >
+                    Open transaction
+                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                  </a>
+                ) : null}
               </div>
             </div>
           </div>
@@ -479,27 +833,29 @@ export function DemoScriptRunner() {
   );
 }
 
-function Ticker({
-  symbol,
-  value,
-  prefix = "$",
-  suffix = "",
-  decimals = 2,
-}: {
-  symbol: string;
-  value: number;
-  prefix?: string;
-  suffix?: string;
-  decimals?: number;
-}) {
+function borrowStageLabel(stage: BorrowStage) {
+  if (stage === "computing") return "Running live preview_quote...";
+  if (stage === "ready") return "On-chain quote ready";
+  if (stage === "sending") return "Simulating and sending transaction...";
+  if (stage === "confirmed") return "Confirmed on devnet";
+  if (stage === "error") return "Stopped before signing";
+  return "Ready";
+}
+
+function SourcePill({ children }: { children: string }) {
+  return (
+    <div className="mt-3 inline-flex min-h-7 items-center rounded-md border border-border bg-card px-2 font-mono text-[11px] text-muted-foreground">
+      {children}
+    </div>
+  );
+}
+
+function Ticker({ symbol, value, source }: { symbol: string; value: string; source: string }) {
   return (
     <div className="rounded-md border border-border bg-background px-4 py-3">
       <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{symbol}</div>
-      <div className="mt-1 font-mono text-lg font-semibold tabular-nums text-foreground">
-        {prefix}
-        {value.toFixed(decimals)}
-        {suffix}
-      </div>
+      <div className="mt-1 break-words font-mono text-lg font-semibold tabular-nums text-foreground">{value}</div>
+      <SourcePill>{source}</SourcePill>
     </div>
   );
 }
@@ -528,11 +884,12 @@ function CloseCard({ title, status }: { title: string; status: string }) {
   );
 }
 
-function MetricTile({ label, value }: { label: string; value: string }) {
+function MetricTile({ label, value, source }: { label: string; value: string; source: string }) {
   return (
     <div className="rounded-md border border-border bg-background p-4">
       <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">{label}</div>
-      <div className="mt-2 font-mono text-2xl font-semibold tabular-nums text-foreground">{value}</div>
+      <div className="mt-2 break-words font-mono text-2xl font-semibold tabular-nums text-foreground">{value}</div>
+      <SourcePill>{source}</SourcePill>
     </div>
   );
 }

@@ -108,13 +108,30 @@ function loadKeypair(path: string): Keypair {
 
 type LogLevel = "INFO" | "WARN" | "ERROR";
 
+function redactSecrets(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value
+      .replace(/([?&](?:api-?key|token)=)[^&\s"]+/gi, "$1<redacted>")
+      .replace(/(HALCYON_API_KEY=)[^\s"]+/g, "$1<redacted>");
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecrets(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, redactSecrets(item)]),
+    );
+  }
+  return value;
+}
+
 function log(level: LogLevel, msg: string, fields: Record<string, unknown> = {}) {
   const line = JSON.stringify({
     ts: new Date().toISOString(),
     level,
     target: "halcyon_price_relay",
     msg,
-    ...fields,
+    ...(redactSecrets(fields) as Record<string, unknown>),
   });
   if (level === "ERROR") {
     process.stderr.write(line + "\n");

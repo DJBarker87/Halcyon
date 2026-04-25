@@ -23,6 +23,7 @@ import { UnsafeBurnerWalletAdapter } from "@solana/wallet-adapter-unsafe-burner"
 
 import { ClusterSwitchModal } from "@/components/cluster-switch-modal";
 import { SettingsPanel } from "@/components/settings-panel";
+import { DemoWalletAdapter } from "@/lib/demo-wallet-adapter";
 import { RuntimeConfigProvider, useRuntimeConfig } from "@/lib/runtime-config";
 
 import "@solana/wallet-adapter-react-ui/styles.css";
@@ -39,6 +40,7 @@ function SolanaProviders({ children }: { children: React.ReactNode }) {
   const { cluster, current } = useRuntimeConfig();
   const wallets = useMemo(() => {
     const defaults: Adapter[] = [
+      new DemoWalletAdapter(process.env.NEXT_PUBLIC_DEMO_WALLET_URL || "/faucet-api/demo-wallet"),
       new PhantomWalletAdapter(),
       new SolflareWalletAdapter(),
       new BackpackWalletAdapter(),

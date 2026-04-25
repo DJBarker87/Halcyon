@@ -97,6 +97,9 @@ enum Command {
     /// Issue a SOL Autocall policy.
     Buy(commands::buy::Args),
 
+    /// Issue a Flagship Autocall policy.
+    BuyFlagship(commands::buy_flagship::Args),
+
     /// Issue an IL Protection policy.
     BuyIl(commands::buy_il::Args),
 
@@ -171,6 +174,7 @@ async fn main() -> Result<()> {
         Command::PreviewFlagship(a) => commands::preview_flagship::run(&ctx, a).await,
         Command::PreviewLendingValue(a) => commands::preview_lending_value::run(&ctx, a).await,
         Command::Buy(a) => commands::buy::run(&ctx, a).await,
+        Command::BuyFlagship(a) => commands::buy_flagship::run(&ctx, a).await,
         Command::BuyIl(a) => commands::buy_il::run(&ctx, a).await,
         Command::BuybackFlagship(a) => commands::buyback_flagship::run(&ctx, a).await,
         Command::WrapPolicyReceipt(a) => commands::wrap_policy_receipt::run(&ctx, a).await,

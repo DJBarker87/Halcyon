@@ -1,4 +1,5 @@
 pub mod buy;
+pub mod buy_flagship;
 pub mod buy_il;
 pub mod buyback_flagship;
 pub mod cancel_retail_redemption;

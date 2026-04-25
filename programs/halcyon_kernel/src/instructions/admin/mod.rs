@@ -1,3 +1,4 @@
+pub mod initialize_payment_mint;
 pub mod initialize_protocol;
 pub mod migrate_protocol_config;
 pub mod pause_issuance;
@@ -11,6 +12,8 @@ pub mod update_product_registry;
 
 // L-7 — see `lifecycle/mod.rs` for context. Anchor's program macro needs
 // the `__client_accounts_*` siblings reachable via glob.
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub use initialize_payment_mint::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub use initialize_protocol::*;
 #[allow(ambiguous_glob_reexports, unused_imports)]

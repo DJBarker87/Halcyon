@@ -30,6 +30,34 @@ pub struct PolicySettled {
 }
 
 #[event]
+pub struct PolicyOwnerTransferred {
+    pub policy_id: Pubkey,
+    pub product_program_id: Pubkey,
+    pub old_owner: Pubkey,
+    pub new_owner: Pubkey,
+    pub transferred_at: i64,
+}
+
+#[event]
+pub struct PolicyReceiptWrapped {
+    pub policy_id: Pubkey,
+    pub product_program_id: Pubkey,
+    pub holder: Pubkey,
+    pub receipt_mint: Pubkey,
+    pub escrow_authority: Pubkey,
+    pub wrapped_at: i64,
+}
+
+#[event]
+pub struct PolicyReceiptUnwrapped {
+    pub policy_id: Pubkey,
+    pub product_program_id: Pubkey,
+    pub holder: Pubkey,
+    pub receipt_mint: Pubkey,
+    pub unwrapped_at: i64,
+}
+
+#[event]
 pub struct CouponPaid {
     pub policy_id: Pubkey,
     pub product_program_id: Pubkey,

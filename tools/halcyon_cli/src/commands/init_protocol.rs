@@ -13,8 +13,8 @@ use crate::client::CliContext;
 
 #[derive(Debug, ClapArgs)]
 pub struct Args {
-    #[arg(long)]
-    pub usdc_mint: String,
+    #[arg(long, value_name = "PUBKEY")]
+    pub usdc_mint: Option<String>,
     #[arg(long, default_value_t = 7_500)]
     pub utilization_cap_bps: u64,
     #[arg(long, default_value_t = 9_000)]
@@ -61,7 +61,7 @@ pub struct Args {
 
 pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     let admin = ctx.signer()?;
-    let usdc_mint = CliContext::parse_pubkey("usdc_mint", &args.usdc_mint)?;
+    let usdc_mint = ctx.resolve_usdc_mint(args.usdc_mint.as_deref())?;
     let (protocol_config, _) = pda::protocol_config();
     if fetch_anchor_account_opt::<halcyon_kernel::state::ProtocolConfig>(
         ctx.rpc.as_ref(),

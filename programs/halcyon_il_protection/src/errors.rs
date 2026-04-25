@@ -14,4 +14,6 @@ pub enum IlProtectionError {
     PolicyNotExpired,
     #[msg("settlement math failed")]
     SettlementComputationFailed,
+    #[msg("midlife lending-value computation failed")]
+    MidlifePricingFailed,
 }

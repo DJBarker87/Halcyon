@@ -1,6 +1,11 @@
 use anchor_lang::prelude::*;
 use halcyon_sol_autocall_quote::{
-    generated::pod_deim_table::D as POD_DEIM_D, generated::pod_deim_table::POD_DEIM_TABLE_SHA256,
+    generated::pod_deim_table::D as POD_DEIM_D,
+    generated::pod_deim_table::POD_DEIM_TABLE_SHA256,
+    midlife::{
+        SOL_AUTOCALL_MIDLIFE_COS_TERMS, SOL_AUTOCALL_MIDLIFE_MARKOV_STATES,
+        SOL_AUTOCALL_MIDLIFE_MATRIX_LEN,
+    },
 };
 
 pub const OBSERVATION_COUNT: usize = 8;
@@ -24,6 +29,10 @@ pub const NO_AUTOCALL_FIRST_N_OBS: u8 = 1;
 
 pub const CURRENT_ENGINE_VERSION: u16 = 1;
 pub const REDUCED_OPERATOR_LEN: usize = POD_DEIM_D * POD_DEIM_D;
+pub const MIDLIFE_MATRIX_MAX_STEPS: usize = OBSERVATION_COUNT;
+pub const MIDLIFE_MATRIX_N_STATES: usize = SOL_AUTOCALL_MIDLIFE_MARKOV_STATES;
+pub const MIDLIFE_MATRIX_LEN: usize = SOL_AUTOCALL_MIDLIFE_MATRIX_LEN;
+pub const MIDLIFE_MATRIX_MAX_VALUES: usize = MIDLIFE_MATRIX_MAX_STEPS * MIDLIFE_MATRIX_LEN;
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, Eq, InitSpace)]
 pub enum ProductStatus {
@@ -99,5 +108,42 @@ impl SolAutocallReducedOperators {
             && self.p_red_u.len() == REDUCED_OPERATOR_LEN
             && self.uploaded_v_len as usize == REDUCED_OPERATOR_LEN
             && self.uploaded_u_len as usize == REDUCED_OPERATOR_LEN
+    }
+}
+
+#[account]
+#[derive(InitSpace)]
+pub struct SolAutocallMidlifeMatrices {
+    pub version: u8,
+    pub sigma_ann_s6: i64,
+    pub n_states: u16,
+    pub cos_terms: u16,
+    pub uploaded_step_count: u16,
+    pub uploaded_lens: [u16; MIDLIFE_MATRIX_MAX_STEPS],
+    pub step_days_s6: [i64; MIDLIFE_MATRIX_MAX_STEPS],
+    pub last_update_slot: u64,
+    pub last_update_ts: i64,
+    pub source_vault_sigma_slot: u64,
+    pub source_regime_signal_slot: u64,
+    pub construction_inputs_sha256: [u8; 32],
+    pub matrix_values_sha256: [u8; 32],
+    #[max_len(MIDLIFE_MATRIX_MAX_VALUES)]
+    pub matrices: Vec<i64>,
+}
+
+impl SolAutocallMidlifeMatrices {
+    pub const CURRENT_VERSION: u8 = 1;
+
+    pub fn is_complete(&self) -> bool {
+        let count = self.uploaded_step_count as usize;
+        count <= MIDLIFE_MATRIX_MAX_STEPS
+            && self.n_states as usize == MIDLIFE_MATRIX_N_STATES
+            && self.cos_terms == SOL_AUTOCALL_MIDLIFE_COS_TERMS
+            && self.matrices.len() == count * MIDLIFE_MATRIX_LEN
+            && self.construction_inputs_sha256 != [0u8; 32]
+            && self.matrix_values_sha256 != [0u8; 32]
+            && self.uploaded_lens[..count]
+                .iter()
+                .all(|len| *len as usize == MIDLIFE_MATRIX_LEN)
     }
 }

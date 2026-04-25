@@ -147,6 +147,56 @@ The vault's income comes from four streams:
 
 The vault's per-note CVaR(5%) is about −$6 at either cadence. At daily issuance with peak concurrent exposure of $31.7K, the worst 19-year cumulative drawdown is −$265 (0.84% of peak book, 1.6% of lifetime earnings). There are no insolvency events in the 20-year backtest — the 12.5% junior first-loss tranche absorbs the drawdown without breaching senior capital.
 
+### Mechanism-Active Buyback Solvency (Daily Issuance, Production Row)
+
+Separate from the baseline issuance-and-settlement replay above, we ran a mechanism-active buyback overlay on the **current production flagship row** (`q=0.65`, 500 bps fair-coupon ceiling, daily issuance, 4,291 issued notes). The overlay generates a daily note ledger from the same basket simulator used for the economics run, then injects buybacks into the live note lifecycle.
+
+The buyback rule used is:
+
+`buyback_price = min(KI_level - 10% notional, current_note_liability - 10% notional)`
+
+with:
+
+- `current_note_liability = daily pricer PV + accrued coupon liability`
+- available liquidation funds = dedicated note balance-sheet assets after immediate adverse unwind of the live SPY/QQQ wrapper hedge
+- note notional = `$100`
+- KI cap = `$70`
+
+Primary lending-style liquidation (`70%` initial LTV against buyback value, `85%` liquidation threshold):
+
+| Metric | Value |
+|---|---|
+| Liquidations | 452 |
+| Share of issued notes liquidated | 10.5% |
+| Buyback failures | **0** |
+| Minimum post-unwind buffer | **$18.12** |
+| Minimum coverage ratio | **1.3319x** |
+| Total buyback paid | $25,279.59 |
+| Worst single day | 107 buybacks |
+| Worst 5-day window | 264 buybacks |
+
+Stress concentration replay (`25%` of live notes forced to liquidate on days where worst-asset 24h return <= `−5%` or max 5d annualised vol >= `100%`, with `3x` unwind slippage):
+
+| Metric | Value |
+|---|---|
+| Liquidations | 708 |
+| Share of issued notes liquidated | 16.5% |
+| Buyback failures | **0** |
+| Minimum post-unwind buffer | **$15.61** |
+| Minimum coverage ratio | **1.2458x** |
+| Total buyback paid | $46,481.85 |
+| Worst single day | 73 buybacks |
+| Worst 5-day window | 101 buybacks |
+
+Context on the tightest events:
+
+- **Primary minimum buffer:** note issued `2007-06-08`, liquidated `2008-10-07`; buyback `$54.59`, available after unwind `$72.70`, buffer `$18.12`, coverage `1.3319x`.
+- **Primary worst day:** `2008-10-07`; 107 liquidations out of 229 live notes, all payable.
+- **Stress minimum buffer:** note issued `2007-06-08`, forced out `2008-09-29`; buyback `$63.03`, available after unwind `$78.64`, buffer `$15.61`, coverage `1.2476x`.
+- **Stress worst day:** `2008-09-17`; 73 forced liquidations out of 290 live notes, all payable.
+
+Interpretation: under the current flagship capital stack, **the buyback was always self-funded from the note's own dedicated balance sheet plus junior support already reserved for that note**. This is the mechanism-active validation missing from the earlier write-up. It does **not** prove real stressed wrapper liquidity on-chain — unwind stress still uses the research wrapper-cost model — but it does show that the buyback rule is economically payable across the historical replay under the production underwriting stack.
+
 ---
 
 ## 5. Hedging
@@ -246,6 +296,7 @@ Cohorts by **issue year** from the 4,291-note daily-cadence backtest. "n" is not
 - 20 years of equity history covering the GFC, COVID crash, 2022 bear market, and multiple recovery regimes
 - Per-note economics that hold up across both sparse-entry (210 monthly windows) and dense-entry (4,400 daily windows) cadences
 - Book-level behaviour with peak concurrent exposure of 317 notes (daily) without vault insolvency
+- Mechanism-active flagship buyback solvency on the production daily-issuance row: 452 primary liquidations and 708 stress liquidations with zero buyback failures
 - The effect of the 500 bps ceiling on regime-stress filtering
 - The cost of proxy-hedging IWM through SPY/QQQ (~70 bps)
 
@@ -255,6 +306,7 @@ Cohorts by **issue year** from the 4,291-note daily-cadence backtest. "n" is not
 - Intraday price behavior finer than daily candles for KI monitoring
 - The interaction with the shared underwriting vault (IL Protection, SOL Autocall)
 - Wrapper-to-reference tracking during flash crashes
+- A first-principles market-impact model for forced wrapper unwind beyond the configured adverse execution assumptions
 
 ---
 
@@ -273,6 +325,7 @@ Cohorts by **issue year** from the 4,291-note daily-cadence backtest. "n" is not
 | Reserve yield | 4% APR | Conservative fixed rate on idle cash only | Actual DeFi lending rates vary |
 | Junior first-loss | 12.5% of notional | Configuration choice | Sufficient for all backtest regimes; untested beyond historical extremes |
 | Vault lock per note | $113.50 | $100 principal + $12.50 junior + $1.00 issuance fee | Held for full note life (~145 days avg) |
+| Buyback price | `min(KI cap, current note liability − 10% notional)` | Mechanism overlay on production daily replay | Uses liability mark + modeled adverse unwind, not observed stressed wrapper exits |
 
 ---
 
@@ -280,7 +333,7 @@ Cohorts by **issue year** from the 4,291-note daily-cadence backtest. "n" is not
 
 **For the buyer:** Deposit $100 USDC, earn monthly income at ~15% annualised quoted rate when all three equity indices (SPY, QQQ, IWM) stay healthy. Missed coupons accumulate and pay on the next good month. If all three indices are above entry at a quarterly check, the note autocalls at par with all accumulated coupons — average life is about 7 months. Realised return after missed coupons and KI losses averages 8.4% annualised. ~86% of notes return principal. ~14% lose money, with the worst outcomes in sustained equity drawdowns where all three names fall together.
 
-**For the vault:** Underwrite worst-of equity risk, earn 5.2–5.6% annualised on occupied capital (~$113.50 locked per $100 note). The primary income is the 35% retained coupon haircut plus the 100 bp issuance fee. The hedge uses only SPY and QQQ wrappers on-chain — no IWM wrapper needed. The proxy hedge costs ~70 bps versus direct hedging but avoids any third-token dependency. Tail risk is bounded — per-note CVaR(5%) is about −$6, worst cumulative book drawdown over 19 years of daily issuance is ~0.84% of peak concurrent notional. The vault has never been insolvent in 20 years of backtested history. The 12.5% junior tranche absorbs these drawdowns without breaching senior capital.
+**For the vault:** Underwrite worst-of equity risk, earn 5.2–5.6% annualised on occupied capital (~$113.50 locked per $100 note). The primary income is the 35% retained coupon haircut plus the 100 bp issuance fee. The hedge uses only SPY and QQQ wrappers on-chain — no IWM wrapper needed. The proxy hedge costs ~70 bps versus direct hedging but avoids any third-token dependency. Tail risk is bounded — per-note CVaR(5%) is about −$6, worst cumulative book drawdown over 19 years of daily issuance is ~0.84% of peak concurrent notional. On the mechanism-active overlay, flagship buybacks were payable in every simulated liquidation: 452 primary LTV-triggered liquidations and 708 stress liquidations, with minimum coverage ratios of 1.33x and 1.25x respectively. The vault has never been insolvent in 20 years of backtested history. The 12.5% junior tranche absorbs these drawdowns without breaching senior capital.
 
 **For the protocol:** The product runs entirely on Solana — pricing, issuance, hedging, and settlement. No external venues, no bridges, no counterparty risk. The one-factor NIG pricer runs on-chain inside the flagship quote program. The issuance gate refuses to issue when fair coupon is outside the 50–500 bps safe range. The split coupon/autocall schedule matches the dominant TradFi structure while halving the vault's worst drawdown versus a uniform quarterly schedule. Per-quarter recalibration lets the pricer track regime changes without a full redeployment.
 

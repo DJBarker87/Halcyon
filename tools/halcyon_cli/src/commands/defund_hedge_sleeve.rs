@@ -9,13 +9,13 @@ use crate::client::CliContext;
 #[derive(Debug, ClapArgs)]
 pub struct Args {
     pub amount: u64,
-    #[arg(long)]
-    pub usdc_mint: String,
+    #[arg(long, value_name = "PUBKEY")]
+    pub usdc_mint: Option<String>,
 }
 
 pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     let admin = ctx.signer()?;
-    let usdc_mint = CliContext::parse_pubkey("usdc_mint", &args.usdc_mint)?;
+    let usdc_mint = ctx.resolve_usdc_mint(args.usdc_mint.as_deref())?;
 
     // M-2 — destination is pinned on-chain to
     // `protocol_config.hedge_defund_destination`. Read it so the CLI

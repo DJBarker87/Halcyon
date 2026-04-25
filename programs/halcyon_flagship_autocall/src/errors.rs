@@ -26,4 +26,14 @@ pub enum FlagshipAutocallError {
     PolicyNotExpired,
     #[msg("flagship entry prices must be positive")]
     InvalidEntryPrice,
+    #[msg("flagship midlife nav is unavailable for this policy state")]
+    MidlifeNavUnavailable,
+    #[msg("flagship midlife nav inputs are invalid")]
+    MidlifeNavInvalid,
+    #[msg("flagship midlife nav computation failed")]
+    MidlifeNavMathFailed,
+    #[msg("flagship retail redemption notice period has not elapsed")]
+    RetailRedemptionNotReady,
+    #[msg("flagship retail redemption request has expired")]
+    RetailRedemptionExpired,
 }

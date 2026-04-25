@@ -429,9 +429,25 @@ pub fn nig_european_il_premium(
     alpha: i64,
     beta: i64,
 ) -> Result<i64, SolMathError> {
-    if days == 0 || sigma <= 0 {
-        return Ok(0);
-    }
+    nig_european_il_premium_shifted(sigma, days, deductible, cap, alpha, beta, 0)
+}
+
+/// Compute the remaining fair value of the same European IL payoff after the
+/// pool has already moved by `current_log_ratio`.
+///
+/// The future NIG draw is integrated as `IL(current_log_ratio + X_T)`, so this
+/// is the mid-life continuation value of the exact payoff used by
+/// [`nig_european_il_premium`]. With `current_log_ratio == 0` it is identical
+/// to the issue-time premium.
+pub fn nig_european_il_premium_shifted(
+    sigma: i64,
+    days: u32,
+    deductible: i64,
+    cap: i64,
+    alpha: i64,
+    beta: i64,
+    current_log_ratio: i64,
+) -> Result<i64, SolMathError> {
     if deductible >= cap {
         return Err(SolMathError::DomainError);
     }
@@ -442,73 +458,37 @@ pub fn nig_european_il_premium(
     if alpha <= 0 {
         return Err(SolMathError::DomainError);
     }
-
-    // ── NIG parameter validation: α > |β| AND α² > (β+1)² ──
-    let alpha_sq = mul6(alpha, alpha)?;
-    let beta_sq = mul6(beta, beta)?;
-    if alpha_sq <= beta_sq {
-        return Err(SolMathError::DomainError);
-    }
-    let beta_plus_1 = beta + SCALE_6;
-    let bp1_sq = mul6(beta_plus_1, beta_plus_1)?;
-    if alpha_sq <= bp1_sq {
-        return Err(SolMathError::DomainError);
+    if days == 0 || sigma <= 0 {
+        return capped_il_payoff(current_log_ratio, deductible, cap);
     }
 
-    // ── γ = √(α² − β²),  γ_s = √(α² − (β+1)²) ──
-    let gamma = sqrt6(alpha_sq - beta_sq)?;
-    let gamma_s = sqrt6(alpha_sq - bp1_sq)?;
-
-    // ── δ_T = σ² · γ³ / α² · T/365  (LINEAR in T) ──
-    let sigma_sq = mul6(sigma, sigma)?;
-    let gamma_sq = mul6(gamma, gamma)?;
-    let gamma_cu = mul6(gamma_sq, gamma)?;
-    let delta_eff = div6(mul6(sigma_sq, gamma_cu)?, alpha_sq)?;
-    let t_years = ((days as i64) * SCALE_6) / 365;
-    let delta_t = mul6(delta_eff, t_years)?;
-    if delta_t <= 0 {
-        return Ok(0);
-    }
-
-    // ── μ_T = δ_T · (γ_s − γ)  (negative for β > 0) ──
-    let mu = mul6(delta_t, gamma_s - gamma)?;
-
-    // ── Hoisted loop invariants ──
-    let delta_t_sq = mul6(delta_t, delta_t)?;
-    let delta_gamma = mul6(delta_t, gamma)?;
-    let sqrt_alpha = sqrt6(alpha)?;
-    let prefactor = div6(mul6(delta_t, sqrt_alpha)?, PI6)?;
-    // prefactor_small = α · δ_T / π = prefactor · √α
-    let prefactor_small = mul6(prefactor, sqrt_alpha)?;
-
-    let ctx = NigCtx {
-        alpha,
-        beta,
-        mu,
-        delta_t_sq,
-        delta_gamma,
-        prefactor,
-        prefactor_small,
-    };
+    let (ctx, _gamma, t_years) = build_nig_ctx(sigma, days, alpha, beta)?;
 
     // ── IL roots ──
-    let x_d_up = il_root_up(deductible)?;
-    let x_d_dn = il_root_dn(deductible)?;
-    let x_c_up = il_root_up(cap)?;
-    let x_c_dn = il_root_dn(cap)?;
+    // Integration variable is the future return `X_T`; roots are shifted by
+    // the current log move so that `current_log_ratio + X_T` lands on the
+    // original payoff's deductible/cap boundaries.
+    let x_d_up = shift_root(il_root_up(deductible)?, current_log_ratio)?;
+    let x_d_dn = shift_root(il_root_dn(deductible)?, current_log_ratio)?;
+    let x_c_up = shift_root(il_root_up(cap)?, current_log_ratio)?;
+    let x_c_dn = shift_root(il_root_dn(cap)?, current_log_ratio)?;
 
     // ── nig_std = σ · √(T/365)  (10·σ tail truncation) ──
+    let sigma_sq = mul6(sigma, sigma)?;
     let nig_std = sqrt6(mul6(sigma_sq, t_years)?)?;
     if nig_std <= 0 {
-        return Ok(0);
+        return capped_il_payoff(current_log_ratio, deductible, cap);
     }
     let tail_distance = mul6(TAIL_STD_DEVIATIONS, nig_std)?;
 
     // ── Region 1: linear right [x_d_up, x_c_up] ──
     let payoff_lin = |x: i64| -> Result<i64, SolMathError> {
-        let il = il_entry(x)?;
-        let p = il - deductible;
-        Ok(if p > 0 { p } else { 0 })
+        capped_il_payoff(
+            x.checked_add(current_log_ratio)
+                .ok_or(SolMathError::Overflow)?,
+            deductible,
+            cap,
+        )
     };
     let region_lr = gl_integrate(x_d_up, x_c_up, &GL5_NODES, &GL5_WEIGHTS, &ctx, payoff_lin)?;
 
@@ -539,6 +519,19 @@ pub fn nig_european_il_premium(
 
     let total = region_lr + region_ll + region_cr + region_cl;
     Ok(if total > 0 { total } else { 0 })
+}
+
+#[inline]
+fn capped_il_payoff(x: i64, deductible: i64, cap: i64) -> Result<i64, SolMathError> {
+    let il = il_entry(x)?;
+    let payoff = il - deductible;
+    Ok(payoff.max(0).min(cap - deductible))
+}
+
+#[inline]
+fn shift_root(root: i64, current_log_ratio: i64) -> Result<i64, SolMathError> {
+    root.checked_sub(current_log_ratio)
+        .ok_or(SolMathError::Overflow)
 }
 
 /// Build plan §B2 — concentrated-liquidity (CLMM) variant of the NIG

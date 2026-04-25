@@ -1648,6 +1648,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "halcyon_lending_consumer"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "anchor-spl",
+ "halcyon_common",
+ "halcyon_flagship_autocall",
+ "halcyon_kernel",
+]
+
+[[package]]
 name = "halcyon_oracles"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  background:
+    radial-gradient(1200px 800px at 85% -10%, rgba(10, 102, 160, 0.22), transparent 60%),
+    radial-gradient(900px 700px at 5% 110%, rgba(10, 102, 160, 0.16), transparent 60%),
+    linear-gradient(180deg, #F3EFE3 0%, #E9E2D0 100%);
+  color: #0B1024;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
+}
+
+body {
+  font-family: var(--font-body), system-ui, sans-serif;
+}
+
+.font-display {
+  font-family: var(--font-display), system-ui, sans-serif;
+}
+
+::selection {
+  background: #D4ECF7;
+  color: #052940;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+.pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+
+/* Swirly backdrop behind the floating wrapper */
+.backdrop-swirl {
+  background:
+    radial-gradient(60% 80% at 12% 10%, rgba(10,102,160,0.50), transparent 60%),
+    radial-gradient(50% 60% at 95% 20%, rgba(255,255,255,0.55), transparent 65%),
+    radial-gradient(70% 70% at 85% 95%, rgba(10,102,160,0.38), transparent 60%),
+    radial-gradient(60% 60% at 8% 95%, rgba(62,160,206,0.28), transparent 60%);
+  filter: blur(2px);
+}

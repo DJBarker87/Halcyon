@@ -14,6 +14,9 @@ pub mod frozen_predict_tables;
 pub mod k12_correction;
 pub mod k9_correction;
 pub mod m6r_recip;
+pub mod midlife_pricer;
+#[cfg(not(target_os = "solana"))]
+pub mod midlife_reference;
 pub mod moment_tables;
 pub mod nested_grids;
 pub mod nig_weights_lookup;

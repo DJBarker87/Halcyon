@@ -261,6 +261,15 @@ pub struct FactoredWorstOfTraceProfile {
     pub autocall_rate: f64,
 }
 
+/// Host-only mid-life NAV diagnostics for the flagship autocall.
+#[cfg(not(target_os = "solana"))]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct MidlifeReferenceTrace {
+    pub nav_per_notional: f64,
+    pub remaining_coupon_pv_per_notional: f64,
+    pub par_recovery_probability: f64,
+}
+
 /// One resumable live state in the exact survivor recursion.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct FactoredWorstOfCheckpointState {
@@ -893,6 +902,244 @@ impl FactoredWorstOfModel {
                 notional: 100.0,
             },
         }
+    }
+
+    /// Host-side mid-life NAV reference over an arbitrary remaining monthly schedule.
+    ///
+    /// This keeps the existing frozen SPY/QQQ/IWM factor skeleton and walks the
+    /// remaining observation dates from the live spot state. Coupon memory is
+    /// tracked exactly in the discrete branch state.
+    #[cfg(not(target_os = "solana"))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn midlife_reference_trace(
+        &self,
+        sigma_common: f64,
+        current_logs: [f64; 3],
+        now_trading_day: u32,
+        remaining_coupon_days: &[u32],
+        remaining_autocall_days: &[u32],
+        ki_latched: bool,
+        missed_coupon_observations: u8,
+        coupon_per_observation: f64,
+        max_live_states: usize,
+    ) -> Result<MidlifeReferenceTrace, FactoredWorstOfError> {
+        self.validate()?;
+        if !sigma_common.is_finite() || sigma_common <= 0.0 {
+            return Err(FactoredWorstOfError::InvalidSigmaCommon);
+        }
+        if current_logs.iter().any(|value| !value.is_finite()) {
+            return Err(FactoredWorstOfError::InvalidBarrierShift);
+        }
+        if !coupon_per_observation.is_finite() || coupon_per_observation < 0.0 {
+            return Err(FactoredWorstOfError::InvalidShape);
+        }
+
+        let coupon_barrier = self.shell.coupon_barrier;
+        let autocall_barrier = self.shell.autocall_barrier;
+        let knock_in_barrier = self.shell.knock_in_barrier;
+        let max_live_states = max_live_states.max(1);
+
+        let mut previous_day = now_trading_day;
+        let mut prev_coupon_day = None;
+        for &day in remaining_coupon_days {
+            if day < now_trading_day {
+                return Err(FactoredWorstOfError::InvalidStepDays);
+            }
+            if let Some(prev) = prev_coupon_day {
+                if day <= prev {
+                    return Err(FactoredWorstOfError::InvalidStepDays);
+                }
+            }
+            prev_coupon_day = Some(day);
+        }
+
+        let mut prev_autocall_day = None;
+        for &day in remaining_autocall_days {
+            if day < now_trading_day {
+                return Err(FactoredWorstOfError::InvalidStepDays);
+            }
+            if remaining_coupon_days.binary_search(&day).is_err() {
+                return Err(FactoredWorstOfError::InvalidStepDays);
+            }
+            if let Some(prev) = prev_autocall_day {
+                if day <= prev {
+                    return Err(FactoredWorstOfError::InvalidStepDays);
+                }
+            }
+            prev_autocall_day = Some(day);
+        }
+
+        if remaining_coupon_days.is_empty() {
+            let worst = current_logs
+                .iter()
+                .map(|value| value.exp())
+                .fold(f64::INFINITY, f64::min);
+            if !worst.is_finite() || worst <= 0.0 {
+                return Err(FactoredWorstOfError::InvalidShape);
+            }
+            let redemption = if ki_latched && worst < 1.0 {
+                worst
+            } else {
+                1.0
+            };
+            return Ok(MidlifeReferenceTrace {
+                nav_per_notional: redemption.max(0.0),
+                remaining_coupon_pv_per_notional: 0.0,
+                par_recovery_probability: if redemption >= 1.0 - 1.0e-12 {
+                    1.0
+                } else {
+                    0.0
+                },
+            });
+        }
+
+        let mut live_states = vec![LiveState {
+            weight: 1.0,
+            logs: current_logs,
+            knocked: ki_latched,
+            missed_coupons: missed_coupon_observations,
+        }];
+        let mut redemption_pv = 0.0_f64;
+        let mut coupon_pv = 0.0_f64;
+        let mut par_recovery_probability = 0.0_f64;
+
+        for (observation_index, &observation_day) in remaining_coupon_days.iter().enumerate() {
+            let step_days = observation_day
+                .checked_sub(previous_day)
+                .ok_or(FactoredWorstOfError::InvalidStepDays)?;
+            previous_day = observation_day;
+            let is_maturity = observation_index + 1 == remaining_coupon_days.len();
+            let is_autocall_day = remaining_autocall_days
+                .binary_search(&observation_day)
+                .is_ok();
+            let outcomes = if step_days == 0 {
+                vec![StepOutcome {
+                    weight: 1.0,
+                    log_return_increments: [0.0; 3],
+                }]
+            } else {
+                self.step_outcomes(sigma_common, step_days)?
+            };
+            let mut next_buckets = HashMap::<StateKey, BucketAccumulator>::new();
+
+            for state in &live_states {
+                for outcome in &outcomes {
+                    if !outcome.weight.is_finite() || outcome.weight <= 0.0 {
+                        continue;
+                    }
+                    let branch_weight = state.weight * outcome.weight;
+                    if !branch_weight.is_finite() || branch_weight <= 0.0 {
+                        continue;
+                    }
+                    if branch_weight < PATH_WEIGHT_CUTOFF {
+                        break;
+                    }
+
+                    let next_logs = [
+                        state.logs[0] + outcome.log_return_increments[0],
+                        state.logs[1] + outcome.log_return_increments[1],
+                        state.logs[2] + outcome.log_return_increments[2],
+                    ];
+                    let levels = [next_logs[0].exp(), next_logs[1].exp(), next_logs[2].exp()];
+                    if levels
+                        .iter()
+                        .any(|value| !value.is_finite() || *value <= 0.0)
+                    {
+                        return Err(FactoredWorstOfError::InvalidShape);
+                    }
+                    let worst = levels[0].min(levels[1]).min(levels[2]);
+                    let coupon_due = worst >= coupon_barrier;
+                    let coupon_multiplier = if coupon_due {
+                        f64::from(state.missed_coupons) + 1.0
+                    } else {
+                        0.0
+                    };
+                    let coupon_payment = coupon_per_observation * coupon_multiplier;
+                    coupon_pv += branch_weight * coupon_payment;
+
+                    if is_autocall_day
+                        && !is_maturity
+                        && levels.iter().all(|level| *level >= autocall_barrier)
+                    {
+                        redemption_pv += branch_weight;
+                        par_recovery_probability += branch_weight;
+                        continue;
+                    }
+
+                    let knocked_next = state.knocked || worst <= knock_in_barrier;
+                    if is_maturity {
+                        let redemption = if knocked_next && worst < 1.0 {
+                            worst
+                        } else {
+                            1.0
+                        };
+                        redemption_pv += branch_weight * redemption;
+                        if redemption >= 1.0 - 1.0e-12 {
+                            par_recovery_probability += branch_weight;
+                        }
+                        continue;
+                    }
+
+                    let missed_next = if coupon_due {
+                        0
+                    } else {
+                        state
+                            .missed_coupons
+                            .checked_add(1)
+                            .ok_or(FactoredWorstOfError::InvalidCheckpoint)?
+                    };
+                    let key = Self::state_key(next_logs, knocked_next, missed_next);
+                    let bucket = next_buckets.entry(key).or_insert(BucketAccumulator {
+                        weight: 0.0,
+                        weighted_logs: [0.0; 3],
+                    });
+                    bucket.weight += branch_weight;
+                    bucket.weighted_logs[0] += branch_weight * next_logs[0];
+                    bucket.weighted_logs[1] += branch_weight * next_logs[1];
+                    bucket.weighted_logs[2] += branch_weight * next_logs[2];
+                }
+            }
+
+            if is_maturity {
+                live_states.clear();
+                continue;
+            }
+
+            let mut ordered_buckets = next_buckets.into_iter().collect::<Vec<_>>();
+            ordered_buckets.sort_by(|(left_key, left_bucket), (right_key, right_bucket)| {
+                right_bucket
+                    .weight
+                    .total_cmp(&left_bucket.weight)
+                    .then_with(|| left_key.cmp(right_key))
+            });
+            live_states = ordered_buckets
+                .into_iter()
+                .filter_map(|(key, bucket)| {
+                    if !bucket.weight.is_finite() || bucket.weight <= STATE_MASS_EPS {
+                        return None;
+                    }
+                    Some(LiveState {
+                        weight: bucket.weight,
+                        logs: [
+                            bucket.weighted_logs[0] / bucket.weight,
+                            bucket.weighted_logs[1] / bucket.weight,
+                            bucket.weighted_logs[2] / bucket.weight,
+                        ],
+                        knocked: key.knocked,
+                        missed_coupons: key.missed_coupons,
+                    })
+                })
+                .collect();
+            if live_states.len() > max_live_states {
+                live_states.truncate(max_live_states);
+            }
+        }
+
+        Ok(MidlifeReferenceTrace {
+            nav_per_notional: (redemption_pv + coupon_pv).max(0.0),
+            remaining_coupon_pv_per_notional: coupon_pv.max(0.0),
+            par_recovery_probability: par_recovery_probability.clamp(0.0, 1.0),
+        })
     }
 
     /// Basic self-consistency checks for the frozen factor skeleton.

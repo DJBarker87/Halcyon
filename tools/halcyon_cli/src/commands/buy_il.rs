@@ -9,8 +9,8 @@ use crate::client::CliContext;
 #[derive(Debug, ClapArgs)]
 pub struct Args {
     pub insured_notional: u64,
-    #[arg(long)]
-    pub usdc_mint: String,
+    #[arg(long, value_name = "PUBKEY")]
+    pub usdc_mint: Option<String>,
     #[arg(long)]
     pub pyth_sol: String,
     #[arg(long)]
@@ -31,7 +31,7 @@ pub struct Args {
 
 pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     let buyer = ctx.signer()?;
-    let usdc_mint = CliContext::parse_pubkey("usdc_mint", &args.usdc_mint)?;
+    let usdc_mint = ctx.resolve_usdc_mint(args.usdc_mint.as_deref())?;
     let pyth_sol = CliContext::parse_pubkey("pyth_sol", &args.pyth_sol)?;
     let pyth_usdc = CliContext::parse_pubkey("pyth_usdc", &args.pyth_usdc)?;
     let preview = il_protection::simulate_preview_quote(

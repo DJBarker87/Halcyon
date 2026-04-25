@@ -5,7 +5,7 @@ use solana_sdk::{instruction::Instruction, pubkey::Pubkey, signature::Keypair, s
 
 use crate::{pda, tx};
 
-pub use halcyon_il_protection::{AcceptQuoteArgs, QuotePreview};
+pub use halcyon_il_protection::{AcceptQuoteArgs, LendingValuePreview, QuotePreview};
 
 pub fn preview_quote_ix(
     protocol_config: Pubkey,
@@ -54,6 +54,56 @@ pub async fn simulate_preview_quote(
         pyth_sol,
         pyth_usdc,
         insured_notional_usdc,
+    );
+    let result = tx::simulate_instruction(rpc, payer, ix).await?;
+    tx::decode_return_data(result, &halcyon_il_protection::ID)
+}
+
+pub fn preview_lending_value_ix(
+    protocol_config: Pubkey,
+    vault_sigma: Pubkey,
+    regime_signal: Pubkey,
+    policy_header: Pubkey,
+    product_terms: Pubkey,
+    pyth_sol: Pubkey,
+    pyth_usdc: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id: halcyon_il_protection::ID,
+        accounts: halcyon_il_protection::accounts::PreviewLendingValue {
+            protocol_config,
+            vault_sigma,
+            regime_signal,
+            policy_header,
+            product_terms,
+            pyth_sol,
+            pyth_usdc,
+            clock: solana_sdk::sysvar::clock::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_il_protection::instruction::PreviewLendingValue {}.data(),
+    }
+}
+
+pub async fn simulate_preview_lending_value(
+    rpc: &RpcClient,
+    payer: &Keypair,
+    pyth_sol: Pubkey,
+    pyth_usdc: Pubkey,
+    policy: &halcyon_kernel::state::PolicyHeader,
+    policy_address: Pubkey,
+) -> Result<LendingValuePreview> {
+    let (protocol_config, _) = pda::protocol_config();
+    let (vault_sigma, _) = pda::vault_sigma(&halcyon_il_protection::ID);
+    let (regime_signal, _) = pda::regime_signal(&halcyon_il_protection::ID);
+    let ix = preview_lending_value_ix(
+        protocol_config,
+        vault_sigma,
+        regime_signal,
+        policy_address,
+        policy.product_terms,
+        pyth_sol,
+        pyth_usdc,
     );
     let result = tx::simulate_instruction(rpc, payer, ix).await?;
     tx::decode_return_data(result, &halcyon_il_protection::ID)

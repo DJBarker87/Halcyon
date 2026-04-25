@@ -1,0 +1,17 @@
+[Unit]
+Description=Halcyon mock-USDC judge faucet
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/halcyon/env
+WorkingDirectory=/opt/halcyon/tools/mock_usdc_faucet
+ExecStart=/usr/bin/node /opt/halcyon/tools/mock_usdc_faucet/server.mjs
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

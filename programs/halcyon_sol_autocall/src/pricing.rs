@@ -16,14 +16,19 @@ use halcyon_sol_autocall_quote::autocall_v2::{
     AutocallParams, AutocallPriceResult, AUTOCALL_LOG_6, KNOCK_IN_LOG_6,
 };
 use halcyon_sol_autocall_quote::autocall_v2_e11::solve_fair_coupon_deim_from_precomputed_const as solve_keeper_deim;
-use halcyon_sol_autocall_quote::generated::pod_deim_table::POD_DEIM_TABLE_SHA256;
+use halcyon_sol_autocall_quote::generated::pod_deim_table::{
+    POD_DEIM_TABLE_SHA256, TRAINING_ALPHA_S6, TRAINING_BETA_S6, TRAINING_NO_AUTOCALL_FIRST_N_OBS,
+    TRAINING_REFERENCE_STEP_DAYS,
+};
 use solana_sha256_hasher::hash;
 use solmath_core::{fp_mul, fp_sqrt, SCALE};
 
 use crate::errors::SolAutocallError;
 use crate::state::{
-    SolAutocallReducedOperators, CURRENT_ENGINE_VERSION, KI_BARRIER_BPS, MATURITY_DAYS,
-    NO_AUTOCALL_FIRST_N_OBS, OBSERVATION_COUNT, OBSERVATION_INTERVAL_DAYS, SECONDS_PER_DAY,
+    SolAutocallMidlifeMatrices, SolAutocallReducedOperators, CURRENT_ENGINE_VERSION,
+    KI_BARRIER_BPS, MATURITY_DAYS, MIDLIFE_MATRIX_LEN, MIDLIFE_MATRIX_MAX_STEPS,
+    MIDLIFE_MATRIX_MAX_VALUES, MIDLIFE_MATRIX_N_STATES, NO_AUTOCALL_FIRST_N_OBS, OBSERVATION_COUNT,
+    OBSERVATION_INTERVAL_DAYS, SECONDS_PER_DAY,
 };
 
 #[cfg(target_os = "solana")]
@@ -48,6 +53,10 @@ pub(crate) fn cu_trace(label: &str) {
 pub const MIN_FAIR_COUPON_BPS: u64 = 50;
 pub const KEEPER_DEIM_SIGMA_MIN_S6: i64 = 500_000;
 pub const KEEPER_DEIM_SIGMA_MAX_S6: i64 = 2_500_000;
+pub const MIDLIFE_MATRIX_INPUTS_HASH_DOMAIN: &[u8] =
+    b"halcyon:sol-autocall:midlife-matrix-inputs:v1";
+pub const MIDLIFE_MATRIX_VALUES_HASH_DOMAIN: &[u8] =
+    b"halcyon:sol-autocall:midlife-matrix-values:v1";
 
 /// SCALE_6 constant used by the offered-coupon formula.
 const SCALE_6_I128: i128 = 1_000_000;
@@ -365,6 +374,119 @@ pub fn hash_product_terms(terms: &crate::state::SolAutocallTerms) -> Result<[u8;
         .serialize(&mut buf)
         .map_err(|_| error!(HalcyonError::Overflow))?;
     Ok(hash(&buf).to_bytes())
+}
+
+pub fn hash_midlife_matrix_construction_inputs(
+    matrices: &SolAutocallMidlifeMatrices,
+) -> Result<[u8; 32]> {
+    let count = matrices.uploaded_step_count as usize;
+    require!(
+        count <= MIDLIFE_MATRIX_MAX_STEPS,
+        SolAutocallError::MidlifeMatricesShapeInvalid
+    );
+
+    let mut buf = Vec::with_capacity(MIDLIFE_MATRIX_INPUTS_HASH_DOMAIN.len() + 128 + count * 8);
+    buf.extend_from_slice(MIDLIFE_MATRIX_INPUTS_HASH_DOMAIN);
+    push_u8(&mut buf, matrices.version);
+    push_u16(&mut buf, CURRENT_ENGINE_VERSION);
+    push_i64(&mut buf, matrices.sigma_ann_s6);
+    push_u16(&mut buf, matrices.n_states);
+    push_u16(&mut buf, matrices.cos_terms);
+    push_u16(&mut buf, MIDLIFE_MATRIX_N_STATES as u16);
+    push_u16(&mut buf, MIDLIFE_MATRIX_LEN as u16);
+    push_u16(&mut buf, OBSERVATION_COUNT as u16);
+    push_u32(&mut buf, MATURITY_DAYS);
+    push_u32(&mut buf, OBSERVATION_INTERVAL_DAYS);
+    push_i64(&mut buf, SECONDS_PER_DAY);
+    push_u8(&mut buf, NO_AUTOCALL_FIRST_N_OBS);
+    push_u16(&mut buf, KI_BARRIER_BPS as u16);
+    push_i64(&mut buf, KNOCK_IN_LOG_6);
+    push_i64(&mut buf, AUTOCALL_LOG_6);
+    push_i64(&mut buf, TRAINING_ALPHA_S6);
+    push_i64(&mut buf, TRAINING_BETA_S6);
+    push_i64(&mut buf, TRAINING_REFERENCE_STEP_DAYS);
+    push_u16(&mut buf, TRAINING_NO_AUTOCALL_FIRST_N_OBS as u16);
+    push_u64(&mut buf, matrices.source_vault_sigma_slot);
+    push_u64(&mut buf, matrices.source_regime_signal_slot);
+    push_u16(&mut buf, matrices.uploaded_step_count);
+    for idx in 0..count {
+        push_i64(&mut buf, matrices.step_days_s6[idx]);
+    }
+
+    Ok(hash(&buf).to_bytes())
+}
+
+pub fn hash_midlife_matrix_values(
+    matrices: &SolAutocallMidlifeMatrices,
+    construction_inputs_sha256: &[u8; 32],
+) -> Result<[u8; 32]> {
+    require!(
+        matrices.matrices.len() <= MIDLIFE_MATRIX_MAX_VALUES,
+        SolAutocallError::MidlifeMatricesShapeInvalid
+    );
+    let count = matrices.uploaded_step_count as usize;
+    require!(
+        count <= MIDLIFE_MATRIX_MAX_STEPS,
+        SolAutocallError::MidlifeMatricesShapeInvalid
+    );
+
+    let mut buf = Vec::with_capacity(
+        MIDLIFE_MATRIX_VALUES_HASH_DOMAIN.len() + 64 + count * 10 + matrices.matrices.len() * 8,
+    );
+    buf.extend_from_slice(MIDLIFE_MATRIX_VALUES_HASH_DOMAIN);
+    buf.extend_from_slice(construction_inputs_sha256);
+    push_u16(&mut buf, matrices.uploaded_step_count);
+    for idx in 0..count {
+        push_i64(&mut buf, matrices.step_days_s6[idx]);
+        push_u16(&mut buf, matrices.uploaded_lens[idx]);
+    }
+    push_u32(&mut buf, matrices.matrices.len() as u32);
+    for value in &matrices.matrices {
+        push_i64(&mut buf, *value);
+    }
+
+    Ok(hash(&buf).to_bytes())
+}
+
+pub fn refresh_midlife_matrix_commitments(matrices: &mut SolAutocallMidlifeMatrices) -> Result<()> {
+    let construction_inputs_sha256 = hash_midlife_matrix_construction_inputs(matrices)?;
+    let matrix_values_sha256 = hash_midlife_matrix_values(matrices, &construction_inputs_sha256)?;
+    matrices.construction_inputs_sha256 = construction_inputs_sha256;
+    matrices.matrix_values_sha256 = matrix_values_sha256;
+    Ok(())
+}
+
+pub fn require_midlife_matrix_commitments_match(
+    matrices: &SolAutocallMidlifeMatrices,
+) -> Result<()> {
+    let construction_inputs_sha256 = hash_midlife_matrix_construction_inputs(matrices)?;
+    let matrix_values_sha256 = hash_midlife_matrix_values(matrices, &construction_inputs_sha256)?;
+    require!(
+        matrices.construction_inputs_sha256 == construction_inputs_sha256
+            && matrices.matrix_values_sha256 == matrix_values_sha256,
+        SolAutocallError::MidlifeMatricesCommitmentMismatch
+    );
+    Ok(())
+}
+
+fn push_u8(buf: &mut Vec<u8>, value: u8) {
+    buf.push(value);
+}
+
+fn push_u16(buf: &mut Vec<u8>, value: u16) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u32(buf: &mut Vec<u8>, value: u32) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u64(buf: &mut Vec<u8>, value: u64) {
+    buf.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_i64(buf: &mut Vec<u8>, value: i64) {
+    buf.extend_from_slice(&value.to_le_bytes());
 }
 
 pub fn require_sigma_fresh(vault_sigma: &VaultSigma, now: i64, cap_secs: i64) -> Result<()> {

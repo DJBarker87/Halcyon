@@ -4,7 +4,9 @@ export type ProductKind = "flagship" | "solAutocall" | "ilProtection";
 
 export interface ClusterConfig {
   rpcUrl: string;
+  usdcMint: string;
   kernelProgramId: string;
+  lendingConsumerProgramId: string;
   flagshipProgramId: string;
   solAutocallProgramId: string;
   ilProtectionProgramId: string;

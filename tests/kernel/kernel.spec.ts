@@ -207,6 +207,12 @@ describe("halcyon kernel L1", function () {
         quoteTtlSecs: new BN(5),
         sigmaFloorAnnualisedS6: new BN(400_000),
         sigmaCeilingAnnualisedS6: new BN(800_000),
+        podDeimTableSha256: Array.from(
+          Buffer.from(
+            "7f37875504c66ad57c1f5367c5777c50dba9613902f7e32c1296193fca311e9e",
+            "hex"
+          )
+        ),
         solAutocallQuoteShareBps: 7_500,
         solAutocallIssuerMarginBps: 50,
         treasuryDestination: destinationUsdc,

@@ -69,7 +69,7 @@ Pre-KI at a healthy NAV, the buyback price is capped at KI−10%. Post-KI or in 
 | Post-KI, severe | −40% | $580 | $480 |
 | Catastrophic | −60% | $400 | $300 |
 
-The vault's profit on each buyback depends on hedge unwind value plus USDC reserve less buyback price. The mechanism is designed so this difference is positive in expectation across the stress range. Validation status: the existing flagship backtest does not include buyback activity. A full backtest rerun with mechanism active — including stressed hedge-unwind slippage — is in the "what's next" list below. Until it is run, the economic claim is designed rather than proven.
+The vault's profit on each buyback depends on hedge unwind value plus USDC reserve less buyback price. This has now been replayed as a mechanism-active overlay on the current production flagship row: 4,291 issued notes, 452 primary lending-style liquidations, 708 forced stress liquidations, zero buyback failures, and minimum coverage ratios of 1.3319x and 1.2458x respectively. The remaining caveat is wrapper liquidity: hedge-unwind stress is still modeled through the research cost function rather than observed long-history SPYX/QQQX/IWMX liquidation data.
 
 **UI treatment.** The buyback price is surfaced in the interface as Lending Value — the price at which any integrated lending protocol can liquidate the note. Retail holders will rarely interact with it directly; it exists to make the collateralisability property legible. Halcyon has no live lending integrations at launch; the value is exposed on-chain so integration partners can build against a deterministic collateral mark.
 
@@ -87,7 +87,7 @@ Halcyon is aimed at that buyer. Not at TradFi institutions — they have better 
 
 ## 7. The flagship
 
-A worst-of-3 autocall on tokenised SPY, QQQ, and IWM. Eighteen-month tenor, monthly coupon observations, quarterly autocall observations, continuous 80% knock-in monitoring. Notes are SPL tokens with the deterministic on-chain NAV and the standing buyback described above.
+A worst-of-3 autocall on tokenised SPY, QQQ, and IWM. Eighteen-month tenor, monthly coupon observations, quarterly autocall observations, continuous 80% knock-in monitoring. In the current repo, a note is a kernel `PolicyHeader` plus product terms, with two composability surfaces: direct owner-field transfer for program escrows, and a 1-supply SPL receipt-token wrapper for wallet-visible transfer and market UX.
 
 Three properties make this a good collateral asset:
 
@@ -113,7 +113,7 @@ The P5 of −17.4% is the left tail the coupon is priced against — capital pro
 
 Buyer IRR and vault return are close numerically but measured on different capital bases: buyer IRR is on deposited notional, vault return is on occupied capital net of tranche allocations and hedge costs. Both can earn ~6% on their respective bases because the capital structure is layered.
 
-The existing backtest models issuance and settlement; it does not model buyback activity. A mechanism-active backtest is in the "what's next" list.
+Separate from the issuance-and-settlement replay above, the mechanism-active buyback overlay ran against the current production daily-issuance row. Primary liquidation produced 452 buybacks with zero failures and 1.3319x minimum coverage; the forced stress path produced 708 buybacks with zero failures and 1.2458x minimum coverage.
 
 **Pricing.** One-factor NIG model with Gaussian residuals, calibrated to 20 years of SPY/QQQ/IWM daily data. A shared fat-tailed factor drives all three names through calibrated loadings; a small Gaussian residual captures idiosyncratic spread. Joint tails are heavier than a Gaussian copula on independent NIG marginals, which is what real equity crashes look like.
 
@@ -129,17 +129,26 @@ The flagship is the lead. The platform-proof product is SOL Autocall — a crypt
 
 The same engine also prices IL protection for LPs and other defined-payoff structures — documented in the product shelf, demoted here because the flagship and SOL Autocall carry the pitch.
 
+All three current product lines — flagship worst-of-3 autocall, SOL Autocall, and IL Protection — expose mid-life NAV as a deterministic function of on-chain state. The flagship runs the full C1-filter monthly dynamic program on-chain with transaction-level checkpointing. IL Protection runs a 5-point Gauss-Legendre shifted-NIG integration inside a single preview instruction. SOL Autocall uses a keeper-uploaded COS transition matrix with on-chain SHA-256 commitments over both the construction inputs and the matrix values; `preview_lending_value` refuses to execute against a matrix whose hashes do not recompute canonically, so the keeper is a performance optimisation rather than a trust anchor. Third-party verification of the SOL Autocall matrix is a deterministic replay of the documented builder against the on-chain construction inputs.
+
 **Architectural isolation.** No perps, no options venues, no bridges, no cross-protocol vault dependencies. In a post-Drift environment, minimising counterparty surface is a first-order design property, not a marketing line.
 
 ## 9. What's built, what's next
 
 **Built.** SolMath on crates.io, adopted, validated to 14 digits against QuantLib. Three pricing engines (flagship, SOL Autocall, IL), backtested, producing positive vault returns across test windows. Anchor programs deployed on devnet with end-to-end quote-to-settlement flow working. WASM build of SolMath for frontend pricing working. All of this built solo in roughly a month.
 
-**Next, within the hackathon window.**
-- Buyback mechanism: instant liquidation path and 48-hour delayed retail path, both on-chain.
-- Reference liquidation consumer contract demonstrating a third-party program calling the buyback against a posted note.
-- Mechanism-active backtest covering stressed hedge-unwind slippage.
-- Front-end surfacing of lending value alongside NAV and expected maturity payoff.
+**Built in the thesis-pivot implementation pass.**
+- Instant flagship buyback path on-chain, using the same mid-life NAV interface as the lending-value preview.
+- Policy owner transfer in the kernel, so a lending escrow PDA can hold a live note without special product-program privileges.
+- SPL receipt-token wrapper: an active policy can be wrapped into a 1-supply SPL token, transferred like normal SPL collateral, then burned to recover policy ownership before settlement or liquidation.
+- 48-hour retail redemption path at a tighter 5% haircut, with request/cancel/execute instructions and expiry on stale requests.
+- Reference liquidation consumer contract under `research/programs/halcyon_lending_consumer`, demonstrating a third-party program CPI into the flagship buyback against a posted note.
+- Mechanism-active flagship buyback backtest with stressed hedge-unwind costs: 452 primary liquidations, 708 forced stress liquidations, zero failures.
+- CLI/SDK surface for `preview-lending-value`, `buyback-flagship`, `transfer-policy-owner`, `wrap-policy-receipt`, `unwrap-policy-receipt`, `request-retail-redemption`, `execute-retail-redemption`, and `liquidate-wrapped-flagship`.
+- Fake lending integration site at `/lending-demo`, including receipt collateral rows and a liquidate button for demo and live wallet flows.
+
+**Still next.**
+- Live lending-market integration and production wrapper-liquidity calibration.
 
 **Beyond the hackathon.** Mainnet deployment, legal partnerships for regulated issuance of the flagship, integration with specific lending markets (Kamino, MarginFi, Jupiter Lend) as collateral counterparties. Distribution and regulatory paths, not technical ones.
 
@@ -155,7 +164,7 @@ Correct. The mechanism is demonstrated; integration is distribution work. A thre
 Sharpest version of the previous pushback. The buyback mechanism is the specific answer: deterministic price, mechanically-enforced, self-funded from the note's own deposit, available in every market state. The lending protocol's exit is guaranteed by the issuing contract rather than by an emergent secondary market. Whether a lending protocol adopts this is a business-development question, not a mechanism question.
 
 **"The buyback concentrates hedge unwinds at stress moments; your daily-liquidity assumptions may not hold."**
-Acknowledged. The current backtest assumes $50M daily liquidity via a sqrt-impact function; buyback activity concentrates unwinds at stress moments which may violate this. The mechanism-active backtest with stressed unwind slippage is the next validation milestone and will price this in explicitly rather than assuming it away.
+Acknowledged. The mechanism-active replay now injects liquidations into the live note lifecycle and applies stressed hedge-unwind costs. It still relies on a modeled wrapper-cost function because long stressed SPYX/QQQX/IWMX liquidity history is not directly observed. The current result is strong on per-note solvency and still assumption-driven on real-world wrapper execution depth.
 
 **"The flagship needs regulated issuance to reach US persons at scale."**
 Correct. Largest commercial gap. The flagship is architecturally ready and pricing-ready but not securities-ready. Mainnet launch requires a regulated issuance partner. Gated behind distribution partnerships the project does not yet have.

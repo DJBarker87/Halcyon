@@ -68,6 +68,12 @@ pub enum KernelError {
     PolicyEscrowInsufficient,
     #[msg("direct kernel Jupiter CPI execution is disabled; use prepare_hedge_swap + record_hedge_trade")]
     DeprecatedHedgeExecutionPath,
+    #[msg("policy receipt account does not match this policy")]
+    PolicyReceiptMismatch,
+    #[msg("policy receipt mint supply is invalid")]
+    PolicyReceiptSupplyInvalid,
+    #[msg("policy receipt token account is invalid")]
+    PolicyReceiptTokenInvalid,
 
     // --- Aggregate delta keeper signature (audit F4b) ---
     #[msg("expected an Ed25519 precompile instruction immediately before write_aggregate_delta")]

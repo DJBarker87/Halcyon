@@ -14,5 +14,6 @@ pub mod capital_stack;
 pub mod generated;
 #[cfg(not(target_os = "solana"))]
 pub mod hedge_controller;
+pub mod midlife;
 #[cfg(not(target_os = "solana"))]
 pub mod sol_swap_cost;

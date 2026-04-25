@@ -46,6 +46,7 @@ const SEEDS = {
   regimeSignal: Buffer.from("regime_signal"),
   regression: Buffer.from("regression"),
   aggregateDelta: Buffer.from("aggregate_delta"),
+  autocallSchedule: Buffer.from("autocall_schedule"),
   couponVault: Buffer.from("coupon_vault"),
   hedgeSleeve: Buffer.from("hedge_sleeve"),
   hedgeBook: Buffer.from("hedge_book"),
@@ -129,6 +130,8 @@ export type TestContext = {
   provider: anchor.AnchorProvider;
   usdcMint: PublicKey;
 };
+
+let sharedFullProtocol: Promise<TestContext> | null = null;
 
 function pda(
   seeds: Buffer[],
@@ -270,7 +273,7 @@ export async function writeAggregateDelta(
 
   const ed25519Ix = Ed25519Program.createInstructionWithPrivateKey({
     message: signedMessage,
-    privateKey: deltaKeeper.secretKey.subarray(0, 32),
+    privateKey: deltaKeeper.secretKey,
   });
   const writeIx = await kernel.methods
     .writeAggregateDelta({
@@ -437,6 +440,16 @@ function deriveProductAccounts(
 }
 
 export async function setupFullProtocol(): Promise<TestContext> {
+  if (process.env.HALCYON_INTEGRATION_ISOLATED_SETUP !== "1") {
+    if (!sharedFullProtocol) {
+      sharedFullProtocol = initializeFullProtocol();
+    }
+    return sharedFullProtocol;
+  }
+  return initializeFullProtocol();
+}
+
+async function initializeFullProtocol(): Promise<TestContext> {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
@@ -555,11 +568,17 @@ export async function setupFullProtocol(): Promise<TestContext> {
       sigmaStalenessCapSecs: new BN(600),
       regimeStalenessCapSecs: new BN(600),
       regressionStalenessCapSecs: new BN(600),
-      pythQuoteStalenessCapSecs: new BN(600),
-      pythSettleStalenessCapSecs: new BN(600),
+      pythQuoteStalenessCapSecs: new BN(3_600),
+      pythSettleStalenessCapSecs: new BN(3_600),
       quoteTtlSecs: new BN(2),
       sigmaFloorAnnualisedS6: new BN(400_000),
       sigmaCeilingAnnualisedS6: new BN(800_000),
+      podDeimTableSha256: Array.from(
+        Buffer.from(
+          "7f37875504c66ad57c1f5367c5777c50dba9613902f7e32c1296193fca311e9e",
+          "hex"
+        )
+      ),
       solAutocallQuoteShareBps: 7_500,
       solAutocallIssuerMarginBps: 50,
       treasuryDestination: adminUsdc,
@@ -885,6 +904,33 @@ export async function setupFullProtocol(): Promise<TestContext> {
       systemProgram: SystemProgram.programId,
     } as any)
     .signers([keepers.regression])
+    .rpc();
+
+  await programs.kernel.methods
+    .writeAutocallSchedule({
+      productProgramId: programs.flagshipAutocall.programId,
+      issueDateTs: new BN(manifest.baseTimestamp),
+      observationTimestamps: [
+        new BN(manifest.baseTimestamp + 300),
+        new BN(manifest.baseTimestamp + 600),
+        new BN(manifest.baseTimestamp + 900),
+        new BN(manifest.baseTimestamp + 1_200),
+        new BN(manifest.baseTimestamp + 1_500),
+        new BN(manifest.baseTimestamp + 1_800),
+      ],
+    })
+    .accounts({
+      autocallSchedule: pda(
+        [SEEDS.autocallSchedule, programs.flagshipAutocall.programId.toBuffer()],
+        programs.kernel.programId
+      ),
+      keeper: keepers.observation.publicKey,
+      keeperRegistry: pdas.keeperRegistry,
+      payer: admin.publicKey,
+      productRegistryEntry: flagship.productRegistryEntry,
+      systemProgram: SystemProgram.programId,
+    } as any)
+    .signers([keepers.observation])
     .rpc();
 
   await writeAggregateDelta(

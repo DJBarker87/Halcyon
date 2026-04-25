@@ -51,12 +51,22 @@ export const SOLANA_GENESIS_HASHES = {
 // every literal access so the `env()` lookup below is an object read on
 // values that webpack has already baked in at build time.
 const PUBLIC_ENV: Readonly<Record<string, string | undefined>> = {
+  NEXT_PUBLIC_DEFAULT_CLUSTER: process.env.NEXT_PUBLIC_DEFAULT_CLUSTER,
   NEXT_PUBLIC_RPC_URL_MAINNET: process.env.NEXT_PUBLIC_RPC_URL_MAINNET,
   NEXT_PUBLIC_RPC_URL_DEVNET: process.env.NEXT_PUBLIC_RPC_URL_DEVNET,
   NEXT_PUBLIC_RPC_URL_LOCALNET: process.env.NEXT_PUBLIC_RPC_URL_LOCALNET,
+  NEXT_PUBLIC_USDC_MINT_MAINNET: process.env.NEXT_PUBLIC_USDC_MINT_MAINNET,
+  NEXT_PUBLIC_USDC_MINT_DEVNET: process.env.NEXT_PUBLIC_USDC_MINT_DEVNET,
+  NEXT_PUBLIC_USDC_MINT_LOCALNET: process.env.NEXT_PUBLIC_USDC_MINT_LOCALNET,
   NEXT_PUBLIC_KERNEL_PROGRAM_ID_MAINNET: process.env.NEXT_PUBLIC_KERNEL_PROGRAM_ID_MAINNET,
   NEXT_PUBLIC_KERNEL_PROGRAM_ID_DEVNET: process.env.NEXT_PUBLIC_KERNEL_PROGRAM_ID_DEVNET,
   NEXT_PUBLIC_KERNEL_PROGRAM_ID_LOCALNET: process.env.NEXT_PUBLIC_KERNEL_PROGRAM_ID_LOCALNET,
+  NEXT_PUBLIC_LENDING_CONSUMER_PROGRAM_ID_MAINNET:
+    process.env.NEXT_PUBLIC_LENDING_CONSUMER_PROGRAM_ID_MAINNET,
+  NEXT_PUBLIC_LENDING_CONSUMER_PROGRAM_ID_DEVNET:
+    process.env.NEXT_PUBLIC_LENDING_CONSUMER_PROGRAM_ID_DEVNET,
+  NEXT_PUBLIC_LENDING_CONSUMER_PROGRAM_ID_LOCALNET:
+    process.env.NEXT_PUBLIC_LENDING_CONSUMER_PROGRAM_ID_LOCALNET,
   NEXT_PUBLIC_FLAGSHIP_PROGRAM_ID_MAINNET: process.env.NEXT_PUBLIC_FLAGSHIP_PROGRAM_ID_MAINNET,
   NEXT_PUBLIC_FLAGSHIP_PROGRAM_ID_DEVNET: process.env.NEXT_PUBLIC_FLAGSHIP_PROGRAM_ID_DEVNET,
   NEXT_PUBLIC_FLAGSHIP_PROGRAM_ID_LOCALNET: process.env.NEXT_PUBLIC_FLAGSHIP_PROGRAM_ID_LOCALNET,
@@ -94,10 +104,15 @@ function env(cluster: ClusterId, key: string) {
 // excludes the localnet entry entirely (see `buildAllowedConfigs` below).
 const LOCALNET_PROGRAM_IDS = {
   kernelProgramId: "H71FxCTuVGL13PkzXeVxeTn89xZreFm4AwLu3iZeVtdF",
+  lendingConsumerProgramId: "BSZABrfDG1vN3q7sejfebPFbqfqwVRu8gcjSukWEiXqF",
   flagshipProgramId: "E4Atu2kHkzJ1NMATBvoMcy3BDKfsyz418DHCoqQHc3Mc",
   ilProtectionProgramId: "HuUQUngf79HgTWdggxAsE135qFeHfYV9Mj9xsCcwqz5g",
   solAutocallProgramId: "6DfpE7MEx1K1CeiQuw8Q61Empamcuknv9Tc79xtJKae8",
 };
+
+const DEFAULT_USDC_MINTS = {
+  mainnet: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+} as const;
 
 function localnetConfig(): AllowedClusterConfig {
   return {
@@ -106,8 +121,12 @@ function localnetConfig(): AllowedClusterConfig {
     description:
       "Solana test validator on 127.0.0.1. For local development only; the genesis is ephemeral so the on-load genesis-hash check is skipped.",
     rpcUrl: env("localnet", "RPC_URL") || "http://127.0.0.1:8899",
+    usdcMint: env("localnet", "USDC_MINT"),
     kernelProgramId:
       env("localnet", "KERNEL_PROGRAM_ID") || LOCALNET_PROGRAM_IDS.kernelProgramId,
+    lendingConsumerProgramId:
+      env("localnet", "LENDING_CONSUMER_PROGRAM_ID") ||
+      LOCALNET_PROGRAM_IDS.lendingConsumerProgramId,
     flagshipProgramId:
       env("localnet", "FLAGSHIP_PROGRAM_ID") || LOCALNET_PROGRAM_IDS.flagshipProgramId,
     ilProtectionProgramId:
@@ -130,7 +149,9 @@ function devnetConfig(): AllowedClusterConfig {
     description:
       "Solana devnet. Not real funds; safe for testing. Switching here from mainnet means a different set of pinned program IDs and oracle feeds.",
     rpcUrl: env("devnet", "RPC_URL") || "https://api.devnet.solana.com",
+    usdcMint: env("devnet", "USDC_MINT"),
     kernelProgramId: env("devnet", "KERNEL_PROGRAM_ID"),
+    lendingConsumerProgramId: env("devnet", "LENDING_CONSUMER_PROGRAM_ID"),
     flagshipProgramId: env("devnet", "FLAGSHIP_PROGRAM_ID"),
     ilProtectionProgramId: env("devnet", "IL_PROGRAM_ID"),
     solAutocallProgramId: env("devnet", "SOL_PROGRAM_ID"),
@@ -139,7 +160,9 @@ function devnetConfig(): AllowedClusterConfig {
     pythSpy: env("devnet", "PYTH_SPY_ACCOUNT"),
     pythQqq: env("devnet", "PYTH_QQQ_ACCOUNT"),
     pythIwm: env("devnet", "PYTH_IWM_ACCOUNT"),
-    genesisHash: SOLANA_GENESIS_HASHES.devnet,
+    // Devnet demo builds must open directly on the product. Program IDs,
+    // oracle accounts, and RPC are still pinned by the allowlist above.
+    genesisHash: "",
   };
 }
 
@@ -150,7 +173,9 @@ function mainnetConfig(): AllowedClusterConfig {
     description:
       "Solana mainnet-beta. Real funds, production protocol. Any transaction built here executes on the live network.",
     rpcUrl: env("mainnet", "RPC_URL") || "https://api.mainnet-beta.solana.com",
+    usdcMint: env("mainnet", "USDC_MINT") || DEFAULT_USDC_MINTS.mainnet,
     kernelProgramId: env("mainnet", "KERNEL_PROGRAM_ID"),
+    lendingConsumerProgramId: env("mainnet", "LENDING_CONSUMER_PROGRAM_ID"),
     flagshipProgramId: env("mainnet", "FLAGSHIP_PROGRAM_ID"),
     ilProtectionProgramId: env("mainnet", "IL_PROGRAM_ID"),
     solAutocallProgramId: env("mainnet", "SOL_PROGRAM_ID"),
@@ -184,14 +209,18 @@ export function findAllowedConfig(id: string): AllowedClusterConfig | undefined 
 
 /** Default cluster when none is stored or the stored id is not in the allowlist. */
 export function defaultClusterId(): ClusterId {
-  if (process.env.NODE_ENV === "development") return "localnet";
-  return "mainnet";
+  const configured = PUBLIC_ENV.NEXT_PUBLIC_DEFAULT_CLUSTER;
+  if (configured === "mainnet" || configured === "devnet") return configured;
+  if (configured === "localnet" && process.env.NODE_ENV === "development") return configured;
+  return "devnet";
 }
 
 /** Subset of fields that a user-facing settings panel displays read-only. */
 export const READ_ONLY_DISPLAY_FIELDS: Array<{ key: keyof ClusterConfig; label: string }> = [
   { key: "rpcUrl", label: "RPC URL" },
+  { key: "usdcMint", label: "USDC mint" },
   { key: "kernelProgramId", label: "Kernel program" },
+  { key: "lendingConsumerProgramId", label: "Lending consumer program" },
   { key: "flagshipProgramId", label: "Flagship program" },
   { key: "ilProtectionProgramId", label: "IL Protection program" },
   { key: "solAutocallProgramId", label: "SOL Autocall program" },

@@ -140,6 +140,34 @@ pub fn policy(policy_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seeds::POLICY, policy_id.as_ref()], &halcyon_kernel::ID)
 }
 
+pub fn policy_receipt(policy_header: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[seeds::POLICY_RECEIPT, policy_header.as_ref()],
+        &halcyon_kernel::ID,
+    )
+}
+
+pub fn policy_receipt_mint(policy_header: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[seeds::POLICY_RECEIPT_MINT, policy_header.as_ref()],
+        &halcyon_kernel::ID,
+    )
+}
+
+pub fn policy_receipt_authority(policy_header: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[seeds::POLICY_RECEIPT_AUTHORITY, policy_header.as_ref()],
+        &halcyon_kernel::ID,
+    )
+}
+
+pub fn retail_redemption_request(policy_header: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(
+        &[seeds::RETAIL_REDEMPTION, policy_header.as_ref()],
+        &halcyon_flagship_autocall::ID,
+    )
+}
+
 pub fn terms_for(product_program_id: &Pubkey, policy_id: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[seeds::TERMS, policy_id.as_ref()], product_program_id)
 }

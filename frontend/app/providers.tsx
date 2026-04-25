@@ -63,7 +63,7 @@ function SolanaProviders({ children }: { children: React.ReactNode }) {
 
   return (
     <ConnectionProvider endpoint={current.rpcUrl}>
-      <WalletProvider wallets={wallets}>
+      <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>{children}</WalletModalProvider>
       </WalletProvider>
     </ConnectionProvider>

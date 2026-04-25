@@ -9,8 +9,8 @@ use crate::client::CliContext;
 #[derive(Debug, ClapArgs)]
 pub struct Args {
     pub notional: u64,
-    #[arg(long)]
-    pub usdc_mint: String,
+    #[arg(long, value_name = "PUBKEY")]
+    pub usdc_mint: Option<String>,
     #[arg(long)]
     pub pyth_sol: String,
     /// M-3 — relaxed ceiling on the upfront `premium` charged at issuance,
@@ -38,7 +38,7 @@ pub struct Args {
 
 pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     let buyer = ctx.signer()?;
-    let usdc_mint = CliContext::parse_pubkey("usdc_mint", &args.usdc_mint)?;
+    let usdc_mint = ctx.resolve_usdc_mint(args.usdc_mint.as_deref())?;
     let pyth_sol = CliContext::parse_pubkey("pyth_sol", &args.pyth_sol)?;
     let preview =
         sol_autocall::simulate_preview_quote(ctx.rpc.as_ref(), buyer, pyth_sol, args.notional)

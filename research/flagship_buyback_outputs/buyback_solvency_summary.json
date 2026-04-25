@@ -1,0 +1,53 @@
+{
+  "source_step_csv": "/Users/dominic/colosseumfinal/research/flagship_buyback_outputs/flagship_step_ledger.csv",
+  "source_summary_csv": "/Users/dominic/Colosseum/halcyon-hedge-lab/outputs/spy_qqq_iwm_factor_model_quarterly_recal_q65_cap500_daily/summary.csv",
+  "metadata": {
+    "candidate_windows": 4400,
+    "issued_windows": 4291,
+    "asset_keys": [
+      "spy",
+      "qqq",
+      "iwm"
+    ],
+    "config_name": "spy_qqq_iwm_factor_model_quarterly_recal_q65_cap500_daily",
+    "legacy_root": "/Users/dominic/Colosseum/halcyon-hedge-lab",
+    "source_summary_csv": "/Users/dominic/Colosseum/halcyon-hedge-lab/outputs/spy_qqq_iwm_factor_model_quarterly_recal_q65_cap500_daily/summary.csv",
+    "max_issued": 0
+  },
+  "scenario": {
+    "name": "flagship_q65_cap500_daily",
+    "notional": 100.0,
+    "knock_in_barrier": 0.8,
+    "haircut_pct_of_notional": 0.1,
+    "initial_ltv": 0.7,
+    "liquidation_ltv": 0.85,
+    "stress_multiplier": 3.0,
+    "stress_return_threshold": -0.05,
+    "stress_vol_threshold": 1.0,
+    "forced_fraction": 0.25
+  },
+  "primary": {
+    "liquidations": 452,
+    "failures": 0,
+    "buyback_possible_all": true,
+    "total_buyback_paid_usdc": 25279.594217128793,
+    "total_unwind_cost_usdc": 532.1087894814679,
+    "total_buffer_usdc": 12207.8762665593,
+    "min_buffer_usdc": 18.117849717800155,
+    "min_coverage_ratio": 1.3319134964437076,
+    "worst_single_day_buyback_count": 107,
+    "worst_5day_buyback_count": 264
+  },
+  "stress": {
+    "liquidations": 708,
+    "failures": 0,
+    "buyback_possible_all": true,
+    "total_buyback_paid_usdc": 46481.84779773174,
+    "total_unwind_cost_usdc": 2422.9830971604483,
+    "total_buffer_usdc": 19788.492065120776,
+    "min_buffer_usdc": 15.609466102889883,
+    "min_coverage_ratio": 1.2458149346961047,
+    "worst_single_day_buyback_count": 73,
+    "worst_5day_buyback_count": 101
+  }
+}

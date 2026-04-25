@@ -28,6 +28,13 @@ pub mod halcyon_kernel {
         instructions::admin::initialize_protocol::handler(ctx, args)
     }
 
+    pub fn initialize_payment_mint(
+        ctx: Context<InitializePaymentMint>,
+        args: InitializePaymentMintArgs,
+    ) -> Result<()> {
+        instructions::admin::initialize_payment_mint::handler(ctx, args)
+    }
+
     pub fn set_protocol_config(
         ctx: Context<SetProtocolConfig>,
         args: SetProtocolConfigArgs,
@@ -185,6 +192,21 @@ pub mod halcyon_kernel {
         args: ApplySettlementArgs,
     ) -> Result<()> {
         instructions::lifecycle::apply_settlement::handler(ctx, args)
+    }
+
+    pub fn transfer_policy_owner(
+        ctx: Context<TransferPolicyOwner>,
+        new_owner: Pubkey,
+    ) -> Result<()> {
+        instructions::lifecycle::transfer_policy_owner::handler(ctx, new_owner)
+    }
+
+    pub fn wrap_policy_receipt(ctx: Context<WrapPolicyReceipt>) -> Result<()> {
+        instructions::lifecycle::wrap_policy_receipt::handler(ctx)
+    }
+
+    pub fn unwrap_policy_receipt(ctx: Context<UnwrapPolicyReceipt>) -> Result<()> {
+        instructions::lifecycle::unwrap_policy_receipt::handler(ctx)
     }
 
     pub fn pay_coupon(ctx: Context<PayCoupon>, args: PayCouponArgs) -> Result<()> {

@@ -36,3 +36,18 @@ pub struct PolicyHeader {
 impl PolicyHeader {
     pub const CURRENT_VERSION: u8 = 2;
 }
+
+#[account]
+#[derive(InitSpace)]
+pub struct PolicyReceipt {
+    pub version: u8,
+    pub policy_header: Pubkey,
+    pub product_program_id: Pubkey,
+    pub receipt_mint: Pubkey,
+    pub escrow_authority: Pubkey,
+    pub wrapped_at: i64,
+}
+
+impl PolicyReceipt {
+    pub const CURRENT_VERSION: u8 = 1;
+}

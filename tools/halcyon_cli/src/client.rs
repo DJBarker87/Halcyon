@@ -13,6 +13,9 @@ pub struct CliContext {
     pub signer: Option<Keypair>,
 }
 
+const HALCYON_USDC_MINT_ENV: &str = "HALCYON_USDC_MINT";
+const USDC_MINT_ENV: &str = "USDC_MINT";
+
 impl CliContext {
     pub async fn new(rpc_url: &str, keypair_path: Option<&str>) -> Result<Self> {
         let rpc = Arc::new(RpcClient::new_with_commitment(
@@ -40,5 +43,22 @@ impl CliContext {
 
     pub fn parse_pubkey(label: &str, input: &str) -> Result<Pubkey> {
         Pubkey::from_str(input).with_context(|| format!("parsing {label} pubkey {input}"))
+    }
+
+    pub fn resolve_usdc_mint(&self, input: Option<&str>) -> Result<Pubkey> {
+        if let Some(value) = input.map(str::trim).filter(|value| !value.is_empty()) {
+            return Self::parse_pubkey("usdc_mint", value);
+        }
+        for env_name in [HALCYON_USDC_MINT_ENV, USDC_MINT_ENV] {
+            if let Ok(value) = std::env::var(env_name) {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Self::parse_pubkey(env_name, value);
+                }
+            }
+        }
+        anyhow::bail!(
+            "--usdc-mint is required; pass it explicitly or set {HALCYON_USDC_MINT_ENV}/{USDC_MINT_ENV}. Devnet demos should use the Halcyon mock-USDC mint created by the faucet bring-up."
+        )
     }
 }

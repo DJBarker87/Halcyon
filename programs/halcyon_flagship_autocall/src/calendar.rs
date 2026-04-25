@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use halcyon_common::HalcyonError;
 
 use crate::state::SECONDS_PER_DAY;
+use crate::state::TENOR_TRADING_DAYS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CivilDate {
@@ -56,6 +57,29 @@ pub fn nth_trading_day_after(issue_date: CivilDate, nth: u16) -> Result<CivilDat
         }
     }
     Ok(cursor)
+}
+
+pub fn trading_days_elapsed_since_issue(issued_at: i64, now: i64) -> Result<u16> {
+    if now <= issued_at {
+        return Ok(0);
+    }
+
+    let issue_date = issue_trade_date(issued_at);
+    let mut elapsed = 0u16;
+    let mut cursor = issue_date;
+
+    while elapsed < TENOR_TRADING_DAYS {
+        cursor = cursor.add_days(1);
+        if !is_us_equity_trading_day(cursor) {
+            continue;
+        }
+        if trading_close_timestamp_utc(cursor) > now {
+            break;
+        }
+        elapsed = elapsed.checked_add(1).ok_or(HalcyonError::Overflow)?;
+    }
+
+    Ok(elapsed)
 }
 
 pub fn is_us_equity_trading_day(date: CivilDate) -> bool {
@@ -218,6 +242,33 @@ mod tests {
         assert_eq!(
             trading_close_timestamp_utc(first_coupon),
             days_from_civil(2026, 3, 17) * SECONDS_PER_DAY + 20 * 3_600
+        );
+    }
+
+    #[test]
+    fn elapsed_trading_days_waits_for_close() {
+        let issued_at = trading_close_timestamp_utc(CivilDate::new(2026, 1, 2));
+        let before_first_close = trading_close_timestamp_utc(CivilDate::new(2026, 1, 5)) - 1;
+        let at_first_close = trading_close_timestamp_utc(CivilDate::new(2026, 1, 5));
+
+        assert_eq!(
+            trading_days_elapsed_since_issue(issued_at, before_first_close).unwrap(),
+            0
+        );
+        assert_eq!(
+            trading_days_elapsed_since_issue(issued_at, at_first_close).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn elapsed_trading_days_matches_monthly_boundary() {
+        let issued_at = trading_close_timestamp_utc(CivilDate::new(2026, 2, 13));
+        let first_coupon_close = trading_close_timestamp_utc(CivilDate::new(2026, 3, 17));
+
+        assert_eq!(
+            trading_days_elapsed_since_issue(issued_at, first_coupon_close).unwrap(),
+            21
         );
     }
 }

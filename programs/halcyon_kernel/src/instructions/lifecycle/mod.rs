@@ -5,6 +5,9 @@ pub mod prepare_hedge_swap;
 pub mod reap_quoted;
 pub mod record_hedge_trade;
 pub mod reserve_and_issue;
+pub mod transfer_policy_owner;
+pub mod unwrap_policy_receipt;
+pub mod wrap_policy_receipt;
 
 // L-7 — glob re-export is required so Anchor's `#[program]` macro can reach
 // each handler's `__client_accounts_*` / `__cpi_client_accounts_*`
@@ -25,3 +28,9 @@ pub use reap_quoted::*;
 pub use record_hedge_trade::*;
 #[allow(ambiguous_glob_reexports)]
 pub use reserve_and_issue::*;
+#[allow(ambiguous_glob_reexports)]
+pub use transfer_policy_owner::*;
+#[allow(ambiguous_glob_reexports)]
+pub use unwrap_policy_receipt::*;
+#[allow(ambiguous_glob_reexports)]
+pub use wrap_policy_receipt::*;

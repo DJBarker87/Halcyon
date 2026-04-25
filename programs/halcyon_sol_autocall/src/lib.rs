@@ -1,8 +1,9 @@
 //! SOL Autocall product program — L2.
 //!
-//! Four public instructions:
+//! Five public instructions:
 //! - `preview_quote`   — read-only, simulateTransaction-driven.
 //! - `accept_quote`    — full issuance path (kernel mutual CPI, confidence gate).
+//! - `preview_lending_value` — read-only midlife collateral mark.
 //! - `record_observation` — keeper-driven per-observation handler.
 //! - `settle`          — maturity settlement (anyone can call after expiry).
 //!
@@ -25,11 +26,15 @@ pub use errors::SolAutocallError;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::accept_quote::*;
 #[allow(ambiguous_glob_reexports)]
+pub use instructions::preview_lending_value::*;
+#[allow(ambiguous_glob_reexports)]
 pub use instructions::preview_quote::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::record_observation::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::settle::*;
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::write_midlife_matrices::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::write_reduced_operators::*;
 pub use state::*;
@@ -48,6 +53,10 @@ pub mod halcyon_sol_autocall {
         instructions::accept_quote::handler(ctx, args)
     }
 
+    pub fn preview_lending_value(ctx: Context<PreviewLendingValue>) -> Result<LendingValuePreview> {
+        instructions::preview_lending_value::handler(ctx)
+    }
+
     pub fn record_observation(ctx: Context<RecordObservation>, expected_index: u8) -> Result<()> {
         instructions::record_observation::handler(ctx, expected_index)
     }
@@ -61,5 +70,12 @@ pub mod halcyon_sol_autocall {
         args: WriteReducedOperatorsArgs,
     ) -> Result<()> {
         instructions::write_reduced_operators::handler(ctx, args)
+    }
+
+    pub fn write_midlife_matrices(
+        ctx: Context<WriteMidlifeMatrices>,
+        args: WriteMidlifeMatricesArgs,
+    ) -> Result<()> {
+        instructions::write_midlife_matrices::handler(ctx, args)
     }
 }

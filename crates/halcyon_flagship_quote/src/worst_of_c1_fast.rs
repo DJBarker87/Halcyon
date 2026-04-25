@@ -10,7 +10,7 @@ use solmath_core::PHI2_RESID_QQQ_IWM;
 use solmath_core::PHI2_RESID_SPY_IWM;
 use solmath_core::PHI2_RESID_SPY_QQQ;
 use solmath_core::{
-    bvn_cdf_i64, fp_div_i, fp_mul_i, fp_sqrt, norm_cdf_i64, norm_pdf_i64, triangle_probability_i64,
+    bvn_cdf_i64, fp_div_i, fp_mul_i, norm_cdf_i64, norm_pdf_i64, triangle_probability_i64,
     RegionMoment6, SolMathError, TrianglePre64,
 };
 
@@ -22,9 +22,13 @@ pub(crate) const CF_BETA_S12: i128 = -4_253_775_293_079;
 pub(crate) const CF_GAMMA_S12: i128 = 30_070_407_375_669;
 pub(crate) const CF_DELTA_SCALE_S12: i128 = 116_985_997_577;
 const N_OBS: usize = 6;
+const MONTHLY_COUPONS_PER_QUARTER: i64 = 3;
 const FAIR_COUPON_BPS_S6_SCALE: i128 = 10_000_000_000;
 const S12_TO_S6_DIVISOR: i128 = 1_000_000;
 const SPY_QQQ_IWM_RESIDUAL_VARIANCE_DIAG_DAILY_S12: [i128; 3] = [8_222_389, 19_862_760, 21_036_297];
+const SPY_QQQ_IWM_LOADINGS_S12: [i128; 3] = [515_731_000_000, 567_972_000_000, 641_427_000_000];
+const SPY_QQQ_IWM_GAMMA_MINUS_SHIFTED_SQRT_S12: [i128; 3] =
+    [-68_455_058_830, -74_888_411_027, -83_778_797_932];
 
 /// i64 multiply at SCALE_6. Product fits i64 for |a|,|b| ≤ ~3e6.
 #[inline(always)]
@@ -44,6 +48,11 @@ fn round_div_i128(value: i128, divisor: i128) -> Result<i64, SolMathError> {
         value.checked_sub(half).ok_or(SolMathError::Overflow)?
     };
     i64::try_from(adjusted / divisor).map_err(|_| SolMathError::Overflow)
+}
+
+#[inline(always)]
+fn coupon_count_for_obs(obs_idx: usize) -> i64 {
+    ((obs_idx + 1) as i64) * MONTHLY_COUPONS_PER_QUARTER
 }
 
 #[inline(always)]
@@ -85,28 +94,12 @@ pub fn spy_qqq_iwm_step_drift_inputs_s6(
     let delta_s12 = fp_mul_i(sigma_sq_s12, delta_scale_step)?;
     let drift_location_s12 = fp_div_i(fp_mul_i(delta_s12, -CF_BETA_S12)?, CF_GAMMA_S12)?;
 
-    let alpha_sq_s12 = fp_mul_i(CF_ALPHA_S12, CF_ALPHA_S12)?;
     let mut drifts_s12 = [0i128; 3];
     for index in 0..3 {
-        let loading_s12 = (cfg.loadings[index] as i128)
-            .checked_mul(S12_TO_S6_DIVISOR)
-            .ok_or(SolMathError::Overflow)?;
-        let beta_plus_loading_s12 = CF_BETA_S12
-            .checked_add(loading_s12)
-            .ok_or(SolMathError::Overflow)?;
-        let shifted_sq_s12 = alpha_sq_s12
-            .checked_sub(fp_mul_i(beta_plus_loading_s12, beta_plus_loading_s12)?)
-            .ok_or(SolMathError::Overflow)?;
-        if shifted_sq_s12 <= 0 {
-            return Err(SolMathError::DomainError);
-        }
-        let shifted_sqrt_s12 = fp_sqrt(shifted_sq_s12 as u128)? as i128;
-        let common_term_s12 = fp_mul_i(drift_location_s12, loading_s12)?
+        let common_term_s12 = fp_mul_i(drift_location_s12, SPY_QQQ_IWM_LOADINGS_S12[index])?
             .checked_add(fp_mul_i(
                 delta_s12,
-                CF_GAMMA_S12
-                    .checked_sub(shifted_sqrt_s12)
-                    .ok_or(SolMathError::Overflow)?,
+                SPY_QQQ_IWM_GAMMA_MINUS_SHIFTED_SQRT_S12[index],
             )?)
             .ok_or(SolMathError::Overflow)?;
         let gaussian_term_s12 = SPY_QQQ_IWM_RESIDUAL_VARIANCE_DIAG_DAILY_S12[index]
@@ -602,7 +595,7 @@ fn quote_c1_fast_trace(
     for obs_idx in 0..N_OBS {
         let obs = &cfg.obs[obs_idx];
         let is_maturity = obs_idx + 1 == N_OBS;
-        let coupon_count = (obs_idx + 1) as i64;
+        let coupon_count = coupon_count_for_obs(obs_idx);
         // Scale factor: obs_day / 63 (how many 63-day steps accumulated)
         let scale = obs.obs_day as i64 / 63;
 
@@ -762,91 +755,102 @@ fn ki_coords_from_factor(
 }
 
 /// Build the frozen config from the calibrated model constants.
-pub fn spy_qqq_iwm_c1_config() -> C1FastConfig {
-    let au = [567_972i64, -1_157_159, 567_972];
-    let av = [641_427i64, 641_427, -1_083_704];
-
-    let obs_data: [(u32, [i64; 3], [[i64; 2]; 3], i64, i64, i64); 6] = [
-        (
-            63,
-            [25_468_814, 16_386_566, 15_922_934],
-            [[22475, 41312], [-35191, 31655], [18982, -48003]],
-            1756,
-            -180,
-            2688,
-        ),
-        (
-            126,
-            [18_009_171, 11_587_052, 11_259_214],
-            [[31784, 58424], [-49768, 44766], [26844, -67887]],
-            3513,
-            -359,
-            5376,
-        ),
-        (
-            189,
-            [14_704_427, 9_460_788, 9_193_110],
-            [[38927, 71555], [-60952, 54827], [32877, -83144]],
-            5269,
-            -539,
-            8063,
-        ),
-        (
-            252,
-            [12_734_407, 8_193_283, 7_961_467],
-            [[44949, 82624], [-70382, 63309], [37964, -96007]],
-            7026,
-            -718,
-            10751,
-        ),
-        (
-            315,
-            [11_390_000, 7_328_295, 7_120_952],
-            [[50255, 92377], [-78689, 70782], [42445, -107339]],
-            8782,
-            -898,
-            13439,
-        ),
-        (
-            378,
-            [10_397_600, 6_689_787, 6_500_510],
-            [[55051, 101194], [-86200, 77538], [46496, -117584]],
-            10538,
-            -1077,
-            16127,
-        ),
-    ];
-
-    let obs = core::array::from_fn::<_, N_OBS, _>(|i| {
-        let (day, inv_std, cov_proj, cuu, cuv, cvv) = obs_data[i];
+pub const SPY_QQQ_IWM_C1_CONFIG: C1FastConfig = C1FastConfig {
+    obs: [
         ObsGeometry {
             tri_pre: TrianglePre64 {
-                au,
-                av,
-                inv_std,
+                au: [567_972i64, -1_157_159, 567_972],
+                av: [641_427i64, 641_427, -1_083_704],
+                inv_std: [25_468_814, 16_386_566, 15_922_934],
                 phi2_neg: [false, true, true],
             },
-            cov_proj,
-            cov_uu: cuu,
-            cov_uv: cuv,
-            cov_vv: cvv,
-            obs_day: day,
-        }
-    });
+            cov_proj: [[22475, 41312], [-35191, 31655], [18982, -48003]],
+            cov_uu: 1756,
+            cov_uv: -180,
+            cov_vv: 2688,
+            obs_day: 63,
+        },
+        ObsGeometry {
+            tri_pre: TrianglePre64 {
+                au: [567_972i64, -1_157_159, 567_972],
+                av: [641_427i64, 641_427, -1_083_704],
+                inv_std: [18_009_171, 11_587_052, 11_259_214],
+                phi2_neg: [false, true, true],
+            },
+            cov_proj: [[31784, 58424], [-49768, 44766], [26844, -67887]],
+            cov_uu: 3513,
+            cov_uv: -359,
+            cov_vv: 5376,
+            obs_day: 126,
+        },
+        ObsGeometry {
+            tri_pre: TrianglePre64 {
+                au: [567_972i64, -1_157_159, 567_972],
+                av: [641_427i64, 641_427, -1_083_704],
+                inv_std: [14_704_427, 9_460_788, 9_193_110],
+                phi2_neg: [false, true, true],
+            },
+            cov_proj: [[38927, 71555], [-60952, 54827], [32877, -83144]],
+            cov_uu: 5269,
+            cov_uv: -539,
+            cov_vv: 8063,
+            obs_day: 189,
+        },
+        ObsGeometry {
+            tri_pre: TrianglePre64 {
+                au: [567_972i64, -1_157_159, 567_972],
+                av: [641_427i64, 641_427, -1_083_704],
+                inv_std: [12_734_407, 8_193_283, 7_961_467],
+                phi2_neg: [false, true, true],
+            },
+            cov_proj: [[44949, 82624], [-70382, 63309], [37964, -96007]],
+            cov_uu: 7026,
+            cov_uv: -718,
+            cov_vv: 10751,
+            obs_day: 252,
+        },
+        ObsGeometry {
+            tri_pre: TrianglePre64 {
+                au: [567_972i64, -1_157_159, 567_972],
+                av: [641_427i64, 641_427, -1_083_704],
+                inv_std: [11_390_000, 7_328_295, 7_120_952],
+                phi2_neg: [false, true, true],
+            },
+            cov_proj: [[50255, 92377], [-78689, 70782], [42445, -107339]],
+            cov_uu: 8782,
+            cov_uv: -898,
+            cov_vv: 13439,
+            obs_day: 315,
+        },
+        ObsGeometry {
+            tri_pre: TrianglePre64 {
+                au: [567_972i64, -1_157_159, 567_972],
+                av: [641_427i64, 641_427, -1_083_704],
+                inv_std: [10_397_600, 6_689_787, 6_500_510],
+                phi2_neg: [false, true, true],
+            },
+            cov_proj: [[55051, 101194], [-86200, 77538], [46496, -117584]],
+            cov_uu: 10538,
+            cov_uv: -1077,
+            cov_vv: 16127,
+            obs_day: 378,
+        },
+    ],
+    loading_sum: 1_725_131,
+    uv_slope: [52_241, 125_696],
+    loadings: [515_731, 567_972, 641_427],
+    ki_barrier_log: -223_144,
+    notional: 100 * S6,
+    au: [567_972i64, -1_157_159, 567_972],
+    av: [641_427i64, 641_427, -1_083_704],
+    autocall_rhs_base: 0,
+    ki_safe_rhs_base: 384_952,
+    ki_bgk_shifts: None,
+};
 
-    C1FastConfig {
-        obs,
-        loading_sum: 1_725_131,
-        uv_slope: [52_241, 125_696],
-        loadings: [515_731, 567_972, 641_427],
-        ki_barrier_log: -223_144,
-        notional: 100 * S6,
-        au,
-        av,
-        autocall_rhs_base: 0,
-        ki_safe_rhs_base: 384_952,
-        ki_bgk_shifts: None,
-    }
+/// Build the frozen config from the calibrated model constants.
+pub fn spy_qqq_iwm_c1_config() -> C1FastConfig {
+    SPY_QQQ_IWM_C1_CONFIG
 }
 
 #[cfg(test)]
@@ -898,7 +902,7 @@ mod tests {
         for obs_idx in 0..N_OBS {
             let obs = &cfg.obs[obs_idx];
             let is_maturity = obs_idx + 1 == N_OBS;
-            let coupon_count = (obs_idx + 1) as i64;
+            let coupon_count = coupon_count_for_obs(obs_idx);
             let scale = obs.obs_day as i64 / 63;
             observation_survival[obs_idx] = survival;
 

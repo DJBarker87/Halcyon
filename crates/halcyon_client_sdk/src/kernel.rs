@@ -4,9 +4,10 @@ use solana_sdk::{instruction::Instruction, system_program};
 use crate::pda;
 
 pub use halcyon_kernel::{
-    ApplySettlementArgs, InitializeProtocolArgs, PrepareHedgeSwapArgs, RecordHedgeTradeArgs,
-    RegisterProductArgs, SetProtocolConfigArgs, SettlementReason, WriteAggregateDeltaArgs,
-    WriteAutocallScheduleArgs, WriteRegimeSignalArgs, WriteRegressionArgs, WriteSigmaValueArgs,
+    ApplySettlementArgs, InitializePaymentMintArgs, InitializeProtocolArgs, PrepareHedgeSwapArgs,
+    RecordHedgeTradeArgs, RegisterProductArgs, SetProtocolConfigArgs, SettlementReason,
+    WriteAggregateDeltaArgs, WriteAutocallScheduleArgs, WriteRegimeSignalArgs, WriteRegressionArgs,
+    WriteSigmaValueArgs,
 };
 
 pub fn initialize_protocol_ix(
@@ -56,6 +57,35 @@ pub fn migrate_protocol_config_ix(admin: &Pubkey) -> Instruction {
     }
 }
 
+pub fn initialize_payment_mint_ix(
+    admin: &Pubkey,
+    usdc_mint: &Pubkey,
+    args: InitializePaymentMintArgs,
+) -> Instruction {
+    let (protocol_config, _) = pda::protocol_config();
+    let (vault_authority, _) = pda::vault_authority();
+    let (vault_usdc, _) = pda::vault_usdc(usdc_mint);
+    let (treasury_usdc, _) = pda::treasury_usdc(usdc_mint);
+    let admin_usdc = pda::associated_token_account(admin, usdc_mint);
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::InitializePaymentMint {
+            admin: *admin,
+            protocol_config,
+            usdc_mint: *usdc_mint,
+            vault_authority,
+            vault_usdc,
+            treasury_usdc,
+            admin_usdc,
+            token_program: anchor_spl::token::ID,
+            associated_token_program: anchor_spl::associated_token::ID,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::InitializePaymentMint { args }.data(),
+    }
+}
+
 pub fn set_protocol_config_ix(admin: &Pubkey, args: SetProtocolConfigArgs) -> Instruction {
     let (protocol_config, _) = pda::protocol_config();
     Instruction {
@@ -66,6 +96,66 @@ pub fn set_protocol_config_ix(admin: &Pubkey, args: SetProtocolConfigArgs) -> In
         }
         .to_account_metas(None),
         data: halcyon_kernel::instruction::SetProtocolConfig { args }.data(),
+    }
+}
+
+pub fn transfer_policy_owner_ix(
+    current_owner: &Pubkey,
+    policy_header: &Pubkey,
+    new_owner: Pubkey,
+) -> Instruction {
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::TransferPolicyOwner {
+            current_owner: *current_owner,
+            policy_header: *policy_header,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::TransferPolicyOwner { new_owner }.data(),
+    }
+}
+
+pub fn wrap_policy_receipt_ix(holder: &Pubkey, policy_header: &Pubkey) -> Instruction {
+    let (policy_receipt, _) = pda::policy_receipt(policy_header);
+    let (receipt_mint, _) = pda::policy_receipt_mint(policy_header);
+    let (receipt_authority, _) = pda::policy_receipt_authority(policy_header);
+    let holder_receipt_token = pda::associated_token_account(holder, &receipt_mint);
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::WrapPolicyReceipt {
+            current_owner: *holder,
+            policy_header: *policy_header,
+            policy_receipt,
+            receipt_mint,
+            receipt_authority,
+            holder_receipt_token,
+            token_program: anchor_spl::token::ID,
+            associated_token_program: anchor_spl::associated_token::ID,
+            system_program: system_program::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::WrapPolicyReceipt {}.data(),
+    }
+}
+
+pub fn unwrap_policy_receipt_ix(holder: &Pubkey, policy_header: &Pubkey) -> Instruction {
+    let (policy_receipt, _) = pda::policy_receipt(policy_header);
+    let (receipt_mint, _) = pda::policy_receipt_mint(policy_header);
+    let (receipt_authority, _) = pda::policy_receipt_authority(policy_header);
+    let holder_receipt_token = pda::associated_token_account(holder, &receipt_mint);
+    Instruction {
+        program_id: halcyon_kernel::ID,
+        accounts: halcyon_kernel::accounts::UnwrapPolicyReceipt {
+            holder: *holder,
+            policy_header: *policy_header,
+            policy_receipt,
+            receipt_mint,
+            receipt_authority,
+            holder_receipt_token,
+            token_program: anchor_spl::token::ID,
+        }
+        .to_account_metas(None),
+        data: halcyon_kernel::instruction::UnwrapPolicyReceipt {}.data(),
     }
 }
 

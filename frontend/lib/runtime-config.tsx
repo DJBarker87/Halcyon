@@ -114,6 +114,7 @@ export function RuntimeConfigProvider({ children }: { children: React.ReactNode 
     return { status: "pending" };
   });
   const [genesisCheckNonce, setGenesisCheckNonce] = useState(0);
+  const [storageHydrated, setStorageHydrated] = useState(false);
 
   // Hydrate cluster id from localStorage AFTER the first render to avoid a
   // server/client hydration mismatch — localStorage is only available on
@@ -121,16 +122,18 @@ export function RuntimeConfigProvider({ children }: { children: React.ReactNode 
   useEffect(() => {
     const stored = readStoredClusterId();
     if (stored) setCluster(stored);
+    setStorageHydrated(true);
   }, []);
 
   // Persist ONLY the cluster id (audit F3).
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (!storageHydrated) return;
     window.localStorage.setItem(
       RUNTIME_CONFIG_STORAGE_KEY,
       JSON.stringify({ cluster }),
     );
-  }, [cluster]);
+  }, [cluster, storageHydrated]);
 
   const current = useMemo<AllowedClusterConfig>(() => {
     return (

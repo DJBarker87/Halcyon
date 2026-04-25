@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Settings2 } from "lucide-react";
+import { Droplets, Landmark, LineChart, Presentation, Settings2 } from "lucide-react";
 
 import { Kingfisher } from "@/components/kingfisher";
 import {
@@ -22,6 +22,12 @@ import { SettingsPanel } from "@/components/settings-panel";
 import { WalletControl } from "@/components/wallet-control";
 
 const NAV_ITEMS = [
+  {
+    href: "/demo",
+    label: "Demo",
+    description: "Receipt to collateral",
+    icon: Presentation,
+  },
   {
     href: "/flagship",
     label: "Equity Autocall",
@@ -45,6 +51,24 @@ const NAV_ITEMS = [
     label: "Portfolio",
     description: "Your open positions",
     icon: PortfolioIcon,
+  },
+  {
+    href: "/lending-demo",
+    label: "Lending Demo",
+    description: "Receipt collateral desk",
+    icon: Landmark,
+  },
+  {
+    href: "/stress-tests",
+    label: "Stress Tests",
+    description: "Backtest explorer",
+    icon: LineChart,
+  },
+  {
+    href: "/faucet",
+    label: "Faucet",
+    description: "Devnet mockUSDC",
+    icon: Droplets,
   },
   {
     href: "/vault",

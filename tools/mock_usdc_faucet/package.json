@@ -1,0 +1,14 @@
+{
+  "name": "halcyon-mock-usdc-faucet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs",
+    "create-mint": "node create-mint.mjs"
+  },
+  "dependencies": {
+    "@solana/web3.js": "1.98.4",
+    "bs58": "6.0.0"
+  }
+}

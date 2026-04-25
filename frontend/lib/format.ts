@@ -8,13 +8,34 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 export function isBn(value: unknown): value is BN {
-  return value instanceof BN;
+  return value instanceof BN || BN.isBN(value) || isBnLike(value);
+}
+
+function isBnLike(value: unknown): value is { toNumber?: () => number; toString: () => string } {
+  const candidate = value as {
+    length?: unknown;
+    negative?: unknown;
+    toString?: unknown;
+    words?: unknown;
+  };
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof candidate.negative === "number" &&
+    typeof candidate.length === "number" &&
+    typeof candidate.words === "object" &&
+    candidate.words !== null &&
+    typeof candidate.toString === "function"
+  );
 }
 
 export function toNumber(value: unknown): number {
   if (typeof value === "number") return value;
   if (typeof value === "bigint") return Number(value);
-  if (isBn(value)) return value.toNumber();
+  if (isBn(value)) {
+    if (typeof value.toNumber === "function") return value.toNumber();
+    return Number(value.toString());
+  }
   if (typeof value === "string") return Number(value);
   return 0;
 }

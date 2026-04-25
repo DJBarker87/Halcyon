@@ -2,8 +2,23 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { AlertCircle, ArrowUpRight, CheckCircle2, Loader2, RefreshCcw, Settings2 } from "lucide-react";
-import type { BN } from "@coral-xyz/anchor";
+import {
+  Activity,
+  AlertCircle,
+  ArrowUpRight,
+  BadgeDollarSign,
+  CalendarDays,
+  CheckCircle2,
+  LineChart,
+  Loader2,
+  RefreshCcw,
+  Route,
+  Settings2,
+  ShieldAlert,
+  Timer,
+  WalletCards,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 import {
   buildBuyTransaction,
@@ -38,9 +53,76 @@ type ProductContent = {
   presets: number[];
   defaultAmount: string;
   chips: string[];
-  metrics: (data: Record<string, unknown>) => Array<{ label: string; value: string }>;
+  metrics: (data: Record<string, unknown>) => Array<{
+    label: string;
+    value: string;
+    hint?: string;
+    compact?: boolean;
+  }>;
   notes: string[];
 };
+
+type FlagshipLifecycleStage = {
+  label: string;
+  title: string;
+  body: string;
+  detail: string;
+  icon: LucideIcon;
+  tone: "neutral" | "primary" | "success" | "warning";
+};
+
+type FlagshipOutcome = {
+  title: string;
+  body: string;
+  tone: "success" | "neutral" | "warning";
+};
+
+function toIntegerBigInt(value: unknown) {
+  const stringValue = toStringValue(value);
+  if (/^-?\d+$/.test(stringValue)) return BigInt(stringValue);
+  const numeric = toNumber(value);
+  if (!Number.isFinite(numeric)) return 0n;
+  return BigInt(Math.trunc(numeric));
+}
+
+function formatUsdcBaseUnitsExact(value: unknown, minimumFractionDigits = 0) {
+  const raw = toIntegerBigInt(value);
+  const negative = raw < 0n;
+  const absolute = negative ? -raw : raw;
+  const whole = absolute / 1_000_000n;
+  const fraction = absolute % 1_000_000n;
+  const amount = Number(whole) + Number(fraction) / 1_000_000;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits,
+    maximumFractionDigits: 2,
+  }).format(negative ? -amount : amount);
+}
+
+function formatCouponCash(notionalBaseUnits: unknown, couponBpsS6: unknown) {
+  const notional = toIntegerBigInt(notionalBaseUnits);
+  const bpsS6 = toIntegerBigInt(couponBpsS6);
+  if (notional <= 0n || bpsS6 <= 0n) return "$0";
+  const couponBaseUnits = (notional * bpsS6) / 10_000n / 1_000_000n;
+  return formatUsdcBaseUnitsExact(couponBaseUnits, 2);
+}
+
+function formatUsdPriceS6(value: unknown) {
+  const price = toNumber(value) / 1_000_000;
+  if (!Number.isFinite(price) || price <= 0) return "Not set";
+  return `$${price.toFixed(price >= 100 ? 2 : 4)}`;
+}
+
+function formatFlagshipEntryBasket(data: Record<string, unknown>) {
+  return [
+    ["SPY", field(data, "entrySpyPriceS6")],
+    ["QQQ", field(data, "entryQqqPriceS6")],
+    ["IWM", field(data, "entryIwmPriceS6")],
+  ]
+    .map(([symbol, price]) => `${symbol} ${formatUsdPriceS6(price)}`)
+    .join(" · ");
+}
 
 const PRODUCT_CONTENT: Record<ProductKind, ProductContent> = {
   flagship: {
@@ -55,15 +137,31 @@ const PRODUCT_CONTENT: Record<ProductKind, ProductContent> = {
     defaultAmount: "100000",
     chips: ["18-month maturity", "Monthly coupons", "Quarterly autocall", "20% downside cushion"],
     metrics: (data) => [
-      { label: "Your premium", value: formatUsdcBaseUnits(field(data, "premium")) },
-      { label: "Max payout if triggered", value: formatUsdcBaseUnits(field(data, "maxLiability")) },
       {
-        label: "Coupon rate (annualised)",
-        value: formatPercentFromBpsS6(field(data, "offeredCouponBpsS6"), 4),
+        label: "Notional committed",
+        value: formatUsdcBaseUnitsExact(field(data, "maxLiability")),
+        hint: "USDC principal referenced by this quote.",
       },
       {
-        label: "Implied volatility",
+        label: "Coupon if paid",
+        value: formatCouponCash(field(data, "maxLiability"), field(data, "offeredCouponBpsS6")),
+        hint: "Per monthly coupon observation, before any memory catch-up.",
+      },
+      {
+        label: "Coupon rate",
+        value: formatPercentFromBpsS6(field(data, "offeredCouponBpsS6")),
+        hint: "Per coupon observation.",
+      },
+      {
+        label: "Entry basket",
+        value: formatFlagshipEntryBasket(data),
+        compact: true,
+        hint: "Live Pyth entry levels used by the program.",
+      },
+      {
+        label: "Pricing volatility",
         value: formatPercentFromS6(field(data, "sigmaPricingS6")),
+        hint: "Annualised sigma used by the on-chain pricer.",
       },
     ],
     notes: [
@@ -84,15 +182,30 @@ const PRODUCT_CONTENT: Record<ProductKind, ProductContent> = {
     defaultAmount: "5000",
     chips: ["16-day maturity", "Coupon every 2 days", "Principal protected", "On-chain pricing"],
     metrics: (data) => [
-      { label: "Your premium", value: formatUsdcBaseUnits(field(data, "premium")) },
-      { label: "Max payout if triggered", value: formatUsdcBaseUnits(field(data, "maxLiability")) },
       {
-        label: "Coupon per observation",
+        label: "Principal escrowed",
+        value: formatUsdcBaseUnitsExact(field(data, "maxLiability")),
+        hint: "USDC principal held by the program while the note is open.",
+      },
+      {
+        label: "Coupon if paid",
+        value: formatCouponCash(field(data, "maxLiability"), field(data, "offeredCouponBpsS6")),
+        hint: "Per 2-day observation.",
+      },
+      {
+        label: "Coupon rate",
         value: formatPercentFromBpsS6(field(data, "offeredCouponBpsS6")),
+        hint: "Per 2-day observation.",
       },
       {
         label: "Annualised coupon",
         value: formatPercentFromBpsS6(field(data, "offeredCouponBpsS6"), 182.5),
+        hint: "Simple annualised view for comparison.",
+      },
+      {
+        label: "Entry SOL",
+        value: formatUsdPriceS6(field(data, "entryPriceS6")),
+        hint: "Live Pyth SOL price used by the program.",
       },
     ],
     notes: [
@@ -112,14 +225,15 @@ const PRODUCT_CONTENT: Record<ProductKind, ProductContent> = {
     defaultAmount: "10000",
     chips: ["30-day cover", "Premium-only", "Volatility-aware pricing", "Raydium SOL/USDC"],
     metrics: (data) => [
-      { label: "Your premium", value: formatUsdcBaseUnits(field(data, "premium")) },
-      { label: "Max payout", value: formatUsdcBaseUnits(field(data, "maxLiability")) },
+      { label: "Premium due", value: formatUsdcBaseUnits(field(data, "premium")) },
+      { label: "Maximum cover", value: formatUsdcBaseUnits(field(data, "maxLiability")) },
       {
-        label: "Premium (% of LP)",
+        label: "Cover premium",
         value: formatPercentFromS6(field(data, "loadedPremiumFractionS6")),
+        hint: "Premium as a share of insured notional.",
       },
       {
-        label: "Implied volatility",
+        label: "Pricing volatility",
         value: formatPercentFromS6(field(data, "sigmaPricingS6")),
       },
     ],
@@ -154,8 +268,10 @@ function formatValue(value: unknown, key: string) {
     return `$${(toNumber(value) / 1_000_000).toFixed(4)}`;
   }
   if (typeof value === "boolean") return value ? "Yes" : "No";
+  const scalarValue = toStringValue(value);
+  if (scalarValue) return scalarValue;
   if (typeof value === "object") return enumTag(value);
-  return toStringValue(value) || String(value);
+  return String(value);
 }
 
 function titleFromKey(value: string) {
@@ -163,6 +279,15 @@ function titleFromKey(value: string) {
     .replace(/_/g, " ")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function isNoQuotePreview(kind: ProductKind, data: Record<string, unknown>) {
+  if (kind !== "solAutocall") return false;
+  return (
+    toNumber(field(data, "quoteSlot")) === 0 &&
+    toNumber(field(data, "maxLiability")) === 0 &&
+    toNumber(field(data, "offeredCouponBpsS6")) === 0
+  );
 }
 
 function explorerLink(cluster: "localnet" | "devnet" | "mainnet", signature: string) {
@@ -185,6 +310,306 @@ function PreviewFields({ preview }: { preview: ProductPreviewResult }) {
         </div>
       ))}
     </div>
+  );
+}
+
+function formatInputNotional(input: string) {
+  const numeric = Number(input);
+  if (!Number.isFinite(numeric) || numeric <= 0) return "Enter amount";
+  return formatUsdcBaseUnitsExact(toBaseUnits(input));
+}
+
+function lifecycleToneClass(tone: FlagshipLifecycleStage["tone"]) {
+  if (tone === "primary") return "border-primary/20 bg-primary/10 text-primary";
+  if (tone === "success") return "border-success-700/20 bg-success-50 text-success-700";
+  if (tone === "warning") return "border-warning-500/30 bg-warning-50 text-warning-700";
+  return "border-border bg-secondary text-muted-foreground";
+}
+
+function outcomeToneClass(tone: FlagshipOutcome["tone"]) {
+  if (tone === "success") return "border-success-700/20 bg-success-50";
+  if (tone === "warning") return "border-warning-500/30 bg-warning-50";
+  return "border-border bg-card";
+}
+
+function FlagshipObservationStrip() {
+  const months = Array.from({ length: 18 }, (_, index) => index + 1);
+
+  return (
+    <div className="rounded-md border border-border bg-card p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-foreground">Observation calendar</h3>
+          <p className="mt-1 text-sm leading-6 text-muted-foreground">
+            18 monthly coupon checks. Every third month is also an autocall check.
+          </p>
+        </div>
+        <CalendarDays className="h-5 w-5 text-muted-foreground" aria-hidden="true" />
+      </div>
+
+      <div
+        className="mt-4 flex items-start gap-1"
+        aria-label="18 monthly coupon observations, with autocall checks on months 3, 6, 9, 12, 15, and 18"
+      >
+        {months.map((month) => {
+          const isAutocall = month % 3 === 0;
+          return (
+            <div key={month} className="min-w-0 flex-1">
+              <div
+                className={cn(
+                  "h-2 rounded-full",
+                  isAutocall ? "bg-primary" : "bg-border",
+                )}
+              />
+              {isAutocall ? (
+                <div className="mt-2 text-center text-xs tabular-nums text-muted-foreground">
+                  {month}
+                </div>
+              ) : (
+                <div className="mt-2 h-4" aria-hidden="true" />
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-muted-foreground">
+        <div className="inline-flex items-center gap-2">
+          <span className="h-2 w-5 rounded-full bg-border" aria-hidden="true" />
+          Coupon check
+        </div>
+        <div className="inline-flex items-center gap-2">
+          <span className="h-2 w-5 rounded-full bg-primary" aria-hidden="true" />
+          Autocall check
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FlagshipLifecycleGraphic({
+  amountInput,
+  preview,
+}: {
+  amountInput: string;
+  preview: ProductPreviewResult | null;
+}) {
+  const data = preview?.data ?? {};
+  const hasPreview = Boolean(preview);
+  const notional = hasPreview
+    ? formatUsdcBaseUnitsExact(field(data, "maxLiability"))
+    : formatInputNotional(amountInput);
+  const coupon = hasPreview
+    ? formatCouponCash(field(data, "maxLiability"), field(data, "offeredCouponBpsS6"))
+    : "Preview first";
+  const entryBasket = hasPreview ? formatFlagshipEntryBasket(data) : "Set when issued";
+  const expiry = hasPreview ? formatTimestamp(field(data, "expiryTs")) : "Month 18";
+
+  const stages: FlagshipLifecycleStage[] = [
+    {
+      label: "1",
+      title: "Quote",
+      body: "Pyth Benchmarks and vault sigma produce the coupon your wallet will enforce.",
+      detail: hasPreview ? `Slot ${toNumber(field(data, "quoteSlot")) || "pending"}` : "Waiting for preview",
+      icon: LineChart,
+      tone: "primary",
+    },
+    {
+      label: "2",
+      title: "Fund",
+      body: "Your USDC principal is reserved into the protocol vault when you sign.",
+      detail: notional,
+      icon: WalletCards,
+      tone: "neutral",
+    },
+    {
+      label: "3",
+      title: "Entry",
+      body: "SPY, QQQ, and IWM entry marks are fixed at issue for every future check.",
+      detail: entryBasket,
+      icon: Activity,
+      tone: "neutral",
+    },
+    {
+      label: "4",
+      title: "Coupons",
+      body: "Each month the worst performer must be at or above entry. Missed observations are tracked for memory.",
+      detail: hasPreview ? `${coupon} monthly if paid` : "Preview first to see coupon",
+      icon: BadgeDollarSign,
+      tone: "success",
+    },
+    {
+      label: "5",
+      title: "Autocall",
+      body: "Each quarter can redeem the note early after that quarter's coupon observation is reconciled.",
+      detail: "6 quarterly windows",
+      icon: Timer,
+      tone: "primary",
+    },
+    {
+      label: "6",
+      title: "Settlement",
+      body: "If no call occurs, maturity pays principal unless the 80% knock-in path creates a loss.",
+      detail: expiry,
+      icon: ShieldAlert,
+      tone: "warning",
+    },
+  ];
+
+  const outcomes: FlagshipOutcome[] = [
+    {
+      title: "Early call",
+      body: "A quarterly check passes, so principal returns early and due coupons are paid.",
+      tone: "success",
+    },
+    {
+      title: "Maturity return",
+      body: "No autocall occurs, but the knock-in path is not harmful; principal returns at expiry.",
+      tone: "neutral",
+    },
+    {
+      title: "Knock-in loss",
+      body: "Worst-of hits 80% during the life and finishes below entry; principal follows final worst-of performance.",
+      tone: "warning",
+    },
+  ];
+
+  const quoteStats = [
+    { label: "Principal", value: notional },
+    { label: "Monthly coupon", value: coupon },
+    { label: "Entry basket", value: entryBasket },
+    { label: "Final date", value: expiry },
+  ];
+
+  return (
+    <section className="overflow-hidden rounded-md border border-border bg-background p-5 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="max-w-3xl">
+          <div className="inline-flex min-h-8 items-center gap-2 rounded-md border border-border bg-card px-3 text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <Route className="h-4 w-4" aria-hidden="true" />
+            Flagship lifecycle
+          </div>
+          <h2 className="mt-4 text-2xl font-semibold text-foreground">From quote to settlement</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
+            Buyer view of the note after purchase: what gets locked, what gets checked, and how money comes back.
+          </p>
+        </div>
+
+        <div className="rounded-md border border-border bg-card px-4 py-3">
+          <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            Quote state
+          </div>
+          <div className="mt-1 text-sm font-semibold text-foreground">
+            {hasPreview ? "Live terms loaded" : "Preview to fill terms"}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {quoteStats.map((stat) => (
+          <div key={stat.label} className="rounded-md border border-border bg-card p-4">
+            <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+              {stat.label}
+            </div>
+            <div className="mt-2 break-words text-sm font-semibold leading-6 text-foreground">
+              {stat.value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-6 grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <ol className="relative grid gap-3 md:grid-cols-2">
+          {stages.map((stage) => {
+            const Icon = stage.icon;
+            return (
+              <li key={stage.title} className="rounded-md border border-border bg-card p-4">
+                <div className="flex items-start gap-3">
+                  <div
+                    className={cn(
+                      "flex h-10 w-10 shrink-0 items-center justify-center rounded-md border",
+                      lifecycleToneClass(stage.tone),
+                    )}
+                  >
+                    <Icon className="h-5 w-5" aria-hidden="true" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                      <span className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                        Step {stage.label}
+                      </span>
+                      <h3 className="text-base font-semibold text-foreground">{stage.title}</h3>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-muted-foreground">{stage.body}</p>
+                    <div className="mt-3 break-words rounded-md border border-border bg-background px-3 py-2 text-sm font-medium text-foreground">
+                      {stage.detail}
+                    </div>
+                  </div>
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+
+        <FlagshipObservationStrip />
+      </div>
+
+      <div className="mt-6 grid gap-3 md:grid-cols-3">
+        {outcomes.map((outcome) => (
+          <div
+            key={outcome.title}
+            className={cn("rounded-md border p-4", outcomeToneClass(outcome.tone))}
+          >
+            <div className="flex items-center gap-2">
+              {outcome.tone === "success" ? (
+                <CheckCircle2 className="h-4 w-4 text-success-700" aria-hidden="true" />
+              ) : outcome.tone === "warning" ? (
+                <ShieldAlert className="h-4 w-4 text-warning-700" aria-hidden="true" />
+              ) : (
+                <BadgeDollarSign className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+              )}
+              <h3 className="text-sm font-semibold text-foreground">{outcome.title}</h3>
+            </div>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">{outcome.body}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FlagshipBuyerChecklist() {
+  const checks = [
+    {
+      label: "Coupon condition",
+      value: "Worst ETF in the basket is at or above its entry level on a monthly check.",
+    },
+    {
+      label: "Autocall condition",
+      value: "Worst ETF is at or above entry on months 3, 6, 9, 12, 15, or 18.",
+    },
+    {
+      label: "Downside condition",
+      value: "The 80% knock-in latches and the final worst ETF finishes below entry.",
+    },
+    {
+      label: "What your wallet enforces",
+      value: "Notional, coupon, entry prices, quote freshness, expiry, and drift tolerances.",
+    },
+  ];
+
+  return (
+    <section className="surface p-5">
+      <h2 className="text-lg font-semibold text-foreground">Flagship buyer checks</h2>
+      <dl className="mt-4 divide-y divide-border text-sm">
+        {checks.map((check) => (
+          <div key={check.label} className="py-3 first:pt-0 last:pb-0">
+            <dt className="font-medium text-foreground">{check.label}</dt>
+            <dd className="mt-1 leading-6 text-muted-foreground">{check.value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
 
@@ -219,6 +644,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
   const amountBaseUnits = useMemo(() => toBaseUnits(amountInput), [amountInput]);
   const missing = useMemo(() => missingFieldsForKind(kind, current), [current, kind]);
   const canPreview = missing.length === 0 && toNumber(amountInput) >= 100;
+  const previewNoQuote = preview ? isNoQuotePreview(kind, preview.data) : false;
   const previewUrl = signature ? explorerLink(cluster, signature) : "";
 
   useEffect(() => {
@@ -239,7 +665,6 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
     } catch (error) {
       setPreview(null);
       setPreviewError(mapSolanaError(error));
-      if (error instanceof Error) console.error("preview failed:", error);
     } finally {
       setPreviewLoading(false);
     }
@@ -274,7 +699,6 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
       setSignature(txSignature);
     } catch (error) {
       setIssueError(mapSolanaError(error));
-      if (error instanceof Error) console.error("issuance failed:", error);
     } finally {
       setIssueLoading(false);
     }
@@ -310,6 +734,10 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
           </div>
         </div>
       </section>
+
+      {kind === "flagship" ? (
+        <FlagshipLifecycleGraphic amountInput={amountInput} preview={preview} />
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.4fr)_360px]">
         <section className="space-y-6">
@@ -352,7 +780,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
                       autoComplete="off"
                       value={amountInput}
                       onChange={(event) => setAmountInput(event.target.value)}
-                      className="field pl-7"
+                      className="field !pl-9 !pr-16"
                     />
                     <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
                       USDC
@@ -391,7 +819,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
                       autoComplete="off"
                       value={slippageBps}
                       onChange={(event) => setSlippageBps(event.target.value)}
-                      className="field pr-12"
+                      className="field !pr-12"
                     />
                     <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
                       bps
@@ -441,7 +869,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
                           autoComplete="off"
                           value={maxEntryPriceDeviationBps}
                           onChange={(event) => setMaxEntryPriceDeviationBps(event.target.value)}
-                          className="field pr-12"
+                          className="field !pr-12"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
                           bps
@@ -462,7 +890,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
                           autoComplete="off"
                           value={maxExpiryDeltaSecs}
                           onChange={(event) => setMaxExpiryDeltaSecs(event.target.value)}
-                          className="field pr-16"
+                          className="field !pr-16"
                         />
                         <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">
                           secs
@@ -527,7 +955,7 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
               <button
                 type="button"
                 onClick={handleIssue}
-                disabled={!connected || !preview || issueLoading}
+                disabled={!connected || !preview || previewNoQuote || issueLoading}
                 className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {issueLoading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : null}
@@ -562,43 +990,75 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
 
           {preview && (
             <div className="space-y-6">
-              <section className="surface p-5 sm:p-6">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <h2 className="text-xl font-semibold text-foreground">Your quote</h2>
-                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                      Priced by the on-chain program right now. Sign to lock these numbers in.
-                    </p>
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    Quoted at slot {toNumber(field(preview.data, "quoteSlot")) || "—"}
-                  </div>
-                </div>
-
-                <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                  {product.metrics(preview.data).map((metric) => (
-                    <div key={metric.label} className="rounded-md border border-border bg-card p-4">
-                      <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
-                        {metric.label}
-                      </div>
-                      <div className="mt-3 text-2xl font-semibold text-foreground">{metric.value}</div>
+              {previewNoQuote && (
+                <div className="rounded-md border border-warning-500/30 bg-warning-50 p-4">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-warning-700" aria-hidden="true" />
+                    <div>
+                      <h2 className="text-sm font-semibold text-foreground">No live quote right now</h2>
+                      <p className="mt-1 text-sm leading-6 text-muted-foreground">
+                        The on-chain program returned a zero-coupon no-quote state for current SOL conditions.
+                        Issuance is disabled until the next valid quote clears the product floor.
+                      </p>
                     </div>
-                  ))}
+                  </div>
                 </div>
-              </section>
+              )}
+
+              {!previewNoQuote && (
+                <section className="surface p-5 sm:p-6">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <h2 className="text-xl font-semibold text-foreground">Your quote</h2>
+                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                        Priced by the on-chain program right now. Sign to lock these numbers in.
+                      </p>
+                    </div>
+                    <div className="text-sm text-muted-foreground">
+                      Quoted at slot {toNumber(field(preview.data, "quoteSlot")) || "—"}
+                    </div>
+                  </div>
+
+                  <div className="mt-6 grid gap-4 sm:grid-cols-2">
+                    {product.metrics(preview.data).map((metric) => (
+                      <div key={metric.label} className="rounded-md border border-border bg-card p-4">
+                        <div className="text-xs font-medium uppercase tracking-[0.12em] text-muted-foreground">
+                          {metric.label}
+                        </div>
+                        <div
+                          className={cn(
+                            "mt-3 break-words font-semibold text-foreground",
+                            metric.compact ? "text-base leading-7" : "text-2xl leading-tight",
+                          )}
+                        >
+                          {metric.value}
+                        </div>
+                        {metric.hint ? (
+                          <p className="mt-2 text-xs leading-5 text-muted-foreground">{metric.hint}</p>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
 
               <section className="surface p-5 sm:p-6">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
-                    <h2 className="text-xl font-semibold text-foreground">Full quote breakdown</h2>
+                    <h2 className="text-xl font-semibold text-foreground">
+                      {previewNoQuote ? "Program response" : "Full quote breakdown"}
+                    </h2>
                     <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                      Everything the on-chain program returned — visible before you sign, and identical to what
-                      your wallet will enforce when it does.
+                      {previewNoQuote
+                        ? "The program returned a parseable no-quote response, so no issuance terms are available yet."
+                        : "Everything the on-chain program returned — visible before you sign, and identical to what your wallet will enforce when it does."}
                     </p>
                   </div>
-                  <div className="text-sm text-muted-foreground">
-                    Expires {formatTimestamp(field(preview.data, "expiryTs"))}
-                  </div>
+                  {!previewNoQuote && (
+                    <div className="text-sm text-muted-foreground">
+                      Expires {formatTimestamp(field(preview.data, "expiryTs"))}
+                    </div>
+                  )}
                 </div>
                 <div className="mt-6">
                   <PreviewFields preview={preview} />
@@ -642,6 +1102,8 @@ export function IssuancePage({ kind, defaultNotional }: IssuancePageProps) {
         </section>
 
         <aside className="space-y-6">
+          {kind === "flagship" ? <FlagshipBuyerChecklist /> : null}
+
           <section className="surface p-5">
             <h2 className="text-lg font-semibold text-foreground">How this quote was priced</h2>
             <ul className="mt-4 space-y-3 text-sm leading-6 text-muted-foreground">

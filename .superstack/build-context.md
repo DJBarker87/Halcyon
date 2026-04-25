@@ -72,3 +72,35 @@ After A+B, proceed to:
 - `/create-pitch-deck` — structured pitch deck
 
 HTML artifact at `.superstack/review.html`.
+
+## debug
+
+- **last_debug_session**: 2026-04-24T09:08:51Z
+- **issues_resolved**:
+  - **error**: Frontend surfaced "Treasury destination is not a token account" before quote simulation.
+    **cause**: `fetchProtocolContext` inferred the USDC mint by decoding `ProtocolConfig.treasury_destination`, coupling buyer quote/build flows to the admin sweep-fee destination ATA being initialized.
+    **fix**: Frontend runtime config now pins the USDC mint for devnet/mainnet and uses it before falling back to treasury-destination decoding for local/dev setups.
+  - **error**: Frontend surfaced `Preview failed: "AccountNotFound"` from `simulatePreview`.
+    **cause**: Preview simulations used a freshly generated public key as fee payer; Solana still requires the fee-payer account to exist even with `sigVerify: false`.
+    **fix**: Preview simulations now use the protocol admin as the simulation payer, and portfolio lending-value simulations use the portfolio owner.
+  - **error**: Frontend surfaced `Preview failed: {"InstructionError":[0,{"Custom":3007}]}` from product quote previews.
+    **cause**: The frontend's hardcoded account lists had drifted from the current Anchor IDLs: flagship preview/accept_quote was missing `autocall_schedule`, and SOL autocall preview/accept_quote was missing `reduced_operators`, so later accounts shifted into Anchor-owned account slots.
+    **fix**: Added the missing PDA derivations and inserted both accounts in IDL order; preview simulation errors now preserve Solana logs for better UI error mapping, and handled issuance failures no longer trigger Next's dev console-error overlay.
+  - **error**: Frontend flagship preview returned `ProgramFailedToComplete` while CLI preview succeeded.
+    **cause**: Browser simulations and issuance transactions were missing an explicit compute-budget instruction; the flagship quote path consumes more than the default transaction compute cap.
+    **fix**: Frontend transaction builders now prepend a 1.4M CU limit for preview, issuance, lending-value, and single-instruction policy flows.
+  - **error**: SOL Autocall preview rendered a zero quote ambiguously and showed `QUOTE SLOT negative`.
+    **cause**: The SOL program can legitimately return a zero-coupon no-quote state; the UI did not label that state, and Anchor BN-like values were falling through to object-key display.
+    **fix**: The UI now formats BN-like return values as scalars, labels SOL no-quote previews explicitly, and disables issuance while the returned quote is no-quote.
+  - **error**: Flagship preview failed with stale sigma/regression state on devnet.
+    **cause**: Keeper/oracle state was stale or below protocol floors during manual repair.
+    **fix**: Rebuilt and redeployed devnet product programs with the default Pyth pull backend; refreshed SOL EWMA/regime/reduced-operator state; wrote flagship sigma at the configured floor; wrote flagship regression from Pyth Benchmarks only. A Stooq fetch attempt failed before any write and was not used.
+  - **error**: Reduced-operator keeper writes could restart from chunk zero and race the live Hetzner timer.
+    **cause**: The CLI `fire_reduced_ops` path did not resume compatible partially written operator tables.
+    **fix**: CLI reduced-operator writes now resume from existing compatible V/U chunk lengths, keyed by current sigma slot, regime slot, table hash, version, and sigma value. Hetzner should be updated to this binary so live timers stop racing/restarting manual repairs.
+  - **error**: IL Protection frontend showed "Market-regime signal is stale."
+    **cause**: The IL `RegimeSignal` PDA had last been written at `2026-04-21T11:27:52Z`, outside the devnet freshness window.
+    **fix**: Refreshed the IL regime account with the registered regime keeper using the existing `fvol_s6=800000` state; write signature `4Ho7DJMNZT6G4zjh7gunv11Ep6CUd93rrdpi7LTb1H61pKDfM2go4Uvp9B8a7omJ8LxCS65SxJqADY517TygUKQY`. CLI and browser IL previews now return fresh quotes.
+  - **error**: Flagship and SOL Autocall quote summary cards used confusing protocol/accounting labels such as "Max payout if triggered."
+    **cause**: The frontend displayed raw `max_liability` as a buyer payout concept, even though it is used as protocol risk/accounting and is equal to principal/notional for the current autocall quote paths.
+    **fix**: Replaced summary cards with buyer-facing fields: notional/principal, coupon cash amount, coupon rate, entry price/basket, and pricing volatility. SOL no-quote states now hide zero-valued quote summary cards and show only the no-quote explanation plus raw program response.

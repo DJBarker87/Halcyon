@@ -9,13 +9,13 @@ use crate::client::CliContext;
 #[derive(Debug, ClapArgs)]
 pub struct Args {
     pub amount: u64,
-    #[arg(long)]
-    pub usdc_mint: String,
+    #[arg(long, value_name = "PUBKEY")]
+    pub usdc_mint: Option<String>,
 }
 
 pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     let user = ctx.signer()?;
-    let usdc_mint = CliContext::parse_pubkey("usdc_mint", &args.usdc_mint)?;
+    let usdc_mint = ctx.resolve_usdc_mint(args.usdc_mint.as_deref())?;
     let ix = kernel::deposit_senior_ix(&user.pubkey(), &usdc_mint, args.amount);
     let signature = tx::send_instructions(ctx.rpc.as_ref(), user, vec![ix]).await?;
     println!(

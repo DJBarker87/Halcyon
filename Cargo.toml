@@ -16,6 +16,7 @@ members = [
     # Anchor programs (handlers populated through L1+)
     "programs/halcyon_kernel",
     "research/programs/halcyon_stub_product",
+    "research/programs/halcyon_lending_consumer",
     "programs/halcyon_flagship_autocall",
     "programs/halcyon_il_protection",
     "programs/halcyon_sol_autocall",

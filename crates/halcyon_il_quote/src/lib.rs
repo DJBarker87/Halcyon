@@ -12,6 +12,7 @@
 //! path and carry over as reference-only until the LP-path scope reopens.
 
 pub mod insurance;
+pub mod midlife;
 pub mod product;
 
 pub use product::{

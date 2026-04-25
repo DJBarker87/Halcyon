@@ -1,0 +1,177 @@
+use anchor_lang::prelude::*;
+use anchor_spl::{
+    associated_token::get_associated_token_address,
+    token::{Mint, Token, TokenAccount},
+};
+use halcyon_common::{seeds, HalcyonError};
+use halcyon_kernel::{
+    cpi::accounts::ApplySettlement,
+    state::{PolicyHeader, PolicyStatus, ProductRegistryEntry, ProtocolConfig, VaultState},
+    ApplySettlementArgs, KernelError, SettlementReason,
+};
+
+use crate::buyback_math::{
+    lending_value_payout_usdc, lending_value_s6 as compute_lending_value_s6,
+};
+use crate::errors::FlagshipAutocallError;
+use crate::instructions::buyback::FlagshipBuybackExecuted;
+use crate::midlife_pricing;
+use crate::state::{FlagshipAutocallTerms, ProductStatus};
+
+#[derive(Accounts)]
+pub struct BuybackFromCheckpoint<'info> {
+    #[account(mut)]
+    pub policy_owner: Signer<'info>,
+
+    /// CHECK: owned by this program and manually validated/closed as a
+    /// midlife checkpoint byte account.
+    #[account(mut)]
+    pub midlife_checkpoint: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        constraint = policy_header.product_program_id == crate::ID @ KernelError::ProductProgramMismatch,
+        constraint = policy_header.owner == policy_owner.key() @ HalcyonError::ProductAuthorityMismatch,
+        constraint = policy_header.product_terms == product_terms.key() @ FlagshipAutocallError::PolicyStateInvalid,
+    )]
+    pub policy_header: Box<Account<'info, PolicyHeader>>,
+
+    #[account(
+        mut,
+        constraint = product_terms.policy_header == policy_header.key() @ FlagshipAutocallError::PolicyStateInvalid,
+    )]
+    pub product_terms: Box<Account<'info, FlagshipAutocallTerms>>,
+
+    #[account(
+        mut,
+        seeds = [seeds::PRODUCT_REGISTRY, crate::ID.as_ref()],
+        seeds::program = halcyon_kernel::ID,
+        bump,
+        constraint = product_registry_entry.product_program_id == crate::ID
+            @ KernelError::ProductProgramMismatch,
+    )]
+    pub product_registry_entry: Box<Account<'info, ProductRegistryEntry>>,
+
+    #[account(seeds = [seeds::PROTOCOL_CONFIG], seeds::program = halcyon_kernel::ID, bump)]
+    pub protocol_config: Box<Account<'info, ProtocolConfig>>,
+
+    pub usdc_mint: Box<Account<'info, Mint>>,
+
+    #[account(
+        mut,
+        seeds = [seeds::VAULT_USDC, usdc_mint.key().as_ref()],
+        seeds::program = halcyon_kernel::ID,
+        bump,
+        constraint = vault_usdc.mint == usdc_mint.key(),
+    )]
+    pub vault_usdc: Box<Account<'info, TokenAccount>>,
+
+    /// CHECK: kernel PDA authority for `vault_usdc`.
+    #[account(seeds = [seeds::VAULT_AUTHORITY], seeds::program = halcyon_kernel::ID, bump)]
+    pub vault_authority: UncheckedAccount<'info>,
+
+    #[account(
+        mut,
+        constraint = owner_usdc.mint == usdc_mint.key(),
+        constraint = owner_usdc.owner == policy_header.owner @ HalcyonError::ProductAuthorityMismatch,
+        constraint = owner_usdc.key()
+            == get_associated_token_address(&policy_header.owner, &usdc_mint.key())
+            @ HalcyonError::ProductAuthorityMismatch,
+    )]
+    pub owner_usdc: Box<Account<'info, TokenAccount>>,
+
+    /// CHECK: canonical PDA signer for kernel CPIs.
+    #[account(seeds = [seeds::PRODUCT_AUTHORITY], bump)]
+    pub product_authority: UncheckedAccount<'info>,
+
+    #[account(mut, seeds = [seeds::VAULT_STATE], seeds::program = halcyon_kernel::ID, bump)]
+    pub vault_state: Box<Account<'info, VaultState>>,
+
+    pub clock: Sysvar<'info, Clock>,
+    pub kernel_program: Program<'info, halcyon_kernel::program::HalcyonKernel>,
+    pub token_program: Program<'info, Token>,
+}
+
+pub fn handler(ctx: Context<BuybackFromCheckpoint>) -> Result<()> {
+    require_keys_eq!(
+        ctx.accounts.product_registry_entry.expected_authority,
+        ctx.accounts.product_authority.key(),
+        HalcyonError::ProductAuthorityMismatch
+    );
+    require!(
+        !ctx.accounts.product_registry_entry.paused,
+        HalcyonError::IssuancePausedPerProduct
+    );
+    require!(
+        ctx.accounts.policy_header.status == PolicyStatus::Active
+            && ctx.accounts.product_terms.status == ProductStatus::Active,
+        FlagshipAutocallError::PolicyStateInvalid
+    );
+    midlife_pricing::validate_checkpoint_account(
+        &ctx.accounts.midlife_checkpoint.to_account_info(),
+        ctx.accounts.policy_owner.key(),
+        ctx.accounts.policy_header.key(),
+        ctx.accounts.product_terms.key(),
+        ctx.accounts.clock.slot,
+    )?;
+    midlife_pricing::require_checkpoint_matches_policy_state(
+        &ctx.accounts.midlife_checkpoint.to_account_info(),
+        &ctx.accounts.policy_header,
+        &ctx.accounts.product_terms,
+    )?;
+
+    let valuation = midlife_pricing::finish_nav_from_checkpoint(
+        &ctx.accounts.midlife_checkpoint.to_account_info(),
+    )?;
+    let lending_value_s6 =
+        compute_lending_value_s6(valuation.nav.nav_s6, valuation.nav.ki_level_usd_s6);
+    let payout = lending_value_payout_usdc(ctx.accounts.policy_header.notional, lending_value_s6)?;
+    let now = ctx.accounts.clock.unix_timestamp;
+
+    ctx.accounts.product_terms.settled_payout_usdc = payout;
+    ctx.accounts.product_terms.settled_at = now;
+    ctx.accounts.product_terms.status = ProductStatus::Settled;
+
+    let bump = ctx.bumps.product_authority;
+    let signer_seeds: &[&[&[u8]]] = &[&[seeds::PRODUCT_AUTHORITY, &[bump]]];
+    halcyon_kernel::cpi::apply_settlement(
+        CpiContext::new_with_signer(
+            ctx.accounts.kernel_program.to_account_info(),
+            ApplySettlement {
+                product_authority: ctx.accounts.product_authority.to_account_info(),
+                product_registry_entry: ctx.accounts.product_registry_entry.to_account_info(),
+                protocol_config: ctx.accounts.protocol_config.to_account_info(),
+                vault_state: ctx.accounts.vault_state.to_account_info(),
+                policy_header: ctx.accounts.policy_header.to_account_info(),
+                usdc_mint: ctx.accounts.usdc_mint.to_account_info(),
+                vault_usdc: ctx.accounts.vault_usdc.to_account_info(),
+                vault_authority: ctx.accounts.vault_authority.to_account_info(),
+                buyer_usdc: ctx.accounts.owner_usdc.to_account_info(),
+                token_program: ctx.accounts.token_program.to_account_info(),
+            },
+            signer_seeds,
+        ),
+        ApplySettlementArgs {
+            payout,
+            reason: SettlementReason::Buyback,
+        },
+    )?;
+
+    emit!(FlagshipBuybackExecuted {
+        policy_id: ctx.accounts.policy_header.key(),
+        owner: ctx.accounts.policy_owner.key(),
+        nav_s6: valuation.nav.nav_s6,
+        ki_level_s6: valuation.nav.ki_level_usd_s6,
+        lending_value_s6,
+        payout_usdc: payout,
+        now_trading_day: valuation.now_trading_day,
+        bought_back_at: now,
+    });
+
+    midlife_pricing::close_checkpoint_account(
+        &ctx.accounts.midlife_checkpoint.to_account_info(),
+        &ctx.accounts.policy_owner.to_account_info(),
+    )?;
+
+    Ok(())
+}

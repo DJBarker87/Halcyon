@@ -149,6 +149,9 @@ build_binaries() {
   cd "${HALCYON_DIR}/keepers/price_relay"
   npm ci --no-audit --no-fund
 
+  cd "${HALCYON_DIR}/tools/mock_usdc_faucet"
+  npm ci --no-audit --no-fund
+
   cd "${HALCYON_DIR}"
   local sigma_requirements="${HALCYON_DIR}/keepers/flagship_sigma_keeper/requirements.txt"
   if grep -Eq '^[[:space:]]*[^#[:space:]]' "${sigma_requirements}"; then
@@ -335,6 +338,10 @@ main() {
   if is_enabled "${ENABLE_DELTA_KEEPER:-0}"; then
     require_env PINATA_JWT
   fi
+  if is_enabled "${ENABLE_MOCK_USDC_FAUCET:-1}"; then
+    require_env MOCK_USDC_MINT
+    require_env MOCK_USDC_FAUCET_KEYPAIR_PATH
+  fi
   apt_install
   clone_or_update_repo
   install_rust
@@ -360,6 +367,7 @@ main() {
   enable_or_disable "${ENABLE_HEDGE_KEEPER:-0}" halcyon-hedge-keeper.service
   enable_or_disable "${ENABLE_LEGACY_REGRESSION_KEEPER:-0}" halcyon-regression-keeper.service
   mask_or_unmask_service "${ENABLE_FLAGSHIP_HEDGE_KEEPER:-0}" halcyon-flagship-hedge-keeper.service
+  enable_or_disable "${ENABLE_MOCK_USDC_FAUCET:-1}" halcyon-mock-usdc-faucet.service
 
   echo "Halcyon Hetzner deploy complete."
   echo "Repo: ${HALCYON_DIR}"

@@ -177,8 +177,9 @@ Strictly for the submission, not for mainnet launch.
 
 ### 3.0 Devnet bring-up (2026-04-21) — COMPLETE
 
-Full kernel + 3-product bring-up landed on devnet via Circle USDC
-(`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`).
+Full kernel + 3-product bring-up landed on devnet. The judge-facing path now
+uses a Halcyon mock-USDC mint so wallets can self-fund through `/faucet`
+instead of relying on Circle's rate-limited devnet faucet.
 
 **Programs (identical IDs on Anchor.toml's `[programs.devnet]` /
 `[programs.localnet]`):**
@@ -195,12 +196,9 @@ deploy path; do not reintroduce manual ELF section stripping.
 **Admin state:**
 
 - `ProtocolConfig` — `4kvGdC4UE3SeNWEDEEcvTUHet9uwVUQTAFMN3mWrt9Fr`
-- vault USDC ATA — `Eg8ox2Jstf1eR8gqWCHJ8EATxXrfSEJPbKFui6FrM3nD`
-- treasury USDC ATA — `72NQmJPWKDJM3a22Sr1AWz3DRPjrSYFTDyGbz47k2zX`
-- admin USDC ATA (treasury_destination + hedge_defund_destination) —
-  `EThsLFbzD8TywFndM8294Q4M6QnNdafXLcgtbA5UTop4` *(not yet funded —
-  `halcyon status` errors until the admin has at least 1 USDC; fix
-  by hitting Circle's devnet faucet)*
+- `init-payment-mint` initializes the vault and treasury token accounts for the
+  current mock-USDC mint, then rotates treasury/hedge-defund destinations to
+  the admin's mock-USDC ATA.
 
 **Product registry entries:**
 
@@ -229,9 +227,10 @@ subcommand to `tools/halcyon_cli` (SDK had
 
 **What's still needed for a live demo (Dom-only):**
 
-- Airdrop Circle devnet USDC to admin + test buyer wallets (faucet
-  link: `https://faucet.circle.com/`; ~10 USDC / 24 h rate limit).
-  `halcyon status` starts working once the admin USDC ATA exists.
+- Create the mock-USDC mint with `tools/mock_usdc_faucet`, run
+  `halcyon init-payment-mint`, set `USDC_MINT` / `NEXT_PUBLIC_USDC_MINT_DEVNET`
+  to that mint, and expose the faucet URL through
+  `NEXT_PUBLIC_MOCK_USDC_FAUCET_URL`.
 - Start the 5 keepers. `keepers/price_relay/` is already running
   (shard 7, all 5 feeds posting). The 4 quant keepers
   (`observation_keeper`, `regression_keeper`, `delta_keeper`,

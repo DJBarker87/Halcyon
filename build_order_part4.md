@@ -211,13 +211,13 @@ Cadence per `integration_architecture.md` §2.6: the keeper wakes on each observ
 
 **CLI.** A small Rust CLI `tools/halcyon_cli/` that, given a wallet keypair, can: initialize the protocol (one-shot), register SOL Autocall, seed the junior tranche, make a senior deposit, preview a SOL Autocall quote, accept a SOL Autocall quote, force-trigger the observation keeper once, force-trigger the hedge keeper once, and print the current state of all active policies. No frontend wraps this in L2; the operator is the user.
 
-**Devnet deploy.** The SOL Autocall program, the kernel program, the stub product (removed), and the support crates are deployed to devnet against real Pyth SOL/USD. Airdropped USDC-Dev is used for premium payments. The keepers run from a dev machine or a cheap VPS against devnet RPC.
+**Devnet deploy.** The SOL Autocall program, the kernel program, the stub product (removed), and the support crates are deployed to devnet against real Pyth SOL/USD. Halcyon mock-USDC is used for premium payments, created with `tools/mock_usdc_faucet`, wired with `init-payment-mint`, and exposed through `/faucet` so judges can self-fund. The keepers run from a dev machine or a cheap VPS against devnet RPC.
 
 **End-to-end flow test.** A scripted run:
 
-1. Operator (via CLI) makes a senior deposit of 10,000 USDC-Dev.
-2. Operator seeds the junior tranche with 1,000 USDC-Dev.
-3. Operator issues a SOL Autocall policy for 500 USDC-Dev notional, 16-day tenor.
+1. Operator (via CLI) makes a senior deposit of 10,000 mock-USDC.
+2. Operator seeds the junior tranche with 1,000 mock-USDC.
+3. Operator issues a SOL Autocall policy for 500 mock-USDC notional, 16-day tenor.
 4. Clock warps (in a test harness) or 16 real days elapse. Every 2 days the observation keeper fires.
 5. Depending on how SOL moves against devnet Pyth: autocall fires → settlement. Or: natural expiry → settlement.
 6. Hedge keeper fires at least twice across the lifetime.

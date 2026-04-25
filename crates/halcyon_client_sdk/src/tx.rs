@@ -29,14 +29,28 @@ pub async fn send_instructions(
     signer: &Keypair,
     instructions: Vec<Instruction>,
 ) -> Result<Signature> {
+    send_instructions_with_extra_signers(rpc, signer, instructions, &[]).await
+}
+
+pub async fn send_instructions_with_extra_signers(
+    rpc: &RpcClient,
+    signer: &Keypair,
+    instructions: Vec<Instruction>,
+    extra_signers: &[&Keypair],
+) -> Result<Signature> {
     let recent_blockhash = rpc
         .get_latest_blockhash()
         .await
         .context("latest blockhash")?;
+    let mut signers: Vec<&dyn Signer> = Vec::with_capacity(extra_signers.len() + 1);
+    signers.push(signer);
+    for extra in extra_signers {
+        signers.push(*extra);
+    }
     let tx = Transaction::new_signed_with_payer(
         &instructions,
         Some(&signer.pubkey()),
-        &[signer],
+        &signers,
         recent_blockhash,
     );
     rpc.send_and_confirm_transaction(&tx)
@@ -44,10 +58,30 @@ pub async fn send_instructions(
         .context("sending transaction")
 }
 
+pub async fn send_compute_instructions_with_extra_signers(
+    rpc: &RpcClient,
+    signer: &Keypair,
+    instructions: Vec<Instruction>,
+    extra_signers: &[&Keypair],
+) -> Result<Signature> {
+    let mut with_budget = vec![ComputeBudgetInstruction::set_compute_unit_limit(1_400_000)];
+    with_budget.extend(instructions);
+    send_instructions_with_extra_signers(rpc, signer, with_budget, extra_signers).await
+}
+
 pub async fn simulate_instruction(
     rpc: &RpcClient,
     payer: &Keypair,
     instruction: Instruction,
+) -> Result<solana_rpc_client_api::response::RpcSimulateTransactionResult> {
+    simulate_instructions(rpc, payer, vec![instruction], &[]).await
+}
+
+pub async fn simulate_instructions(
+    rpc: &RpcClient,
+    payer: &Keypair,
+    raw_instructions: Vec<Instruction>,
+    extra_signers: &[&Keypair],
 ) -> Result<solana_rpc_client_api::response::RpcSimulateTransactionResult> {
     let recent_blockhash = rpc
         .get_latest_blockhash()
@@ -62,11 +96,16 @@ pub async fn simulate_instruction(
             heap_frame_bytes,
         ));
     }
-    instructions.push(instruction);
+    instructions.extend(raw_instructions);
+    let mut signers: Vec<&dyn Signer> = Vec::with_capacity(extra_signers.len() + 1);
+    signers.push(payer);
+    for extra in extra_signers {
+        signers.push(*extra);
+    }
     let tx = Transaction::new_signed_with_payer(
         &instructions,
         Some(&payer.pubkey()),
-        &[payer],
+        &signers,
         recent_blockhash,
     );
     let response = rpc

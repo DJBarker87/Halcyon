@@ -17,9 +17,11 @@
 //! and projects them back to at most `K` retained nodes via barycentric
 //! interpolation on the cumulative-factor axis.
 
+use crate::midlife_pricer::{MidlifeInputs, MidlifeNav, MidlifePricerError};
 use crate::worst_of_c1_fast::{
-    build_triple_correction_pre, c1_fast_quote_from_components, C1FastConfig, C1FastQuote,
-    TripleCorrectionPre, CF_ALPHA_S12, CF_BETA_S12, CF_DELTA_SCALE_S12, CF_GAMMA_S12, S12,
+    build_triple_correction_pre, c1_fast_quote_from_components, spy_qqq_iwm_c1_config,
+    spy_qqq_iwm_step_drift_inputs_s6, C1FastConfig, C1FastQuote, ObsGeometry, TripleCorrectionPre,
+    CF_ALPHA_S12, CF_BETA_S12, CF_DELTA_SCALE_S12, CF_GAMMA_S12, S12, SPY_QQQ_IWM_C1_CONFIG,
 };
 use crate::worst_of_c1_filter_gradients::{
     FrozenMomentTables, FROZEN_TABLES_K12, FROZEN_TABLES_K15, FROZEN_TABLES_K9,
@@ -31,14 +33,14 @@ use solmath_core::gauss_hermite::GH13_WEIGHTS;
 use solmath_core::nig_pdf_bessel;
 use solmath_core::nig_weights_table::{nig_importance_weights_9, GH9_NODES_S6};
 use solmath_core::worst_of_ki_i64::{cholesky6, ki_moment_i64_gh3, AffineCoord6, KiMoment6};
+use solmath_core::{div6, ln6, sqrt6};
 use solmath_core::{TrianglePre64, PHI2_RESID_QQQ_IWM, PHI2_RESID_SPY_IWM, PHI2_RESID_SPY_QQQ};
 
 #[cfg(not(target_os = "solana"))]
 use crate::worst_of_c1_filter_gradients::REFERENCE_SIGMA_COMMON_S6;
 #[cfg(not(target_os = "solana"))]
 use crate::worst_of_factored::FactoredWorstOfModel;
-#[cfg(not(target_os = "solana"))]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 #[cfg(not(target_os = "solana"))]
 use std::fmt::Write as _;
 
@@ -48,6 +50,7 @@ const SQRT2_S6: i64 = 1_414_214;
 /// on BPF where C1FastConfig (~1.8KB) overflows the 4KB frame.
 const NOTIONAL: i64 = 100 * S6;
 const N_OBS: usize = 6;
+const MONTHLY_COUPONS_PER_QUARTER: i64 = 3;
 const N_FACTOR_NODES: usize = 9;
 const N_FACTOR_NODES_EXACT_SEED: usize = 13;
 pub const MAX_K: usize = 15;
@@ -151,11 +154,11 @@ fn c1_filter_cu_diag_inner(stage: &'static [u8]) {
 /// max |a*b| = 3×10¹³ << 9.2×10¹⁸.
 /// wrapping_mul bypasses BPF overflow-check branch (~5 CU/call saved).
 ///
-/// Implementation switches on the `m6r-recip` feature: with the feature
-/// disabled (default = current shipping behaviour), the body is the
-/// original `a.wrapping_mul(b) / S6`. With the feature enabled, the
-/// division is replaced by a reciprocal multiply-shift via
-/// `crate::m6r_recip::m6r_recip` — saves ~140 CU/call on BPF.
+/// Implementation switches on the `m6r-recip` feature: with the default
+/// `full` feature set, division is replaced by a reciprocal multiply-shift
+/// via `crate::m6r_recip::m6r_recip` — saves ~140 CU/call on BPF. Building
+/// without default features keeps the original `a.wrapping_mul(b) / S6`
+/// body for equivalence checks.
 #[cfg(not(feature = "m6r-recip"))]
 #[inline(always)]
 fn m6r_impl(a: i64, b: i64) -> i64 {
@@ -173,6 +176,11 @@ fn m6r(a: i64, b: i64) -> i64 {
 #[inline(always)]
 fn m6r_fast(a: i64, b: i64) -> i64 {
     m6r_impl(a, b)
+}
+
+#[inline(always)]
+fn quote_coupon_count_for_obs(obs_idx: usize) -> i64 {
+    ((obs_idx + 1) as i64) * MONTHLY_COUPONS_PER_QUARTER
 }
 
 /// Safe multiply-at-S6 for values that may exceed sqrt(i64::MAX).
@@ -2078,7 +2086,6 @@ fn ki_probability_gh3(
     probability.clamp(0, S6)
 }
 
-#[cfg(not(target_os = "solana"))]
 #[inline(always)]
 fn triangle_with_gradient_i64(
     mean_u: i64,
@@ -2584,24 +2591,30 @@ fn predict_state_with_focus(
     focus: Option<(i64, i64)>,
 ) -> FilterState {
     let k_retained = k_retained.clamp(1, MAX_K);
+    let mut n_parents = 0usize;
     let mut n_children = 0usize;
     let mut min_c = i64::MAX;
     let mut max_c = i64::MIN;
-    let mut total_in = 0i64;
+    let mut min_parent_weights = [i64::MAX; N_FACTOR_NODES];
+    for idx in 0..N_FACTOR_NODES {
+        let factor_weight = factor_weights[idx];
+        if factor_weight > 0 {
+            min_parent_weights[idx] = (S6 + factor_weight - 1) / factor_weight;
+        }
+    }
     for parent in state.nodes.iter().copied().filter(|node| node.w > 0) {
+        n_parents += 1;
         for idx in 0..N_FACTOR_NODES {
-            let w = m6r(parent.w, factor_weights[idx]);
-            if w <= 0 {
+            if parent.w < min_parent_weights[idx] {
                 continue;
             }
             let c = parent.c + factor_values[idx];
             min_c = min_c.min(c);
             max_c = max_c.max(c);
-            total_in += w;
             n_children += 1;
         }
     }
-    if n_children == 0 {
+    if n_parents == 0 || n_children == 0 {
         return FilterState::default();
     }
 
@@ -2631,6 +2644,7 @@ fn predict_state_with_focus(
     }
 
     if max_c <= min_c || k_retained == 1 {
+        let mut total_in = 0i64;
         let mut total_c = 0i64;
         let mut total_u = 0i64;
         let mut total_v = 0i64;
@@ -2640,10 +2654,14 @@ fn predict_state_with_focus(
                 if w <= 0 {
                     continue;
                 }
+                total_in += w;
                 total_c += m6r(w, parent.c + factor_values[idx]);
                 total_u += m6r(w, parent.mean_u + step_mean_u[idx]);
                 total_v += m6r(w, parent.mean_v + step_mean_v[idx]);
             }
+        }
+        if total_in <= 0 {
+            return FilterState::default();
         }
         let mut collapsed = FilterState::default();
         collapsed.nodes[0] = FilterNode {
@@ -2686,6 +2704,7 @@ fn predict_state_with_focus(
     let mut projected = FilterState::default();
     let mut mean_u_raw = [0i64; MAX_K];
     let mut mean_v_raw = [0i64; MAX_K];
+    let mut total_in = 0i64;
     for idx in 0..k_retained {
         projected.nodes[idx].c = grid_min + grid_span * idx as i64 / k_m1;
     }
@@ -2696,6 +2715,7 @@ fn predict_state_with_focus(
             if w <= 0 {
                 continue;
             }
+            total_in += w;
             let child_c = parent.c + factor_values[idx];
             let child_mean_u = parent.mean_u + step_mean_u[idx];
             let child_mean_v = parent.mean_v + step_mean_v[idx];
@@ -2730,6 +2750,9 @@ fn predict_state_with_focus(
                 mean_v_raw[idx_lo + 1] += m6r(w_hi, child_mean_v);
             }
         }
+    }
+    if total_in <= 0 {
+        return FilterState::default();
     }
 
     let total_out = projected.nodes[..k_retained]
@@ -3616,7 +3639,7 @@ fn scatter_b_tensor<const K_PARENT: usize, const K_CHILD: usize>(
     }
 }
 
-#[inline(always)]
+#[inline(never)]
 fn merge_states(left: &FilterState, right: &FilterState, k_retained: usize) -> FilterState {
     let mut children = [FilterNode::default(); MAX_MERGE_NODES];
     let mut n_children = 0usize;
@@ -4846,6 +4869,4328 @@ pub fn build_factor_transition(
     }
 }
 
+const MIDLIFE_KNOCKED_K: usize = 1;
+const MIDLIFE_MEMORY_BUCKETS: usize = 19;
+pub const MIDLIFE_CHECKPOINT_VERSION: u8 = 1;
+pub const MIDLIFE_CHECKPOINT_MEMORY_BUCKETS: usize = MIDLIFE_MEMORY_BUCKETS;
+pub const MIDLIFE_CHECKPOINT_K: usize = MAX_K;
+pub const MIDLIFE_CHECKPOINT_NODE_BYTES: usize = 4 * 8;
+pub const MIDLIFE_CHECKPOINT_STATE_BYTES: usize =
+    MIDLIFE_CHECKPOINT_K * MIDLIFE_CHECKPOINT_NODE_BYTES + 1;
+const MIDLIFE_CHECKPOINT_BASE_HEADER_BYTES: usize = 1 + 1 + 8 + 1 + 1 + 1 + 3 * 8;
+const MIDLIFE_CHECKPOINT_PROGRESS_BYTES: usize = 6;
+const MIDLIFE_CHECKPOINT_HEADER_BYTES: usize =
+    MIDLIFE_CHECKPOINT_BASE_HEADER_BYTES + MIDLIFE_CHECKPOINT_PROGRESS_BYTES;
+const MIDLIFE_CHECKPOINT_SCRATCH_STATES: usize = 4;
+const MIDLIFE_CHECKPOINT_SCRATCH_BYTES: usize =
+    MIDLIFE_CHECKPOINT_SCRATCH_STATES * MIDLIFE_CHECKPOINT_STATE_BYTES;
+pub const MIDLIFE_CHECKPOINT_BYTES: usize = MIDLIFE_CHECKPOINT_HEADER_BYTES
+    + 2 * MIDLIFE_CHECKPOINT_MEMORY_BUCKETS * MIDLIFE_CHECKPOINT_STATE_BYTES
+    + MIDLIFE_CHECKPOINT_SCRATCH_BYTES;
+const MIDLIFE_PROGRESS_MODE_NONE: u8 = 0;
+const MIDLIFE_PROGRESS_MODE_LIVE_OBSERVATION: u8 = 1;
+const MIDLIFE_PROGRESS_FLAG_MATURITY: u8 = 1;
+const MIDLIFE_PROGRESS_FLAG_AUTOCALL: u8 = 2;
+const MIDLIFE_PROGRESS_FLAG_SATURATE_TAIL: u8 = 4;
+const MIDLIFE_PROGRESS_MODE_OFFSET: usize = MIDLIFE_CHECKPOINT_BASE_HEADER_BYTES;
+const MIDLIFE_PROGRESS_COUPON_OFFSET: usize = MIDLIFE_PROGRESS_MODE_OFFSET + 1;
+const MIDLIFE_PROGRESS_MEMORY_CURSOR_OFFSET: usize = MIDLIFE_PROGRESS_MODE_OFFSET + 2;
+const MIDLIFE_PROGRESS_MEMORY_LIMIT_OFFSET: usize = MIDLIFE_PROGRESS_MODE_OFFSET + 3;
+const MIDLIFE_PROGRESS_SAFE_K_OFFSET: usize = MIDLIFE_PROGRESS_MODE_OFFSET + 4;
+const MIDLIFE_PROGRESS_FLAGS_OFFSET: usize = MIDLIFE_PROGRESS_MODE_OFFSET + 5;
+#[cfg(any(target_os = "solana", feature = "midlife-sbf-approx"))]
+const MIDLIFE_RUNTIME_K: usize = MAX_K;
+#[cfg(not(any(target_os = "solana", feature = "midlife-sbf-approx")))]
+const MIDLIFE_RUNTIME_K: usize = MAX_K;
+#[cfg(any(target_os = "solana", feature = "midlife-sbf-approx"))]
+const MIDLIFE_STATE_EPS_S6: i64 = 10;
+#[cfg(not(any(target_os = "solana", feature = "midlife-sbf-approx")))]
+const MIDLIFE_STATE_EPS_S6: i64 = 0;
+#[cfg(any(target_os = "solana", feature = "midlife-sbf-approx"))]
+const MIDLIFE_HEALTHY_MEMORY_CAP: usize = MIDLIFE_MEMORY_BUCKETS - 1;
+#[cfg(any(target_os = "solana", feature = "midlife-sbf-approx"))]
+const MIDLIFE_BOUNDARY_MEMORY_CAP: usize = MIDLIFE_MEMORY_BUCKETS - 1;
+#[cfg(feature = "m6r-recip")]
+type MidlifeObsData = (u32, [i64; 3], [[i64; 2]; 3], i64, i64, i64);
+#[cfg(feature = "m6r-recip")]
+const MIDLIFE_OBS_AU: [i64; 3] = [567_972, -1_157_159, 567_972];
+#[cfg(feature = "m6r-recip")]
+const MIDLIFE_OBS_AV: [i64; 3] = [641_427, 641_427, -1_083_704];
+#[cfg(feature = "m6r-recip")]
+const MIDLIFE_SHORT_OBS_DATA: [MidlifeObsData; 18] = [
+    (
+        1,
+        [202152675, 130064484, 126384514],
+        [[2831, 5204], [-4434, 3988], [2391, -6048]],
+        28,
+        -2,
+        43,
+    ),
+    (
+        2,
+        [142943489, 91969454, 89367323],
+        [[4004, 7360], [-6271, 5640], [3382, -8553]],
+        56,
+        -5,
+        85,
+    ),
+    (
+        3,
+        [116713234, 75092979, 72968341],
+        [[4904, 9014], [-7680, 6907], [4142, -10476]],
+        84,
+        -8,
+        128,
+    ),
+    (
+        4,
+        [101076324, 65032233, 63192249],
+        [[5663, 10409], [-8868, 7976], [4783, -12096]],
+        111,
+        -10,
+        171,
+    ),
+    (
+        5,
+        [90405655, 58166754, 56521017],
+        [[6331, 11638], [-9914, 8917], [5347, -13524]],
+        139,
+        -13,
+        213,
+    ),
+    (
+        6,
+        [82528559, 53098651, 51596309],
+        [[6935, 12749], [-10861, 9768], [5857, -14815]],
+        167,
+        -16,
+        256,
+    ),
+    (
+        7,
+        [76406518, 49159747, 47768849],
+        [[7491, 13770], [-11731, 10551], [6327, -16001]],
+        195,
+        -19,
+        299,
+    ),
+    (
+        8,
+        [71471731, 45984718, 44683653],
+        [[8008, 14721], [-12541, 11280], [6764, -17106]],
+        223,
+        -22,
+        341,
+    ),
+    (
+        9,
+        [67384216, 43354822, 42128166],
+        [[8494, 15614], [-13301, 11964], [7174, -18144]],
+        251,
+        -25,
+        384,
+    ),
+    (
+        10,
+        [63926290, 41130002, 39966293],
+        [[8954, 16459], [-14021, 12611], [7562, -19125]],
+        279,
+        -28,
+        427,
+    ),
+    (
+        11,
+        [60951303, 39215903, 38106351],
+        [[9391, 17262], [-14705, 13227], [7931, -20059]],
+        307,
+        -30,
+        469,
+    ),
+    (
+        12,
+        [58356464, 37546391, 36484075],
+        [[9808, 18030], [-15359, 13815], [8284, -20951]],
+        334,
+        -33,
+        512,
+    ),
+    (
+        13,
+        [56067072, 36073402, 35052762],
+        [[10209, 18766], [-15986, 14379], [8622, -21806]],
+        362,
+        -36,
+        555,
+    ),
+    (
+        14,
+        [54027555, 34761182, 33777670],
+        [[10594, 19474], [-16590, 14922], [8948, -22629]],
+        390,
+        -39,
+        597,
+    ),
+    (
+        15,
+        [52195634, 33582530, 32632365],
+        [[10966, 20158], [-17172, 15446], [9262, -23424]],
+        418,
+        -42,
+        640,
+    ),
+    (
+        16,
+        [50538149, 32516108, 31596116],
+        [[11326, 20819], [-17735, 15952], [9566, -24192]],
+        446,
+        -45,
+        683,
+    ),
+    (
+        17,
+        [49029198, 31545253, 30652730],
+        [[11674, 21460], [-18281, 16443], [9860, -24936]],
+        474,
+        -48,
+        725,
+    ),
+    (
+        18,
+        [47647821, 30656479, 29789102],
+        [[12013, 22082], [-18811, 16920], [10146, -25659]],
+        502,
+        -50,
+        768,
+    ),
+];
+#[cfg(feature = "m6r-recip")]
+const MIDLIFE_SHORT_CHOLESKY: [(i64, i64, i64); 18] = [
+    (5291, -378, 6557),
+    (7483, -668, 9219),
+    (9165, -872, 11313),
+    (10535, -949, 13076),
+    (11789, -1102, 14560),
+    (12922, -1238, 15968),
+    (13964, -1360, 17262),
+    (14933, -1473, 18411),
+    (15842, -1578, 19544),
+    (16703, -1676, 20615),
+    (17521, -1712, 21610),
+    (18275, -1805, 22561),
+    (19026, -1892, 23494),
+    (19748, -1974, 24372),
+    (20445, -2054, 25219),
+    (21118, -2130, 26057),
+    (21771, -2204, 26851),
+    (22405, -2231, 27640),
+];
+#[cfg(feature = "m6r-recip")]
+const MIDLIFE_SHORT_TRIPLE_PRE: [TripleCorrectionPre; 18] = [
+    TripleCorrectionPre {
+        l11: 5291,
+        l21: -378,
+        l22: 6557,
+        slope: [656837, -1513436, -480506],
+        inv_beta: [237812128, 237812128, -140745953],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 7483,
+        l21: -668,
+        l22: 9219,
+        slope: [646203, -1536783, -497897],
+        inv_beta: [169118890, 169118890, -100100100],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 9165,
+        l21: -872,
+        l22: 11313,
+        slope: [640297, -1538588, -501672],
+        inv_beta: [137816979, 137816979, -81572722],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 10535,
+        l21: -949,
+        l22: 13076,
+        slope: [640753, -1526052, -494848],
+        inv_beta: [119232144, 119232144, -70571630],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 11789,
+        l21: -1102,
+        l22: 14560,
+        slope: [641182, -1536352, -500063],
+        inv_beta: [107077845, 107077845, -63379389],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 12922,
+        l21: -1238,
+        l22: 15968,
+        slope: [639035, -1537395, -501618],
+        inv_beta: [97637180, 97637180, -57790106],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 13964,
+        l21: -1360,
+        l22: 17262,
+        slope: [637463, -1538114, -502726],
+        inv_beta: [90317919, 90317919, -53458783],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 14933,
+        l21: -1473,
+        l22: 18411,
+        slope: [638157, -1543229, -505062],
+        inv_beta: [84681175, 84681175, -50120288],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 15842,
+        l21: -1578,
+        l22: 19544,
+        slope: [636965, -1542996, -505547],
+        inv_beta: [79770261, 79770261, -47216582],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 16703,
+        l21: -1676,
+        l22: 20615,
+        slope: [636088, -1542993, -505953],
+        inv_beta: [75625803, 75625803, -44762757],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 17521,
+        l21: -1712,
+        l22: 21610,
+        slope: [638698, -1541880, -504142],
+        inv_beta: [72144866, 72144866, -42702194],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 18275,
+        l21: -1805,
+        l22: 22561,
+        slope: [637205, -1541289, -504519],
+        inv_beta: [69103724, 69103724, -40901468],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 19026,
+        l21: -1892,
+        l22: 23494,
+        slope: [636538, -1541509, -504948],
+        inv_beta: [66361404, 66361404, -39277297],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 19748,
+        l21: -1974,
+        l22: 24372,
+        slope: [636514, -1542796, -505641],
+        inv_beta: [63971340, 63971340, -37861578],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 20445,
+        l21: -2054,
+        l22: 25219,
+        slope: [636374, -1543954, -506348],
+        inv_beta: [61819980, 61819980, -36591166],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 21118,
+        l21: -2130,
+        l22: 26057,
+        slope: [635912, -1543887, -506480],
+        inv_beta: [59833662, 59833662, -35413272],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 21771,
+        l21: -2204,
+        l22: 26851,
+        slope: [635872, -1544884, -507010],
+        inv_beta: [58065265, 58065265, -34366623],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 22405,
+        l21: -2231,
+        l22: 27640,
+        slope: [637035, -1543065, -505558],
+        inv_beta: [56404760, 56404760, -33385637],
+        is_upper: [false, false, true],
+    },
+];
+#[cfg(feature = "m6r-recip")]
+const MIDLIFE_MONTHLY_OBS_DATA: [MidlifeObsData; 18] = [
+    (
+        21,
+        [44113361, 28382417, 27579381],
+        [[12975, 23851], [-20318, 18275], [10959, -27715]],
+        585,
+        -59,
+        896,
+    ),
+    (
+        42,
+        [31192802, 20069364, 19501533],
+        [[18350, 33731], [-28734, 25846], [15498, -39195]],
+        1171,
+        -119,
+        1792,
+    ),
+    (
+        63,
+        [25468813, 16386565, 15922933],
+        [[22474, 41311], [-35191, 31654], [18981, -48003]],
+        1756,
+        -179,
+        2688,
+    ),
+    (
+        84,
+        [22056629, 14191175, 13789658],
+        [[25951, 47702], [-40636, 36552], [21918, -55430]],
+        2341,
+        -239,
+        3584,
+    ),
+    (
+        105,
+        [19728041, 12692968, 12333840],
+        [[29015, 53333], [-45432, 40866], [24505, -61972]],
+        2927,
+        -299,
+        4480,
+    ),
+    (
+        126,
+        [18009176, 11587055, 11259218],
+        [[31784, 58423], [-49768, 44766], [26844, -67887]],
+        3512,
+        -359,
+        5376,
+    ),
+    (
+        147,
+        [16673235, 10727514, 10423996],
+        [[34331, 63105], [-53756, 48353], [28995, -73326]],
+        4097,
+        -419,
+        6272,
+    ),
+    (
+        168,
+        [15596388, 10034674, 9750758],
+        [[36701, 67462], [-57467, 51692], [30997, -78389]],
+        4683,
+        -479,
+        7168,
+    ),
+    (
+        189,
+        [14704419, 9460783, 9193105],
+        [[38927, 71554], [-60953, 54828], [32877, -83144]],
+        5268,
+        -539,
+        8064,
+    ),
+    (
+        210,
+        [13949829, 8975282, 8721341],
+        [[41033, 75425], [-64250, 57793], [34656, -87642]],
+        5853,
+        -599,
+        8960,
+    ),
+    (
+        231,
+        [13300655, 8557605, 8315481],
+        [[43036, 79106], [-67386, 60614], [36347, -91919]],
+        6439,
+        -659,
+        9856,
+    ),
+    (
+        252,
+        [12734406, 8193282, 7961466],
+        [[44949, 82623], [-70382, 63309], [37963, -96006]],
+        7024,
+        -719,
+        10752,
+    ),
+    (
+        273,
+        [12234810, 7871844, 7649122],
+        [[46785, 85997], [-73256, 65895], [39514, -99927]],
+        7609,
+        -779,
+        11648,
+    ),
+    (
+        294,
+        [11789768, 7585505, 7370885],
+        [[48551, 89244], [-76022, 68382], [41005, -103699]],
+        8195,
+        -839,
+        12544,
+    ),
+    (
+        315,
+        [11389984, 7328285, 7120943],
+        [[50255, 92376], [-78690, 70782], [42445, -107338]],
+        8780,
+        -899,
+        13440,
+    ),
+    (
+        336,
+        [11028302, 7095579, 6894821],
+        [[51903, 95405], [-81271, 73104], [43837, -110859]],
+        9365,
+        -959,
+        14336,
+    ),
+    (
+        357,
+        [10699041, 6883734, 6688969],
+        [[53501, 98342], [-83772, 75353], [45186, -114270]],
+        9951,
+        -1019,
+        15232,
+    ),
+    (
+        378,
+        [10397592, 6689782, 6500505],
+        [[55052, 101193], [-86200, 77538], [46496, -117583]],
+        10536,
+        -1079,
+        16128,
+    ),
+];
+#[cfg(feature = "m6r-recip")]
+const MIDLIFE_MONTHLY_CHOLESKY: [(i64, i64, i64); 18] = [
+    (24186, -2439, 29849),
+    (34219, -3477, 42190),
+    (41904, -4271, 51672),
+    (48383, -4939, 59665),
+    (54101, -5526, 66708),
+    (59262, -6057, 73075),
+    (64007, -6546, 78930),
+    (68432, -6999, 84380),
+    (72580, -7426, 89493),
+    (76504, -7829, 94334),
+    (80243, -8212, 98939),
+    (83809, -8579, 103339),
+    (87229, -8930, 107559),
+    (90526, -9268, 111619),
+    (93701, -9594, 115533),
+    (96772, -9909, 119323),
+    (99754, -10215, 122995),
+    (102645, -10511, 126562),
+];
+#[cfg(feature = "m6r-recip")]
+const MIDLIFE_MONTHLY_TRIPLE_PRE: [TripleCorrectionPre; 18] = [
+    TripleCorrectionPre {
+        l11: 24186,
+        l21: -2439,
+        l22: 29849,
+        slope: [635779, -1543536, -506383],
+        inv_beta: [52232958, 52232958, -30914767],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 34219,
+        l21: -3477,
+        l22: 42190,
+        slope: [635785, -1545656, -507491],
+        inv_beta: [36953549, 36953549, -21871787],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 41904,
+        l21: -4271,
+        l22: 51672,
+        slope: [635428, -1545695, -507670],
+        inv_beta: [30172283, 30172283, -17858099],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 48383,
+        l21: -4939,
+        l22: 59665,
+        slope: [635275, -1545701, -507771],
+        inv_beta: [26130128, 26130128, -15465751],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 54101,
+        l21: -5526,
+        l22: 66708,
+        slope: [635294, -1545924, -507891],
+        inv_beta: [23371038, 23371038, -13832980],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 59262,
+        l21: -6057,
+        l22: 73075,
+        slope: [635219, -1545912, -507923],
+        inv_beta: [21334698, 21334698, -12627697],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 64007,
+        l21: -6546,
+        l22: 78930,
+        slope: [635135, -1545914, -507949],
+        inv_beta: [19752306, 19752306, -11690983],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 68432,
+        l21: -6999,
+        l22: 84380,
+        slope: [635182, -1546034, -507994],
+        inv_beta: [18476433, 18476433, -10935893],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 72580,
+        l21: -7426,
+        l22: 89493,
+        slope: [635158, -1546069, -508027],
+        inv_beta: [17420692, 17420692, -10311085],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 76504,
+        l21: -7829,
+        l22: 94334,
+        slope: [635122, -1546060, -508030],
+        inv_beta: [16526740, 16526740, -9781864],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 80243,
+        l21: -8212,
+        l22: 98939,
+        slope: [635151, -1546137, -508067],
+        inv_beta: [15757461, 15757461, -9326618],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 83809,
+        l21: -8579,
+        l22: 103339,
+        slope: [635115, -1546119, -508072],
+        inv_beta: [15086597, 15086597, -8929528],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 87229,
+        l21: -8930,
+        l22: 107559,
+        slope: [635082, -1546071, -508064],
+        inv_beta: [14494644, 14494644, -8579125],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 90526,
+        l21: -9268,
+        l22: 111619,
+        slope: [635114, -1546155, -508097],
+        inv_beta: [13967455, 13967455, -8267127],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 93701,
+        l21: -9594,
+        l22: 115533,
+        slope: [635112, -1546184, -508102],
+        inv_beta: [13494366, 13494366, -7987029],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 96772,
+        l21: -9909,
+        l22: 119323,
+        slope: [635086, -1546148, -508096],
+        inv_beta: [13065746, 13065746, -7733353],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 99754,
+        l21: -10215,
+        l22: 122995,
+        slope: [635108, -1546202, -508117],
+        inv_beta: [12675556, 12675556, -7502438],
+        is_upper: [false, false, true],
+    },
+    TripleCorrectionPre {
+        l11: 102645,
+        l21: -10511,
+        l22: 126562,
+        slope: [635094, -1546169, -508111],
+        inv_beta: [12318305, 12318305, -7291021],
+        is_upper: [false, false, true],
+    },
+];
+
+#[inline(always)]
+fn midlife_safe_k_for_obs(obs_rel: usize) -> usize {
+    #[cfg(any(target_os = "solana", feature = "midlife-sbf-approx"))]
+    {
+        let _ = obs_rel;
+        12
+    }
+    #[cfg(not(any(target_os = "solana", feature = "midlife-sbf-approx")))]
+    {
+        let _ = obs_rel;
+        12
+    }
+}
+
+#[inline(always)]
+fn midlife_sbf_runtime() -> bool {
+    cfg!(any(target_os = "solana", feature = "midlife-sbf-approx"))
+}
+const QUARTERLY_BASE_DAYS: i64 = 63;
+const TRADING_DAYS_PER_YEAR: i64 = 252;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidlifeCheckpointNode {
+    pub c: i64,
+    pub w: i64,
+    pub mean_u: i64,
+    pub mean_v: i64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidlifeCheckpointState {
+    pub nodes: [MidlifeCheckpointNode; MIDLIFE_CHECKPOINT_K],
+    pub n_active: u8,
+}
+
+impl Default for MidlifeCheckpointState {
+    fn default() -> Self {
+        Self {
+            nodes: [MidlifeCheckpointNode::default(); MIDLIFE_CHECKPOINT_K],
+            n_active: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MidlifeNavCheckpoint {
+    pub version: u8,
+    pub next_coupon_index: u8,
+    pub previous_day: i64,
+    pub autocall_cursor: u8,
+    pub first_coupon_index: u8,
+    pub seed_bucket: u8,
+    pub redemption_pv_s6: i64,
+    pub remaining_coupon_pv_s6: i64,
+    pub par_recovery_probability_s6: i64,
+    pub safe_states: [MidlifeCheckpointState; MIDLIFE_CHECKPOINT_MEMORY_BUCKETS],
+    pub knocked_states: [MidlifeCheckpointState; MIDLIFE_CHECKPOINT_MEMORY_BUCKETS],
+}
+
+#[inline(always)]
+fn midlife_checkpoint_safe_states_offset() -> usize {
+    MIDLIFE_CHECKPOINT_HEADER_BYTES
+}
+
+#[inline(always)]
+fn midlife_checkpoint_knocked_states_offset() -> usize {
+    MIDLIFE_CHECKPOINT_HEADER_BYTES
+        + MIDLIFE_CHECKPOINT_MEMORY_BUCKETS * MIDLIFE_CHECKPOINT_STATE_BYTES
+}
+
+#[inline(always)]
+fn midlife_checkpoint_scratch_states_offset() -> usize {
+    MIDLIFE_CHECKPOINT_HEADER_BYTES
+        + 2 * MIDLIFE_CHECKPOINT_MEMORY_BUCKETS * MIDLIFE_CHECKPOINT_STATE_BYTES
+}
+
+#[inline(always)]
+fn midlife_checkpoint_scratch_state_offset(index: usize) -> Result<usize, MidlifePricerError> {
+    if index >= MIDLIFE_CHECKPOINT_SCRATCH_STATES {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    Ok(midlife_checkpoint_scratch_states_offset() + index * MIDLIFE_CHECKPOINT_STATE_BYTES)
+}
+
+#[inline(always)]
+fn midlife_checkpoint_reachable_memory_limit(
+    seed_bucket: usize,
+    first_coupon_index: usize,
+    next_coupon_index: usize,
+) -> usize {
+    seed_bucket
+        .saturating_add(next_coupon_index.saturating_sub(first_coupon_index))
+        .min(MIDLIFE_MEMORY_BUCKETS - 1)
+}
+
+#[inline(always)]
+fn midlife_checkpoint_require_len(bytes: &[u8]) -> Result<(), MidlifePricerError> {
+    if bytes.len() != MIDLIFE_CHECKPOINT_BYTES {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    Ok(())
+}
+
+#[inline(always)]
+fn midlife_checkpoint_read_u8(bytes: &[u8], offset: usize) -> Result<u8, MidlifePricerError> {
+    bytes
+        .get(offset)
+        .copied()
+        .ok_or(MidlifePricerError::InvalidInput)
+}
+
+#[inline(always)]
+fn midlife_checkpoint_write_u8(bytes: &mut [u8], offset: usize, value: u8) {
+    bytes[offset] = value;
+}
+
+#[inline(always)]
+fn midlife_checkpoint_read_i64(bytes: &[u8], offset: usize) -> Result<i64, MidlifePricerError> {
+    let end = offset
+        .checked_add(8)
+        .ok_or(MidlifePricerError::InvalidInput)?;
+    let raw = bytes
+        .get(offset..end)
+        .ok_or(MidlifePricerError::InvalidInput)?;
+    Ok(i64::from_le_bytes(
+        raw.try_into()
+            .map_err(|_| MidlifePricerError::InvalidInput)?,
+    ))
+}
+
+#[inline(always)]
+fn midlife_checkpoint_write_i64(bytes: &mut [u8], offset: usize, value: i64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+fn midlife_write_filter_state_checkpoint_bytes(
+    state: &FilterState,
+    out: &mut [u8],
+) -> Result<(), MidlifePricerError> {
+    if out.len() != MIDLIFE_CHECKPOINT_STATE_BYTES {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let active = state.n_active.min(MIDLIFE_CHECKPOINT_K);
+    let mut idx = 0usize;
+    while idx < MIDLIFE_CHECKPOINT_K {
+        let node = state.nodes[idx];
+        let offset = idx * MIDLIFE_CHECKPOINT_NODE_BYTES;
+        midlife_checkpoint_write_i64(out, offset, node.c);
+        midlife_checkpoint_write_i64(out, offset + 8, node.w);
+        midlife_checkpoint_write_i64(out, offset + 16, node.mean_u);
+        midlife_checkpoint_write_i64(out, offset + 24, node.mean_v);
+        idx += 1;
+    }
+    midlife_checkpoint_write_u8(
+        out,
+        MIDLIFE_CHECKPOINT_K * MIDLIFE_CHECKPOINT_NODE_BYTES,
+        active as u8,
+    );
+    Ok(())
+}
+
+fn midlife_read_filter_state_checkpoint_bytes(
+    bytes: &[u8],
+) -> Result<FilterState, MidlifePricerError> {
+    if bytes.len() != MIDLIFE_CHECKPOINT_STATE_BYTES {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let active =
+        midlife_checkpoint_read_u8(bytes, MIDLIFE_CHECKPOINT_K * MIDLIFE_CHECKPOINT_NODE_BYTES)?
+            as usize;
+    if active > MAX_K || active > MIDLIFE_CHECKPOINT_K {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let mut out = FilterState::default();
+    let mut idx = 0usize;
+    while idx < MIDLIFE_CHECKPOINT_K {
+        let offset = idx * MIDLIFE_CHECKPOINT_NODE_BYTES;
+        out.nodes[idx] = FilterNode {
+            c: midlife_checkpoint_read_i64(bytes, offset)?,
+            w: midlife_checkpoint_read_i64(bytes, offset + 8)?,
+            mean_u: midlife_checkpoint_read_i64(bytes, offset + 16)?,
+            mean_v: midlife_checkpoint_read_i64(bytes, offset + 24)?,
+        };
+        idx += 1;
+    }
+    out.n_active = active;
+    Ok(out)
+}
+
+pub fn midlife_checkpoint_next_coupon_index(
+    checkpoint_bytes: &[u8],
+) -> Result<u8, MidlifePricerError> {
+    midlife_checkpoint_require_len(checkpoint_bytes)?;
+    if midlife_checkpoint_read_u8(checkpoint_bytes, 0)? != MIDLIFE_CHECKPOINT_VERSION {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    midlife_checkpoint_read_u8(checkpoint_bytes, 1)
+}
+
+#[inline(always)]
+fn midlife_math_error(_: solmath_core::SolMathError) -> MidlifePricerError {
+    MidlifePricerError::MathError
+}
+
+#[inline(always)]
+fn midlife_ratio_s6(current_s6: i64, entry_s6: i64) -> Result<i64, MidlifePricerError> {
+    if current_s6 <= 0 || entry_s6 <= 0 {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let ratio = (current_s6 as i128)
+        .checked_mul(S6 as i128)
+        .and_then(|v| v.checked_div(entry_s6 as i128))
+        .ok_or(MidlifePricerError::MathError)?;
+    i64::try_from(ratio).map_err(|_| MidlifePricerError::MathError)
+}
+
+#[inline(always)]
+fn midlife_scale_s6(numer: i64, denom: i64) -> Result<i64, MidlifePricerError> {
+    if numer <= 0 || denom <= 0 {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let scaled = (numer as i128)
+        .checked_mul(S6 as i128)
+        .and_then(|v| v.checked_add((denom / 2) as i128))
+        .and_then(|v| v.checked_div(denom as i128))
+        .ok_or(MidlifePricerError::MathError)?;
+    i64::try_from(scaled).map_err(|_| MidlifePricerError::MathError)
+}
+
+#[inline(always)]
+fn midlife_barrier_ratio_s6(barrier_bps: u16) -> Result<i64, MidlifePricerError> {
+    if barrier_bps == 0 || barrier_bps > 10_000 {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    Ok(i64::from(barrier_bps) * 100)
+}
+
+#[inline(always)]
+fn midlife_barrier_rhs_base(
+    cfg: &C1FastConfig,
+    barrier_bps: u16,
+) -> Result<(i64, i64), MidlifePricerError> {
+    let ratio_s6 = midlife_barrier_ratio_s6(barrier_bps)?;
+    let barrier_log = ln6(ratio_s6).map_err(midlife_math_error)?;
+    Ok((ratio_s6, -m6r(cfg.loading_sum, barrier_log)))
+}
+
+#[inline(always)]
+fn midlife_barrier_log(barrier_bps: u16) -> Result<i64, MidlifePricerError> {
+    let ratio_s6 = midlife_barrier_ratio_s6(barrier_bps)?;
+    ln6(ratio_s6).map_err(midlife_math_error)
+}
+
+#[inline(always)]
+fn midlife_spot_shift_bundle_live_s6(
+    cfg: &C1FastConfig,
+    spots_s6: [i64; 3],
+) -> Result<(i64, i64, i64), MidlifePricerError> {
+    let log_spy = ln6(spots_s6[0]).map_err(midlife_math_error)?;
+    let log_qqq = ln6(spots_s6[1]).map_err(midlife_math_error)?;
+    let log_iwm = ln6(spots_s6[2]).map_err(midlife_math_error)?;
+    Ok((
+        log_qqq - log_spy,
+        log_iwm - log_spy,
+        m6r(cfg.loadings[0], log_spy)
+            + m6r(cfg.loadings[1], log_qqq)
+            + m6r(cfg.loadings[2], log_iwm),
+    ))
+}
+
+#[cfg(feature = "m6r-recip")]
+#[inline(always)]
+fn midlife_precomputed_obs_index(obs_day: u32) -> Option<(bool, usize)> {
+    if (1..=18).contains(&obs_day) {
+        Some((true, (obs_day - 1) as usize))
+    } else if obs_day >= 21 && obs_day <= 378 && obs_day % 21 == 0 {
+        Some((false, (obs_day / 21 - 1) as usize))
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "m6r-recip")]
+#[inline(always)]
+fn midlife_obs_from_data(data: MidlifeObsData) -> ObsGeometry {
+    let (obs_day, inv_std, cov_proj, cov_uu, cov_uv, cov_vv) = data;
+    ObsGeometry {
+        tri_pre: TrianglePre64 {
+            au: MIDLIFE_OBS_AU,
+            av: MIDLIFE_OBS_AV,
+            inv_std,
+            phi2_neg: [false, true, true],
+        },
+        cov_proj,
+        cov_uu,
+        cov_uv,
+        cov_vv,
+        obs_day,
+    }
+}
+
+#[cfg(feature = "m6r-recip")]
+#[inline(always)]
+fn midlife_precomputed_obs_geometry(obs_day: u32) -> Option<ObsGeometry> {
+    let (short_schedule, idx) = midlife_precomputed_obs_index(obs_day)?;
+    let data = if short_schedule {
+        MIDLIFE_SHORT_OBS_DATA[idx]
+    } else {
+        MIDLIFE_MONTHLY_OBS_DATA[idx]
+    };
+    Some(midlife_obs_from_data(data))
+}
+
+#[cfg(feature = "m6r-recip")]
+#[inline(always)]
+fn midlife_precomputed_ki_cholesky(obs_day: u32) -> Option<(i64, i64, i64)> {
+    let (short_schedule, idx) = midlife_precomputed_obs_index(obs_day)?;
+    Some(if short_schedule {
+        MIDLIFE_SHORT_CHOLESKY[idx]
+    } else {
+        MIDLIFE_MONTHLY_CHOLESKY[idx]
+    })
+}
+
+#[cfg(feature = "m6r-recip")]
+#[inline(always)]
+fn midlife_precomputed_triple_pre(obs_day: u32) -> Option<TripleCorrectionPre> {
+    let (short_schedule, idx) = midlife_precomputed_obs_index(obs_day)?;
+    Some(if short_schedule {
+        MIDLIFE_SHORT_TRIPLE_PRE[idx]
+    } else {
+        MIDLIFE_MONTHLY_TRIPLE_PRE[idx]
+    })
+}
+
+fn midlife_obs_geometry(
+    cfg: &C1FastConfig,
+    obs_day: u32,
+) -> Result<ObsGeometry, MidlifePricerError> {
+    if obs_day == 0 {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    #[cfg(feature = "m6r-recip")]
+    if let Some(obs) = midlife_precomputed_obs_geometry(obs_day) {
+        return Ok(obs);
+    }
+    let base = &cfg.obs[0];
+    let scale_s6 = midlife_scale_s6(obs_day as i64, base.obs_day as i64)?;
+    let sqrt_scale_s6 = sqrt6(scale_s6).map_err(midlife_math_error)?;
+    let inv_sqrt_scale_s6 = div6(S6, sqrt_scale_s6).map_err(midlife_math_error)?;
+    let inv_std = core::array::from_fn(|idx| m6r(base.tri_pre.inv_std[idx], inv_sqrt_scale_s6));
+    let cov_proj = core::array::from_fn(|idx| {
+        [
+            m6r(base.cov_proj[idx][0], sqrt_scale_s6),
+            m6r(base.cov_proj[idx][1], sqrt_scale_s6),
+        ]
+    });
+    let scale_num = obs_day as i128;
+    let scale_den = base.obs_day as i128;
+    let scale_cov =
+        |value: i64| -> i64 { ((value as i128 * scale_num + scale_den / 2) / scale_den) as i64 };
+    Ok(ObsGeometry {
+        tri_pre: TrianglePre64 {
+            au: cfg.au,
+            av: cfg.av,
+            inv_std,
+            phi2_neg: [false, true, true],
+        },
+        cov_proj,
+        cov_uu: scale_cov(base.cov_uu),
+        cov_uv: scale_cov(base.cov_uv),
+        cov_vv: scale_cov(base.cov_vv),
+        obs_day,
+    })
+}
+
+fn build_midlife_factor_transition(
+    cfg: &C1FastConfig,
+    sigma_s6: i64,
+    step_days: u32,
+) -> Result<FactorTransition, MidlifePricerError> {
+    if sigma_s6 <= 0 || step_days == 0 {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let (drift_diffs, _) =
+        spy_qqq_iwm_step_drift_inputs_s6(cfg, sigma_s6, step_days).map_err(midlife_math_error)?;
+    let year_ratio_s6 = midlife_scale_s6(step_days as i64, TRADING_DAYS_PER_YEAR)?;
+    let proposal_std = m6r(sigma_s6, sqrt6(year_ratio_s6).map_err(midlife_math_error)?);
+    let quarter_ratio_s6 = midlife_scale_s6(step_days as i64, QUARTERLY_BASE_DAYS)?;
+    let sigma_for_weights_s6 = m6r(
+        sigma_s6,
+        sqrt6(quarter_ratio_s6).map_err(midlife_math_error)?,
+    )
+    // Monthly steps should use the smaller effective sigma; clamping at 100k
+    // materially over-diffuses 21-day transitions near the 10% anchor.
+    .clamp(50_000, 500_000);
+    let factor_weights = nig_importance_weights_9(sigma_for_weights_s6);
+    let mut factor_values = [0i64; N_FACTOR_NODES];
+    let mut step_mean_u = [0i64; N_FACTOR_NODES];
+    let mut step_mean_v = [0i64; N_FACTOR_NODES];
+    for idx in 0..N_FACTOR_NODES {
+        factor_values[idx] = SQRT2_S6 * proposal_std / S6 * GH9_NODES_S6[idx] / S6;
+        step_mean_u[idx] = drift_diffs[0] + cfg.uv_slope[0] * factor_values[idx] / S6;
+        step_mean_v[idx] = drift_diffs[1] + cfg.uv_slope[1] * factor_values[idx] / S6;
+    }
+    Ok(FactorTransition {
+        factor_values,
+        factor_weights,
+        step_mean_u,
+        step_mean_v,
+    })
+}
+
+#[inline(always)]
+fn midlife_region_subtract(lhs: RawRegionMoment, rhs: RawRegionMoment) -> RawRegionMoment {
+    let probability = (lhs.probability - rhs.probability).max(0);
+    if probability <= 0 {
+        return RawRegionMoment::default();
+    }
+    RawRegionMoment {
+        probability,
+        expectation_u: lhs.expectation_u - rhs.expectation_u,
+        expectation_v: lhs.expectation_v - rhs.expectation_v,
+    }
+}
+
+#[inline(always)]
+fn midlife_filter_state_weight(state: &FilterState) -> i64 {
+    let mut total = 0i64;
+    let mut idx = 0usize;
+    while idx < state.n_active {
+        total += state.nodes[idx].w;
+        idx += 1;
+    }
+    total.clamp(0, S6)
+}
+
+#[inline(always)]
+fn midlife_filter_state_weighted_sums(state: &FilterState) -> (i64, i64, i64, i64) {
+    let mut total_w = 0i64;
+    let mut total_c = 0i64;
+    let mut total_u = 0i64;
+    let mut total_v = 0i64;
+    let mut idx = 0usize;
+    while idx < state.n_active {
+        let node = state.nodes[idx];
+        if node.w > 0 {
+            total_w += node.w;
+            total_c += m6r(node.w, node.c);
+            total_u += m6r(node.w, node.mean_u);
+            total_v += m6r(node.w, node.mean_v);
+        }
+        idx += 1;
+    }
+    (total_w.clamp(0, S6), total_c, total_u, total_v)
+}
+
+#[inline(never)]
+fn midlife_merge_into(target: &mut MidlifeState, source: &FilterState, k_retained: usize) {
+    if source.n_active == 0 || midlife_filter_state_weight(source) <= MIDLIFE_STATE_EPS_S6 {
+        return;
+    }
+    if target.n_active == 0 {
+        *target = MidlifeState::from_filter_state(source);
+    } else if k_retained == 1 {
+        let target_state = target.to_filter_state();
+        let (target_w, target_c, target_u, target_v) =
+            midlife_filter_state_weighted_sums(&target_state);
+        let (source_w, source_c, source_u, source_v) = midlife_filter_state_weighted_sums(source);
+        let total_w = target_w + source_w;
+        if total_w <= MIDLIFE_STATE_EPS_S6 {
+            *target = MidlifeState::default();
+            return;
+        }
+        let mut merged = MidlifeState::default();
+        merged.nodes[0] = FilterNode {
+            c: (target_c + source_c) * S6 / total_w,
+            w: total_w,
+            mean_u: (target_u + source_u) * S6 / total_w,
+            mean_v: (target_v + source_v) * S6 / total_w,
+        };
+        merged.n_active = 1;
+        *target = merged;
+    } else {
+        let target_state = target.to_filter_state();
+        let merged = merge_states(&target_state, source, k_retained);
+        *target = MidlifeState::from_filter_state(&merged);
+    }
+    if target.is_negligible() {
+        *target = MidlifeState::default();
+    }
+}
+
+#[inline(never)]
+fn midlife_merge_state_into(target: &mut MidlifeState, source: &MidlifeState, k_retained: usize) {
+    if source.n_active == 0 || source.is_negligible() {
+        return;
+    }
+    let source_state = source.to_filter_state();
+    midlife_merge_into(target, &source_state, k_retained);
+}
+
+#[inline(always)]
+fn midlife_transition_weighted_means(transition: &FactorTransition) -> (i64, i64, i64) {
+    let mut factor_c = 0i64;
+    let mut mean_u = 0i64;
+    let mut mean_v = 0i64;
+    for idx in 0..N_FACTOR_NODES {
+        factor_c += m6r(
+            transition.factor_weights[idx],
+            transition.factor_values[idx],
+        );
+        mean_u += m6r(transition.factor_weights[idx], transition.step_mean_u[idx]);
+        mean_v += m6r(transition.factor_weights[idx], transition.step_mean_v[idx]);
+    }
+    (factor_c, mean_u, mean_v)
+}
+
+#[inline(always)]
+fn midlife_predict_state_k1(
+    state: &FilterState,
+    ctx: &MidlifeObservationContext<'_>,
+) -> FilterState {
+    let mut total_w = 0i64;
+    let mut total_c = 0i64;
+    let mut total_u = 0i64;
+    let mut total_v = 0i64;
+    let mut idx = 0usize;
+    while idx < state.n_active {
+        let node = state.nodes[idx];
+        if node.w > 0 {
+            total_w += node.w;
+            total_c += m6r(node.w, node.c);
+            total_u += m6r(node.w, node.mean_u);
+            total_v += m6r(node.w, node.mean_v);
+        }
+        idx += 1;
+    }
+    if total_w <= 0 {
+        return FilterState::default();
+    }
+
+    let mut predicted = FilterState::default();
+    predicted.nodes[0] = FilterNode {
+        c: total_c * S6 / total_w + ctx.avg_factor_c,
+        w: total_w,
+        mean_u: total_u * S6 / total_w + ctx.avg_step_mean_u,
+        mean_v: total_v * S6 / total_w + ctx.avg_step_mean_v,
+    };
+    predicted.n_active = 1;
+    predicted
+}
+
+#[allow(clippy::too_many_arguments)]
+fn midlife_safe_observation_out(
+    predicted: &FilterState,
+    cfg: &C1FastConfig,
+    ctx: &MidlifeObservationContext<'_>,
+    out_coupon_continue: &mut FilterState,
+    out_no_coupon_continue: &mut FilterState,
+    out_new_knocked: &mut FilterState,
+) -> (i64, i64, i64) {
+    *out_coupon_continue = FilterState::default();
+    *out_no_coupon_continue = FilterState::default();
+    *out_new_knocked = FilterState::default();
+    let mut coupon_hit = 0i64;
+    let mut autocall_hit = 0i64;
+    let mut first_knock_in = 0i64;
+
+    for (idx, node) in predicted.nodes.iter().copied().enumerate() {
+        if node.w <= 0 {
+            continue;
+        }
+        let coupon_region = midlife_safe_triangle_region(node, ctx, ctx.coupon_rhs_base);
+        let autocall_region = if let Some(rhs_base) = ctx.autocall_rhs_base {
+            if rhs_base == ctx.coupon_rhs_base {
+                coupon_region
+            } else {
+                midlife_safe_triangle_region(node, ctx, rhs_base)
+            }
+        } else {
+            RawRegionMoment::default()
+        };
+        let knocked_first = midlife_safe_knock_in_region(cfg, node, ctx);
+
+        let coupon_continue = midlife_region_subtract(coupon_region, autocall_region);
+        let no_coupon_prob = (S6 - coupon_region.probability - knocked_first.probability).max(0);
+        let no_coupon_eu = node.mean_u - coupon_region.expectation_u - knocked_first.expectation_u;
+        let no_coupon_ev = node.mean_v - coupon_region.expectation_v - knocked_first.expectation_v;
+
+        coupon_hit += m6r(node.w, coupon_region.probability);
+        autocall_hit += m6r(node.w, autocall_region.probability);
+        first_knock_in += m6r(node.w, knocked_first.probability);
+
+        if let Some((mean_u, mean_v)) = conditional_mean(
+            coupon_continue.probability,
+            coupon_continue.expectation_u,
+            coupon_continue.expectation_v,
+        ) {
+            let next_w = m6r(node.w, coupon_continue.probability);
+            if next_w > 0 {
+                out_coupon_continue.nodes[idx] = FilterNode {
+                    c: node.c,
+                    w: next_w,
+                    mean_u,
+                    mean_v,
+                };
+            }
+        }
+
+        if let Some((mean_u, mean_v)) = conditional_mean(no_coupon_prob, no_coupon_eu, no_coupon_ev)
+        {
+            let next_w = m6r(node.w, no_coupon_prob);
+            if next_w > 0 {
+                out_no_coupon_continue.nodes[idx] = FilterNode {
+                    c: node.c,
+                    w: next_w,
+                    mean_u,
+                    mean_v,
+                };
+            }
+        }
+
+        if let Some((mean_u, mean_v)) = conditional_mean(
+            knocked_first.probability,
+            knocked_first.expectation_u,
+            knocked_first.expectation_v,
+        ) {
+            let next_w = m6r(node.w, knocked_first.probability);
+            if next_w > 0 {
+                out_new_knocked.nodes[idx] = FilterNode {
+                    c: node.c,
+                    w: next_w,
+                    mean_u,
+                    mean_v,
+                };
+            }
+        }
+    }
+
+    out_coupon_continue.n_active = out_coupon_continue
+        .nodes
+        .iter()
+        .filter(|node| node.w > 0)
+        .count();
+    out_no_coupon_continue.n_active = out_no_coupon_continue
+        .nodes
+        .iter()
+        .filter(|node| node.w > 0)
+        .count();
+    out_new_knocked.n_active = out_new_knocked
+        .nodes
+        .iter()
+        .filter(|node| node.w > 0)
+        .count();
+
+    (coupon_hit, autocall_hit, first_knock_in)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn midlife_knocked_observation_out(
+    predicted: &FilterState,
+    ctx: &MidlifeObservationContext<'_>,
+    out_coupon_continue: &mut FilterState,
+    out_no_coupon_continue: &mut FilterState,
+) -> (i64, i64) {
+    *out_coupon_continue = FilterState::default();
+    *out_no_coupon_continue = FilterState::default();
+    let mut coupon_hit = 0i64;
+    let mut autocall_hit = 0i64;
+
+    for (idx, node) in predicted.nodes.iter().copied().enumerate() {
+        if node.w <= 0 {
+            continue;
+        }
+        let coupon_region = midlife_safe_triangle_region(node, ctx, ctx.coupon_rhs_base);
+        let autocall_region = if let Some(rhs_base) = ctx.autocall_rhs_base {
+            if rhs_base == ctx.coupon_rhs_base {
+                coupon_region
+            } else {
+                midlife_safe_triangle_region(node, ctx, rhs_base)
+            }
+        } else {
+            RawRegionMoment::default()
+        };
+        let coupon_continue = midlife_region_subtract(coupon_region, autocall_region);
+        let no_coupon_prob = (S6 - coupon_region.probability).max(0);
+        let no_coupon_eu = node.mean_u - coupon_region.expectation_u;
+        let no_coupon_ev = node.mean_v - coupon_region.expectation_v;
+
+        coupon_hit += m6r(node.w, coupon_region.probability);
+        autocall_hit += m6r(node.w, autocall_region.probability);
+
+        if let Some((mean_u, mean_v)) = conditional_mean(
+            coupon_continue.probability,
+            coupon_continue.expectation_u,
+            coupon_continue.expectation_v,
+        ) {
+            let next_w = m6r(node.w, coupon_continue.probability);
+            if next_w > 0 {
+                out_coupon_continue.nodes[idx] = FilterNode {
+                    c: node.c,
+                    w: next_w,
+                    mean_u,
+                    mean_v,
+                };
+            }
+        }
+
+        if let Some((mean_u, mean_v)) = conditional_mean(no_coupon_prob, no_coupon_eu, no_coupon_ev)
+        {
+            let next_w = m6r(node.w, no_coupon_prob);
+            if next_w > 0 {
+                out_no_coupon_continue.nodes[idx] = FilterNode {
+                    c: node.c,
+                    w: next_w,
+                    mean_u,
+                    mean_v,
+                };
+            }
+        }
+    }
+
+    out_coupon_continue.n_active = out_coupon_continue
+        .nodes
+        .iter()
+        .filter(|node| node.w > 0)
+        .count();
+    out_no_coupon_continue.n_active = out_no_coupon_continue
+        .nodes
+        .iter()
+        .filter(|node| node.w > 0)
+        .count();
+
+    (coupon_hit, autocall_hit)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn midlife_maturity_safe(
+    state: &FilterState,
+    cfg: &C1FastConfig,
+    ctx: &MidlifeObservationContext<'_>,
+) -> (i64, i64, i64) {
+    let (l11, l21, l22) = match ctx.ki_cholesky {
+        Some(values) => values,
+        None => return (0, 0, 0),
+    };
+    let mut coupon_hit = 0i64;
+    let mut redemption = 0i64;
+    let mut par_recovery = 0i64;
+
+    for node in state.nodes.iter().copied().filter(|node| node.w > 0) {
+        let shift = node.c + ctx.drift_shift_total;
+        let coupon_prob = triangle_probability_with_triple_i64(
+            node.mean_u,
+            node.mean_v,
+            &[ctx.coupon_rhs_base + shift; 3],
+            &ctx.obs.tri_pre,
+            ctx.phi2,
+            ctx.triple_pre,
+        );
+        let ki_coords = ki_coords_from_cumulative(cfg, node.c, ctx.drift_shift_total);
+        let ki_moment = ki_moment_i64_gh3(
+            node.mean_u,
+            node.mean_v,
+            l11,
+            l21,
+            l22,
+            ctx.ki_barrier_log,
+            ki_coords,
+        );
+        let par_probability = (S6 - ki_moment.ki_probability).max(0);
+        coupon_hit += m6r(node.w, coupon_prob);
+        redemption += m6r(node.w, par_probability + ki_moment.worst_indicator);
+        par_recovery += m6r(node.w, par_probability);
+    }
+
+    (coupon_hit, redemption, par_recovery)
+}
+
+fn midlife_maturity_knocked(
+    state: &FilterState,
+    cfg: &C1FastConfig,
+    ctx: &MidlifeObservationContext<'_>,
+) -> (i64, i64, i64) {
+    let (l11, l21, l22) = match ctx.ki_cholesky {
+        Some(values) => values,
+        None => return (0, 0, 0),
+    };
+    let mut coupon_hit = 0i64;
+    let mut redemption = 0i64;
+    let mut par_recovery = 0i64;
+
+    for node in state.nodes.iter().copied().filter(|node| node.w > 0) {
+        let shift = node.c + ctx.drift_shift_total;
+        let coupon_prob = triangle_probability_with_triple_i64(
+            node.mean_u,
+            node.mean_v,
+            &[ctx.coupon_rhs_base + shift; 3],
+            &ctx.obs.tri_pre,
+            ctx.phi2,
+            ctx.triple_pre,
+        );
+        let below_initial = ki_moment_i64_gh3(
+            node.mean_u,
+            node.mean_v,
+            l11,
+            l21,
+            l22,
+            0,
+            ki_coords_from_cumulative(cfg, node.c, ctx.drift_shift_total),
+        );
+        let par_probability = (S6 - below_initial.ki_probability).max(0);
+        let redemption_term = (par_probability + below_initial.worst_indicator).min(S6);
+        coupon_hit += m6r(node.w, coupon_prob);
+        redemption += m6r(node.w, redemption_term);
+        par_recovery += m6r(node.w, par_probability);
+    }
+
+    (coupon_hit, redemption, par_recovery)
+}
+
+fn midlife_next_memory_bucket(memory: usize) -> Result<usize, MidlifePricerError> {
+    let next = memory
+        .checked_add(1)
+        .ok_or(MidlifePricerError::InvalidInput)?;
+    if next >= MIDLIFE_MEMORY_BUCKETS {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    Ok(next)
+}
+
+#[inline(always)]
+fn midlife_memory_loop_limit(seed_bucket: usize, obs_rel: usize) -> usize {
+    seed_bucket
+        .saturating_add(obs_rel)
+        .saturating_add(1)
+        .min(MIDLIFE_MEMORY_BUCKETS - 1)
+}
+
+#[inline(always)]
+fn midlife_worst_ratio_s6(schedule_ctx: &MidlifeScheduleContext) -> i64 {
+    schedule_ctx.current_ratios_s6[0]
+        .min(schedule_ctx.current_ratios_s6[1])
+        .min(schedule_ctx.current_ratios_s6[2])
+}
+
+#[inline(always)]
+fn midlife_is_boundary_region(schedule_ctx: &MidlifeScheduleContext) -> bool {
+    midlife_worst_ratio_s6(schedule_ctx) == schedule_ctx.coupon_ratio_s6
+        && schedule_ctx
+            .current_ratios_s6
+            .iter()
+            .any(|ratio| *ratio > schedule_ctx.coupon_ratio_s6)
+}
+
+#[derive(Clone, Copy)]
+struct MidlifeMemoryLoop {
+    limit: usize,
+    saturate_tail: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MidlifeObservationProgress {
+    coupon_index: usize,
+    memory_cursor: usize,
+    memory_limit: usize,
+    safe_k: usize,
+    is_maturity: bool,
+    is_autocall_day: bool,
+    saturate_tail: bool,
+}
+
+#[inline(always)]
+fn midlife_effective_memory_loop(
+    base_limit: usize,
+    schedule_ctx: &MidlifeScheduleContext,
+    obs_rel: usize,
+    ki_latched: bool,
+) -> MidlifeMemoryLoop {
+    #[cfg(any(target_os = "solana", feature = "midlife-sbf-approx"))]
+    {
+        let worst_ratio_s6_now = midlife_worst_ratio_s6(schedule_ctx);
+        if worst_ratio_s6_now > schedule_ctx.coupon_ratio_s6 {
+            let _ = obs_rel;
+            c1_filter_cu_diag(b"midlife_healthy_memory_cap");
+            let limit = base_limit.min(MIDLIFE_HEALTHY_MEMORY_CAP);
+            return MidlifeMemoryLoop {
+                limit,
+                saturate_tail: limit < base_limit,
+            };
+        }
+        if midlife_is_boundary_region(schedule_ctx) {
+            let _ = obs_rel;
+            c1_filter_cu_diag(b"midlife_boundary_memory_cap");
+            let limit = base_limit.min(MIDLIFE_BOUNDARY_MEMORY_CAP);
+            return MidlifeMemoryLoop {
+                limit,
+                saturate_tail: limit < base_limit,
+            };
+        }
+    }
+    #[cfg(not(any(target_os = "solana", feature = "midlife-sbf-approx")))]
+    {
+        let _ = schedule_ctx;
+        let _ = obs_rel;
+        let _ = ki_latched;
+    }
+    MidlifeMemoryLoop {
+        limit: base_limit,
+        saturate_tail: false,
+    }
+}
+
+#[inline(always)]
+fn midlife_runtime_state_eps_s6(
+    obs_rel: usize,
+    inputs: &MidlifeInputs,
+    schedule_ctx: &MidlifeScheduleContext,
+) -> i64 {
+    #[cfg(any(target_os = "solana", feature = "midlife-sbf-approx"))]
+    {
+        let worst_ratio_s6_now = midlife_worst_ratio_s6(schedule_ctx);
+        if obs_rel == 7
+            && inputs.sigma_common_s6 <= 120_000
+            && worst_ratio_s6_now >= 1_080_000
+            && worst_ratio_s6_now <= 1_120_000
+        {
+            return 100;
+        }
+        MIDLIFE_STATE_EPS_S6
+    }
+    #[cfg(not(any(target_os = "solana", feature = "midlife-sbf-approx")))]
+    {
+        let _ = obs_rel;
+        let _ = inputs;
+        let _ = schedule_ctx;
+        MIDLIFE_STATE_EPS_S6
+    }
+}
+
+#[inline(always)]
+fn midlife_prune_state(state: &mut MidlifeState, eps_s6: i64) {
+    if state.total_weight() <= eps_s6 {
+        *state = MidlifeState::default();
+    }
+}
+
+fn midlife_prune_runtime_states(runtime: &mut MidlifeRuntime, eps_s6: i64) {
+    for state in runtime.safe_states.iter_mut() {
+        midlife_prune_state(state, eps_s6);
+    }
+    for state in runtime.knocked_states.iter_mut() {
+        midlife_prune_state(state, eps_s6);
+    }
+}
+
+#[derive(Default)]
+struct MidlifeTotals {
+    redemption_pv_s6: i64,
+    remaining_coupon_pv_s6: i64,
+    par_recovery_probability_s6: i64,
+}
+
+#[derive(Clone, Copy)]
+struct MidlifeObservationContext<'a> {
+    obs: &'a ObsGeometry,
+    transition: &'a FactorTransition,
+    triple_pre: Option<&'a TripleCorrectionPre>,
+    phi2: [&'static Phi2Table; 3],
+    dz_du: [i64; 3],
+    dz_dv: [i64; 3],
+    ki_cholesky: Option<(i64, i64, i64)>,
+    coupon_rhs_base: i64,
+    autocall_rhs_base: Option<i64>,
+    ki_barrier_log: i64,
+    ki_margin_sq: i64,
+    drift_shift_total: i64,
+    avg_factor_c: i64,
+    avg_step_mean_u: i64,
+    avg_step_mean_v: i64,
+}
+
+struct MidlifeScheduleContext {
+    current_ratios_s6: [i64; 3],
+    mu_c_shift: i64,
+    coupon_ratio_s6: i64,
+    autocall_ratio_s6: i64,
+    ki_ratio_s6: i64,
+    coupon_rhs_base: i64,
+    autocall_rhs_base: i64,
+    ki_barrier_log: i64,
+    coupon_rate_s6: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MidlifeState {
+    nodes: [FilterNode; MIDLIFE_RUNTIME_K],
+    n_active: u8,
+}
+
+impl Default for MidlifeState {
+    fn default() -> Self {
+        Self {
+            nodes: [FilterNode::default(); MIDLIFE_RUNTIME_K],
+            n_active: 0,
+        }
+    }
+}
+
+impl MidlifeState {
+    fn singleton_origin() -> Self {
+        let mut state = Self::default();
+        state.nodes[0] = FilterNode {
+            c: 0,
+            w: S6,
+            mean_u: 0,
+            mean_v: 0,
+        };
+        state.n_active = 1;
+        state
+    }
+
+    fn total_weight(&self) -> i64 {
+        let mut total = 0i64;
+        let mut idx = 0usize;
+        while idx < self.n_active as usize {
+            total += self.nodes[idx].w;
+            idx += 1;
+        }
+        total.clamp(0, S6)
+    }
+
+    fn is_negligible(&self) -> bool {
+        self.total_weight() <= MIDLIFE_STATE_EPS_S6
+    }
+
+    fn to_filter_state(self) -> FilterState {
+        let mut state = FilterState::default();
+        let mut idx = 0usize;
+        while idx < self.n_active as usize {
+            state.nodes[idx] = self.nodes[idx];
+            idx += 1;
+        }
+        state.n_active = self.n_active as usize;
+        state
+    }
+
+    fn from_filter_state(state: &FilterState) -> Self {
+        let mut out = Self::default();
+        let active = state.n_active.min(MIDLIFE_RUNTIME_K);
+        let mut idx = 0usize;
+        while idx < active {
+            out.nodes[idx] = state.nodes[idx];
+            idx += 1;
+        }
+        out.n_active = active as u8;
+        if out.is_negligible() {
+            return Self::default();
+        }
+        out
+    }
+
+    fn to_checkpoint_state(self) -> MidlifeCheckpointState {
+        let mut out = MidlifeCheckpointState::default();
+        let active = (self.n_active as usize).min(MIDLIFE_CHECKPOINT_K);
+        let mut idx = 0usize;
+        while idx < active {
+            let node = self.nodes[idx];
+            out.nodes[idx] = MidlifeCheckpointNode {
+                c: node.c,
+                w: node.w,
+                mean_u: node.mean_u,
+                mean_v: node.mean_v,
+            };
+            idx += 1;
+        }
+        out.n_active = active as u8;
+        out
+    }
+
+    fn from_checkpoint_state(state: &MidlifeCheckpointState) -> Result<Self, MidlifePricerError> {
+        let active = state.n_active as usize;
+        if active > MIDLIFE_RUNTIME_K || active > MIDLIFE_CHECKPOINT_K {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        let mut out = Self::default();
+        let mut idx = 0usize;
+        while idx < active {
+            let node = state.nodes[idx];
+            out.nodes[idx] = FilterNode {
+                c: node.c,
+                w: node.w,
+                mean_u: node.mean_u,
+                mean_v: node.mean_v,
+            };
+            idx += 1;
+        }
+        out.n_active = active as u8;
+        if out.is_negligible() {
+            return Ok(Self::default());
+        }
+        Ok(out)
+    }
+
+    fn write_checkpoint_state_bytes(&self, out: &mut [u8]) -> Result<(), MidlifePricerError> {
+        if out.len() != MIDLIFE_CHECKPOINT_STATE_BYTES {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        let active = (self.n_active as usize)
+            .min(MIDLIFE_RUNTIME_K)
+            .min(MIDLIFE_CHECKPOINT_K);
+        let mut idx = 0usize;
+        while idx < active {
+            let node = self.nodes[idx];
+            let offset = idx * MIDLIFE_CHECKPOINT_NODE_BYTES;
+            midlife_checkpoint_write_i64(out, offset, node.c);
+            midlife_checkpoint_write_i64(out, offset + 8, node.w);
+            midlife_checkpoint_write_i64(out, offset + 16, node.mean_u);
+            midlife_checkpoint_write_i64(out, offset + 24, node.mean_v);
+            idx += 1;
+        }
+        midlife_checkpoint_write_u8(
+            out,
+            MIDLIFE_CHECKPOINT_K * MIDLIFE_CHECKPOINT_NODE_BYTES,
+            active as u8,
+        );
+        Ok(())
+    }
+
+    fn from_checkpoint_state_bytes(bytes: &[u8]) -> Result<Self, MidlifePricerError> {
+        if bytes.len() != MIDLIFE_CHECKPOINT_STATE_BYTES {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        let active = midlife_checkpoint_read_u8(
+            bytes,
+            MIDLIFE_CHECKPOINT_K * MIDLIFE_CHECKPOINT_NODE_BYTES,
+        )? as usize;
+        if active > MIDLIFE_RUNTIME_K || active > MIDLIFE_CHECKPOINT_K {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        let mut out = Self::default();
+        let mut idx = 0usize;
+        while idx < active {
+            let offset = idx * MIDLIFE_CHECKPOINT_NODE_BYTES;
+            out.nodes[idx] = FilterNode {
+                c: midlife_checkpoint_read_i64(bytes, offset)?,
+                w: midlife_checkpoint_read_i64(bytes, offset + 8)?,
+                mean_u: midlife_checkpoint_read_i64(bytes, offset + 16)?,
+                mean_v: midlife_checkpoint_read_i64(bytes, offset + 24)?,
+            };
+            idx += 1;
+        }
+        out.n_active = active as u8;
+        if out.is_negligible() {
+            return Ok(Self::default());
+        }
+        Ok(out)
+    }
+}
+
+struct MidlifeLiveObservationWorkspace {
+    obs: ObsGeometry,
+    transition: FactorTransition,
+    triple_pre: Option<TripleCorrectionPre>,
+    ki_cholesky: Option<(i64, i64, i64)>,
+    dz_du: [i64; 3],
+    dz_dv: [i64; 3],
+    drift_shift_total: i64,
+    avg_factor_c: i64,
+    avg_step_mean_u: i64,
+    avg_step_mean_v: i64,
+}
+
+fn midlife_read_checkpoint_progress(
+    checkpoint: &[u8],
+    first_coupon_index: usize,
+    next_coupon_index: usize,
+) -> Result<Option<MidlifeObservationProgress>, MidlifePricerError> {
+    let mode = midlife_checkpoint_read_u8(checkpoint, MIDLIFE_PROGRESS_MODE_OFFSET)?;
+    if mode == MIDLIFE_PROGRESS_MODE_NONE {
+        return Ok(None);
+    }
+    if mode != MIDLIFE_PROGRESS_MODE_LIVE_OBSERVATION {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+
+    let coupon_index =
+        midlife_checkpoint_read_u8(checkpoint, MIDLIFE_PROGRESS_COUPON_OFFSET)? as usize;
+    let memory_cursor =
+        midlife_checkpoint_read_u8(checkpoint, MIDLIFE_PROGRESS_MEMORY_CURSOR_OFFSET)? as usize;
+    let memory_limit =
+        midlife_checkpoint_read_u8(checkpoint, MIDLIFE_PROGRESS_MEMORY_LIMIT_OFFSET)? as usize;
+    let safe_k = midlife_checkpoint_read_u8(checkpoint, MIDLIFE_PROGRESS_SAFE_K_OFFSET)? as usize;
+    let flags = midlife_checkpoint_read_u8(checkpoint, MIDLIFE_PROGRESS_FLAGS_OFFSET)?;
+    if coupon_index != next_coupon_index
+        || coupon_index < first_coupon_index
+        || memory_limit >= MIDLIFE_MEMORY_BUCKETS
+        || memory_cursor == 0
+        || memory_cursor > memory_limit
+        || safe_k == 0
+        || safe_k > MIDLIFE_CHECKPOINT_K
+        || flags
+            & !(MIDLIFE_PROGRESS_FLAG_MATURITY
+                | MIDLIFE_PROGRESS_FLAG_AUTOCALL
+                | MIDLIFE_PROGRESS_FLAG_SATURATE_TAIL)
+            != 0
+    {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+
+    Ok(Some(MidlifeObservationProgress {
+        coupon_index,
+        memory_cursor,
+        memory_limit,
+        safe_k,
+        is_maturity: flags & MIDLIFE_PROGRESS_FLAG_MATURITY != 0,
+        is_autocall_day: flags & MIDLIFE_PROGRESS_FLAG_AUTOCALL != 0,
+        saturate_tail: flags & MIDLIFE_PROGRESS_FLAG_SATURATE_TAIL != 0,
+    }))
+}
+
+fn midlife_write_checkpoint_progress(
+    checkpoint: &mut [u8],
+    progress: Option<MidlifeObservationProgress>,
+) -> Result<(), MidlifePricerError> {
+    match progress {
+        Some(progress) => {
+            if progress.coupon_index > u8::MAX as usize
+                || progress.memory_cursor > u8::MAX as usize
+                || progress.memory_limit > u8::MAX as usize
+                || progress.safe_k > u8::MAX as usize
+            {
+                return Err(MidlifePricerError::InvalidInput);
+            }
+            let mut flags = 0u8;
+            if progress.is_maturity {
+                flags |= MIDLIFE_PROGRESS_FLAG_MATURITY;
+            }
+            if progress.is_autocall_day {
+                flags |= MIDLIFE_PROGRESS_FLAG_AUTOCALL;
+            }
+            if progress.saturate_tail {
+                flags |= MIDLIFE_PROGRESS_FLAG_SATURATE_TAIL;
+            }
+            midlife_checkpoint_write_u8(
+                checkpoint,
+                MIDLIFE_PROGRESS_MODE_OFFSET,
+                MIDLIFE_PROGRESS_MODE_LIVE_OBSERVATION,
+            );
+            midlife_checkpoint_write_u8(
+                checkpoint,
+                MIDLIFE_PROGRESS_COUPON_OFFSET,
+                progress.coupon_index as u8,
+            );
+            midlife_checkpoint_write_u8(
+                checkpoint,
+                MIDLIFE_PROGRESS_MEMORY_CURSOR_OFFSET,
+                progress.memory_cursor as u8,
+            );
+            midlife_checkpoint_write_u8(
+                checkpoint,
+                MIDLIFE_PROGRESS_MEMORY_LIMIT_OFFSET,
+                progress.memory_limit as u8,
+            );
+            midlife_checkpoint_write_u8(
+                checkpoint,
+                MIDLIFE_PROGRESS_SAFE_K_OFFSET,
+                progress.safe_k as u8,
+            );
+            midlife_checkpoint_write_u8(checkpoint, MIDLIFE_PROGRESS_FLAGS_OFFSET, flags);
+        }
+        None => {
+            let mut offset = MIDLIFE_PROGRESS_MODE_OFFSET;
+            while offset < MIDLIFE_PROGRESS_MODE_OFFSET + MIDLIFE_CHECKPOINT_PROGRESS_BYTES {
+                midlife_checkpoint_write_u8(checkpoint, offset, 0);
+                offset += 1;
+            }
+        }
+    }
+    Ok(())
+}
+
+struct MidlifeRuntime {
+    safe_states: Box<[MidlifeState; MIDLIFE_MEMORY_BUCKETS]>,
+    knocked_states: Box<[MidlifeState; MIDLIFE_MEMORY_BUCKETS]>,
+    frontier: Box<MidlifeFrontierScratch>,
+    totals: MidlifeTotals,
+    previous_day: i64,
+    autocall_cursor: usize,
+    cached_transition: Option<(u32, FactorTransition, (i64, i64, i64))>,
+    first_coupon_index: usize,
+    seed_bucket: usize,
+    in_progress: Option<MidlifeObservationProgress>,
+}
+
+impl MidlifeRuntime {
+    fn new(inputs: &MidlifeInputs, mu_u_shift: i64, mu_v_shift: i64) -> Self {
+        let mut safe_states = Box::new([MidlifeState::default(); MIDLIFE_MEMORY_BUCKETS]);
+        let mut knocked_states = Box::new([MidlifeState::default(); MIDLIFE_MEMORY_BUCKETS]);
+        let seed_bucket = inputs.missed_coupon_observations as usize;
+        let seed_state = if inputs.ki_latched {
+            &mut knocked_states[seed_bucket]
+        } else {
+            &mut safe_states[seed_bucket]
+        };
+        *seed_state = MidlifeState::singleton_origin();
+        seed_state.nodes[0].mean_u = mu_u_shift;
+        seed_state.nodes[0].mean_v = mu_v_shift;
+
+        Self {
+            safe_states,
+            knocked_states,
+            frontier: Box::new(MidlifeFrontierScratch::default()),
+            totals: MidlifeTotals::default(),
+            previous_day: i64::from(inputs.now_trading_day),
+            autocall_cursor: inputs.next_autocall_index as usize,
+            cached_transition: None,
+            first_coupon_index: inputs.next_coupon_index as usize,
+            seed_bucket,
+            in_progress: None,
+        }
+    }
+
+    fn from_checkpoint(
+        inputs: &MidlifeInputs,
+        checkpoint: &MidlifeNavCheckpoint,
+    ) -> Result<Self, MidlifePricerError> {
+        if checkpoint.version != MIDLIFE_CHECKPOINT_VERSION
+            || checkpoint.first_coupon_index as usize != inputs.next_coupon_index as usize
+            || checkpoint.seed_bucket as usize != inputs.missed_coupon_observations as usize
+            || checkpoint.next_coupon_index as usize > inputs.monthly_coupon_schedule.len()
+            || checkpoint.autocall_cursor as usize > inputs.quarterly_autocall_schedule.len()
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+
+        let mut safe_states = Box::new([MidlifeState::default(); MIDLIFE_MEMORY_BUCKETS]);
+        let mut knocked_states = Box::new([MidlifeState::default(); MIDLIFE_MEMORY_BUCKETS]);
+        let mut idx = 0usize;
+        while idx < MIDLIFE_MEMORY_BUCKETS {
+            safe_states[idx] = MidlifeState::from_checkpoint_state(&checkpoint.safe_states[idx])?;
+            knocked_states[idx] =
+                MidlifeState::from_checkpoint_state(&checkpoint.knocked_states[idx])?;
+            idx += 1;
+        }
+
+        Ok(Self {
+            safe_states,
+            knocked_states,
+            frontier: Box::new(MidlifeFrontierScratch::default()),
+            totals: MidlifeTotals {
+                redemption_pv_s6: checkpoint.redemption_pv_s6,
+                remaining_coupon_pv_s6: checkpoint.remaining_coupon_pv_s6,
+                par_recovery_probability_s6: checkpoint.par_recovery_probability_s6,
+            },
+            previous_day: checkpoint.previous_day,
+            autocall_cursor: checkpoint.autocall_cursor as usize,
+            cached_transition: None,
+            first_coupon_index: checkpoint.first_coupon_index as usize,
+            seed_bucket: checkpoint.seed_bucket as usize,
+            in_progress: None,
+        })
+    }
+
+    fn to_checkpoint(
+        &self,
+        next_coupon_index: usize,
+    ) -> Result<MidlifeNavCheckpoint, MidlifePricerError> {
+        if next_coupon_index > u8::MAX as usize
+            || self.autocall_cursor > u8::MAX as usize
+            || self.first_coupon_index > u8::MAX as usize
+            || self.seed_bucket > u8::MAX as usize
+            || self.in_progress.is_some()
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+
+        let mut safe_states =
+            [MidlifeCheckpointState::default(); MIDLIFE_CHECKPOINT_MEMORY_BUCKETS];
+        let mut knocked_states =
+            [MidlifeCheckpointState::default(); MIDLIFE_CHECKPOINT_MEMORY_BUCKETS];
+        let mut idx = 0usize;
+        while idx < MIDLIFE_MEMORY_BUCKETS {
+            safe_states[idx] = self.safe_states[idx].to_checkpoint_state();
+            knocked_states[idx] = self.knocked_states[idx].to_checkpoint_state();
+            idx += 1;
+        }
+
+        Ok(MidlifeNavCheckpoint {
+            version: MIDLIFE_CHECKPOINT_VERSION,
+            next_coupon_index: next_coupon_index as u8,
+            previous_day: self.previous_day,
+            autocall_cursor: self.autocall_cursor as u8,
+            first_coupon_index: self.first_coupon_index as u8,
+            seed_bucket: self.seed_bucket as u8,
+            redemption_pv_s6: self.totals.redemption_pv_s6,
+            remaining_coupon_pv_s6: self.totals.remaining_coupon_pv_s6,
+            par_recovery_probability_s6: self.totals.par_recovery_probability_s6,
+            safe_states,
+            knocked_states,
+        })
+    }
+
+    fn from_checkpoint_bytes(
+        inputs: &MidlifeInputs,
+        checkpoint: &[u8],
+    ) -> Result<Self, MidlifePricerError> {
+        midlife_checkpoint_require_len(checkpoint)?;
+        let version = midlife_checkpoint_read_u8(checkpoint, 0)?;
+        let next_coupon_index = midlife_checkpoint_read_u8(checkpoint, 1)? as usize;
+        let previous_day = midlife_checkpoint_read_i64(checkpoint, 2)?;
+        let autocall_cursor = midlife_checkpoint_read_u8(checkpoint, 10)? as usize;
+        let first_coupon_index = midlife_checkpoint_read_u8(checkpoint, 11)? as usize;
+        let seed_bucket = midlife_checkpoint_read_u8(checkpoint, 12)? as usize;
+        let redemption_pv_s6 = midlife_checkpoint_read_i64(checkpoint, 13)?;
+        let remaining_coupon_pv_s6 = midlife_checkpoint_read_i64(checkpoint, 21)?;
+        let par_recovery_probability_s6 = midlife_checkpoint_read_i64(checkpoint, 29)?;
+
+        if version != MIDLIFE_CHECKPOINT_VERSION
+            || first_coupon_index != inputs.next_coupon_index as usize
+            || seed_bucket != inputs.missed_coupon_observations as usize
+            || next_coupon_index > inputs.monthly_coupon_schedule.len()
+            || autocall_cursor > inputs.quarterly_autocall_schedule.len()
+            || seed_bucket >= MIDLIFE_MEMORY_BUCKETS
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+
+        let in_progress =
+            midlife_read_checkpoint_progress(checkpoint, first_coupon_index, next_coupon_index)?;
+        let mut safe_states = Box::new([MidlifeState::default(); MIDLIFE_MEMORY_BUCKETS]);
+        let mut knocked_states = Box::new([MidlifeState::default(); MIDLIFE_MEMORY_BUCKETS]);
+        let safe_offset = midlife_checkpoint_safe_states_offset();
+        let knocked_offset = midlife_checkpoint_knocked_states_offset();
+        let reachable_limit = in_progress.map_or_else(
+            || {
+                midlife_checkpoint_reachable_memory_limit(
+                    seed_bucket,
+                    first_coupon_index,
+                    next_coupon_index,
+                )
+            },
+            |progress| progress.memory_limit,
+        );
+        let mut idx = 0usize;
+        while idx <= reachable_limit {
+            let state_offset = idx * MIDLIFE_CHECKPOINT_STATE_BYTES;
+            safe_states[idx] = MidlifeState::from_checkpoint_state_bytes(
+                &checkpoint[safe_offset + state_offset
+                    ..safe_offset + state_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            knocked_states[idx] = MidlifeState::from_checkpoint_state_bytes(
+                &checkpoint[knocked_offset + state_offset
+                    ..knocked_offset + state_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            idx += 1;
+        }
+
+        let mut frontier = Box::new(MidlifeFrontierScratch::default());
+        if in_progress.is_some() {
+            let next_safe_zero_offset = midlife_checkpoint_scratch_state_offset(0)?;
+            let next_knocked_zero_offset = midlife_checkpoint_scratch_state_offset(1)?;
+            let pending_safe_offset = midlife_checkpoint_scratch_state_offset(2)?;
+            let pending_knocked_offset = midlife_checkpoint_scratch_state_offset(3)?;
+            frontier.next_safe_zero = MidlifeState::from_checkpoint_state_bytes(
+                &checkpoint
+                    [next_safe_zero_offset..next_safe_zero_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            frontier.next_knocked_zero = MidlifeState::from_checkpoint_state_bytes(
+                &checkpoint[next_knocked_zero_offset
+                    ..next_knocked_zero_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            frontier.pending_safe = MidlifeState::from_checkpoint_state_bytes(
+                &checkpoint
+                    [pending_safe_offset..pending_safe_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            frontier.pending_knocked = MidlifeState::from_checkpoint_state_bytes(
+                &checkpoint[pending_knocked_offset
+                    ..pending_knocked_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+        }
+
+        Ok(Self {
+            safe_states,
+            knocked_states,
+            frontier,
+            totals: MidlifeTotals {
+                redemption_pv_s6,
+                remaining_coupon_pv_s6,
+                par_recovery_probability_s6,
+            },
+            previous_day,
+            autocall_cursor,
+            cached_transition: None,
+            first_coupon_index,
+            seed_bucket,
+            in_progress,
+        })
+    }
+
+    fn write_checkpoint_bytes(
+        &self,
+        next_coupon_index: usize,
+        out: &mut [u8],
+    ) -> Result<(), MidlifePricerError> {
+        midlife_checkpoint_require_len(out)?;
+        if next_coupon_index > u8::MAX as usize
+            || self.autocall_cursor > u8::MAX as usize
+            || self.first_coupon_index > u8::MAX as usize
+            || self.seed_bucket > u8::MAX as usize
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        if let Some(progress) = self.in_progress {
+            if progress.coupon_index != next_coupon_index {
+                return Err(MidlifePricerError::InvalidInput);
+            }
+        }
+
+        midlife_checkpoint_write_u8(out, 0, MIDLIFE_CHECKPOINT_VERSION);
+        midlife_checkpoint_write_u8(out, 1, next_coupon_index as u8);
+        midlife_checkpoint_write_i64(out, 2, self.previous_day);
+        midlife_checkpoint_write_u8(out, 10, self.autocall_cursor as u8);
+        midlife_checkpoint_write_u8(out, 11, self.first_coupon_index as u8);
+        midlife_checkpoint_write_u8(out, 12, self.seed_bucket as u8);
+        midlife_checkpoint_write_i64(out, 13, self.totals.redemption_pv_s6);
+        midlife_checkpoint_write_i64(out, 21, self.totals.remaining_coupon_pv_s6);
+        midlife_checkpoint_write_i64(out, 29, self.totals.par_recovery_probability_s6);
+        midlife_write_checkpoint_progress(out, self.in_progress)?;
+
+        let safe_offset = midlife_checkpoint_safe_states_offset();
+        let knocked_offset = midlife_checkpoint_knocked_states_offset();
+        let reachable_limit = self.in_progress.map_or_else(
+            || {
+                midlife_checkpoint_reachable_memory_limit(
+                    self.seed_bucket,
+                    self.first_coupon_index,
+                    next_coupon_index,
+                )
+            },
+            |progress| progress.memory_limit,
+        );
+        let mut idx = 0usize;
+        while idx <= reachable_limit {
+            let state_offset = idx * MIDLIFE_CHECKPOINT_STATE_BYTES;
+            self.safe_states[idx].write_checkpoint_state_bytes(
+                &mut out[safe_offset + state_offset
+                    ..safe_offset + state_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            self.knocked_states[idx].write_checkpoint_state_bytes(
+                &mut out[knocked_offset + state_offset
+                    ..knocked_offset + state_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            idx += 1;
+        }
+        if self.in_progress.is_some() {
+            let next_safe_zero_offset = midlife_checkpoint_scratch_state_offset(0)?;
+            let next_knocked_zero_offset = midlife_checkpoint_scratch_state_offset(1)?;
+            let pending_safe_offset = midlife_checkpoint_scratch_state_offset(2)?;
+            let pending_knocked_offset = midlife_checkpoint_scratch_state_offset(3)?;
+            self.frontier.next_safe_zero.write_checkpoint_state_bytes(
+                &mut out
+                    [next_safe_zero_offset..next_safe_zero_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            self.frontier
+                .next_knocked_zero
+                .write_checkpoint_state_bytes(
+                    &mut out[next_knocked_zero_offset
+                        ..next_knocked_zero_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+                )?;
+            self.frontier.pending_safe.write_checkpoint_state_bytes(
+                &mut out[pending_safe_offset..pending_safe_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            self.frontier.pending_knocked.write_checkpoint_state_bytes(
+                &mut out[pending_knocked_offset
+                    ..pending_knocked_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[inline(never)]
+fn midlife_process_zero_step_observation(
+    runtime: &mut MidlifeRuntime,
+    schedule_ctx: &MidlifeScheduleContext,
+    safe_k: usize,
+    memory_loop: MidlifeMemoryLoop,
+    is_maturity: bool,
+    is_autocall_day: bool,
+    observation_day: i64,
+) -> Result<(), MidlifePricerError> {
+    let worst_ratio_s6_now = midlife_worst_ratio_s6(schedule_ctx);
+    let coupon_hits = worst_ratio_s6_now >= schedule_ctx.coupon_ratio_s6;
+    let autocalls =
+        is_autocall_day && !is_maturity && worst_ratio_s6_now >= schedule_ctx.autocall_ratio_s6;
+    let knocks_in = worst_ratio_s6_now <= schedule_ctx.ki_ratio_s6;
+    let safe_zero = runtime.safe_states[0];
+    let knocked_zero = runtime.knocked_states[0];
+    runtime.frontier.reset();
+
+    for memory in 0..=memory_loop.limit {
+        let safe_source = if memory == 0 {
+            safe_zero
+        } else {
+            runtime.safe_states[memory]
+        };
+        let knocked_source = if memory == 0 {
+            knocked_zero
+        } else {
+            runtime.knocked_states[memory]
+        };
+        if memory > 0 {
+            runtime.safe_states[memory] = runtime.frontier.pending_safe;
+            runtime.knocked_states[memory] = runtime.frontier.pending_knocked;
+            runtime.frontier.pending_safe = MidlifeState::default();
+            runtime.frontier.pending_knocked = MidlifeState::default();
+        }
+        let coupon_multiplier =
+            i64::try_from(memory + 1).map_err(|_| MidlifePricerError::MathError)?;
+        let coupon_due_rate_s6 = schedule_ctx.coupon_rate_s6 * coupon_multiplier;
+
+        midlife_zero_step_safe_bucket(
+            &safe_source,
+            memory,
+            coupon_due_rate_s6,
+            safe_k,
+            coupon_hits,
+            autocalls,
+            is_maturity,
+            knocks_in,
+            worst_ratio_s6_now,
+            &mut runtime.frontier,
+            &mut runtime.totals,
+        )?;
+        midlife_zero_step_knocked_bucket(
+            &knocked_source,
+            memory,
+            coupon_due_rate_s6,
+            coupon_hits,
+            autocalls,
+            is_maturity,
+            worst_ratio_s6_now,
+            &mut runtime.frontier,
+            &mut runtime.totals,
+        )?;
+    }
+
+    if memory_loop.saturate_tail && !is_maturity {
+        if memory_loop.limit == 0 {
+            midlife_merge_state_into(
+                &mut runtime.frontier.next_safe_zero,
+                &runtime.frontier.pending_safe,
+                safe_k,
+            );
+            midlife_merge_state_into(
+                &mut runtime.frontier.next_knocked_zero,
+                &runtime.frontier.pending_knocked,
+                MIDLIFE_KNOCKED_K,
+            );
+        } else {
+            midlife_merge_state_into(
+                &mut runtime.safe_states[memory_loop.limit],
+                &runtime.frontier.pending_safe,
+                safe_k,
+            );
+            midlife_merge_state_into(
+                &mut runtime.knocked_states[memory_loop.limit],
+                &runtime.frontier.pending_knocked,
+                MIDLIFE_KNOCKED_K,
+            );
+        }
+        runtime.frontier.pending_safe = MidlifeState::default();
+        runtime.frontier.pending_knocked = MidlifeState::default();
+    }
+
+    if !is_maturity && !autocalls {
+        runtime.safe_states[0] = runtime.frontier.next_safe_zero;
+        runtime.knocked_states[0] = runtime.frontier.next_knocked_zero;
+    }
+    runtime.previous_day = observation_day;
+    Ok(())
+}
+
+#[inline(never)]
+fn midlife_build_live_observation_workspace(
+    inputs: &MidlifeInputs,
+    cfg: &C1FastConfig,
+    runtime: &mut MidlifeRuntime,
+    schedule_ctx: &MidlifeScheduleContext,
+    step_days: i64,
+    days_from_now: i64,
+    coupon_idx: usize,
+    is_maturity: bool,
+) -> Result<Box<MidlifeLiveObservationWorkspace>, MidlifePricerError> {
+    let obs_days_u32 =
+        u32::try_from(days_from_now).map_err(|_| MidlifePricerError::InvalidInput)?;
+    let step_days_u32 = u32::try_from(step_days).map_err(|_| MidlifePricerError::InvalidInput)?;
+    let obs = midlife_obs_geometry(cfg, obs_days_u32)?;
+    let ki_cholesky = {
+        #[cfg(feature = "m6r-recip")]
+        {
+            midlife_precomputed_ki_cholesky(obs_days_u32)
+                .or_else(|| cholesky6(obs.cov_uu, obs.cov_uv, obs.cov_vv).ok())
+        }
+        #[cfg(not(feature = "m6r-recip"))]
+        {
+            cholesky6(obs.cov_uu, obs.cov_uv, obs.cov_vv).ok()
+        }
+    };
+    let triple_pre = if coupon_idx == runtime.first_coupon_index {
+        None
+    } else {
+        #[cfg(feature = "m6r-recip")]
+        {
+            midlife_precomputed_triple_pre(obs_days_u32).or_else(|| {
+                ki_cholesky.map(|(l11, l21, l22)| {
+                    build_triple_correction_pre(l11, l21, l22, &cfg.au, &cfg.av)
+                })
+            })
+        }
+        #[cfg(not(feature = "m6r-recip"))]
+        {
+            ki_cholesky
+                .map(|(l11, l21, l22)| build_triple_correction_pre(l11, l21, l22, &cfg.au, &cfg.av))
+        }
+    };
+    let (_, drift_shift_horizon) =
+        spy_qqq_iwm_step_drift_inputs_s6(cfg, inputs.sigma_common_s6, obs_days_u32)
+            .map_err(midlife_math_error)?;
+    let drift_shift_total = schedule_ctx.mu_c_shift + drift_shift_horizon;
+    let (transition, transition_means) = if let Some((cached_step_days, cached, means)) =
+        runtime.cached_transition
+    {
+        if cached_step_days == step_days_u32 {
+            (cached, means)
+        } else {
+            let built =
+                build_midlife_factor_transition(cfg, inputs.sigma_common_s6, step_days_u32)?;
+            let means = midlife_transition_weighted_means(&built);
+            runtime.cached_transition = Some((step_days_u32, built, means));
+            (built, means)
+        }
+    } else {
+        let built = build_midlife_factor_transition(cfg, inputs.sigma_common_s6, step_days_u32)?;
+        let means = midlife_transition_weighted_means(&built);
+        runtime.cached_transition = Some((step_days_u32, built, means));
+        (built, means)
+    };
+    let (avg_factor_c, avg_step_mean_u, avg_step_mean_v) = transition_means;
+    let (dz_du, dz_dv) = if is_maturity {
+        ([0i64; 3], [0i64; 3])
+    } else {
+        triangle_gradient_geometry(&obs.tri_pre)
+    };
+    Ok(Box::new(MidlifeLiveObservationWorkspace {
+        obs,
+        transition,
+        triple_pre,
+        ki_cholesky,
+        dz_du,
+        dz_dv,
+        drift_shift_total,
+        avg_factor_c,
+        avg_step_mean_u,
+        avg_step_mean_v,
+    }))
+}
+
+#[inline(never)]
+fn midlife_live_bucket_budget(
+    obs_rel: usize,
+    inputs: &MidlifeInputs,
+    schedule_ctx: &MidlifeScheduleContext,
+    memory_loop: MidlifeMemoryLoop,
+    is_maturity: bool,
+) -> usize {
+    #[cfg(target_os = "solana")]
+    {
+        let worst_ratio_s6_now = midlife_worst_ratio_s6(schedule_ctx);
+        if obs_rel >= 7 && memory_loop.limit >= 8 {
+            if is_maturity {
+                return 2;
+            }
+            if inputs.sigma_common_s6 >= 360_000
+                && worst_ratio_s6_now >= 980_000
+                && worst_ratio_s6_now <= 1_050_000
+            {
+                return 8;
+            }
+            if inputs.sigma_common_s6 <= 120_000
+                && worst_ratio_s6_now >= 1_080_000
+                && worst_ratio_s6_now <= 1_120_000
+            {
+                return 3;
+            }
+            if inputs.sigma_common_s6 >= 260_000 && worst_ratio_s6_now >= 1_150_000 {
+                return 3;
+            }
+            if inputs.sigma_common_s6 >= 160_000 && worst_ratio_s6_now >= 1_000_000 {
+                return 4;
+            }
+        }
+        if is_maturity
+            && inputs.sigma_common_s6 >= 260_000
+            && worst_ratio_s6_now >= 1_150_000
+            && memory_loop.limit >= 4
+        {
+            return 4;
+        }
+        if is_maturity
+            && inputs.sigma_common_s6 <= 120_000
+            && worst_ratio_s6_now >= 1_080_000
+            && worst_ratio_s6_now <= 1_120_000
+            && memory_loop.limit >= 4
+        {
+            return 3;
+        }
+        if obs_rel >= 7
+            && inputs.sigma_common_s6 <= 120_000
+            && worst_ratio_s6_now >= 1_080_000
+            && worst_ratio_s6_now <= 1_120_000
+            && memory_loop.limit >= 8
+        {
+            return 6;
+        }
+        MIDLIFE_MEMORY_BUCKETS
+    }
+    #[cfg(not(target_os = "solana"))]
+    {
+        let _ = obs_rel;
+        let _ = inputs;
+        let _ = schedule_ctx;
+        let _ = memory_loop;
+        let _ = is_maturity;
+        MIDLIFE_MEMORY_BUCKETS
+    }
+}
+
+#[inline(never)]
+fn midlife_run_live_bucket_loop(
+    cfg: &C1FastConfig,
+    runtime: &mut MidlifeRuntime,
+    schedule_ctx: &MidlifeScheduleContext,
+    workspace: &MidlifeLiveObservationWorkspace,
+    safe_k: usize,
+    memory_loop: MidlifeMemoryLoop,
+    is_maturity: bool,
+    is_autocall_day: bool,
+    coupon_idx: usize,
+    obs_rel: usize,
+    inputs: &MidlifeInputs,
+) -> Result<bool, MidlifePricerError> {
+    let step_ctx = MidlifeObservationContext {
+        obs: &workspace.obs,
+        transition: &workspace.transition,
+        triple_pre: workspace.triple_pre.as_ref(),
+        phi2: phi2_tables(),
+        dz_du: workspace.dz_du,
+        dz_dv: workspace.dz_dv,
+        ki_cholesky: workspace.ki_cholesky,
+        coupon_rhs_base: schedule_ctx.coupon_rhs_base,
+        autocall_rhs_base: is_autocall_day.then_some(schedule_ctx.autocall_rhs_base),
+        ki_barrier_log: schedule_ctx.ki_barrier_log,
+        ki_margin_sq: if is_maturity {
+            0
+        } else {
+            midlife_ki_margin_sq(cfg, &workspace.obs)
+        },
+        drift_shift_total: workspace.drift_shift_total,
+        avg_factor_c: workspace.avg_factor_c,
+        avg_step_mean_u: workspace.avg_step_mean_u,
+        avg_step_mean_v: workspace.avg_step_mean_v,
+    };
+    let progress = runtime.in_progress;
+    let start_memory = if let Some(progress) = progress {
+        if progress.coupon_index != coupon_idx
+            || progress.memory_limit != memory_loop.limit
+            || progress.safe_k != safe_k
+            || progress.is_maturity != is_maturity
+            || progress.is_autocall_day != is_autocall_day
+            || progress.saturate_tail != memory_loop.saturate_tail
+            || progress.memory_cursor > memory_loop.limit
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        progress.memory_cursor
+    } else {
+        runtime.frontier.reset();
+        0
+    };
+    let safe_zero = if start_memory == 0 {
+        runtime.safe_states[0]
+    } else {
+        MidlifeState::default()
+    };
+    let knocked_zero = if start_memory == 0 {
+        runtime.knocked_states[0]
+    } else {
+        MidlifeState::default()
+    };
+    let bucket_budget =
+        midlife_live_bucket_budget(obs_rel, inputs, schedule_ctx, memory_loop, is_maturity);
+    let end_memory = start_memory
+        .saturating_add(bucket_budget.saturating_sub(1))
+        .min(memory_loop.limit);
+
+    for memory in start_memory..=end_memory {
+        let safe_source = if memory == 0 {
+            safe_zero
+        } else {
+            runtime.safe_states[memory]
+        };
+        let knocked_source = if memory == 0 {
+            knocked_zero
+        } else {
+            runtime.knocked_states[memory]
+        };
+        if memory > 0 {
+            runtime.safe_states[memory] = runtime.frontier.pending_safe;
+            runtime.knocked_states[memory] = runtime.frontier.pending_knocked;
+            runtime.frontier.pending_safe = MidlifeState::default();
+            runtime.frontier.pending_knocked = MidlifeState::default();
+        }
+        let coupon_multiplier =
+            i64::try_from(memory + 1).map_err(|_| MidlifePricerError::MathError)?;
+        let coupon_due_rate_s6 = schedule_ctx.coupon_rate_s6 * coupon_multiplier;
+
+        midlife_process_safe_bucket(
+            &safe_source,
+            memory,
+            coupon_due_rate_s6,
+            safe_k,
+            is_maturity,
+            cfg,
+            &step_ctx,
+            &mut runtime.frontier,
+            &mut runtime.totals,
+        )?;
+        midlife_process_knocked_bucket(
+            &knocked_source,
+            memory,
+            coupon_due_rate_s6,
+            is_maturity,
+            cfg,
+            &step_ctx,
+            &mut runtime.frontier,
+            &mut runtime.totals,
+        )?;
+    }
+
+    let next_memory = end_memory.saturating_add(1);
+    if next_memory <= memory_loop.limit {
+        runtime.in_progress = Some(MidlifeObservationProgress {
+            coupon_index: coupon_idx,
+            memory_cursor: next_memory,
+            memory_limit: memory_loop.limit,
+            safe_k,
+            is_maturity,
+            is_autocall_day,
+            saturate_tail: memory_loop.saturate_tail,
+        });
+        return Ok(false);
+    }
+
+    if memory_loop.saturate_tail && !is_maturity {
+        if memory_loop.limit == 0 {
+            midlife_merge_state_into(
+                &mut runtime.frontier.next_safe_zero,
+                &runtime.frontier.pending_safe,
+                safe_k,
+            );
+            midlife_merge_state_into(
+                &mut runtime.frontier.next_knocked_zero,
+                &runtime.frontier.pending_knocked,
+                MIDLIFE_KNOCKED_K,
+            );
+        } else {
+            midlife_merge_state_into(
+                &mut runtime.safe_states[memory_loop.limit],
+                &runtime.frontier.pending_safe,
+                safe_k,
+            );
+            midlife_merge_state_into(
+                &mut runtime.knocked_states[memory_loop.limit],
+                &runtime.frontier.pending_knocked,
+                MIDLIFE_KNOCKED_K,
+            );
+        }
+        runtime.frontier.pending_safe = MidlifeState::default();
+        runtime.frontier.pending_knocked = MidlifeState::default();
+    }
+
+    runtime.in_progress = None;
+    Ok(true)
+}
+
+#[inline(never)]
+fn midlife_process_live_observation(
+    inputs: &MidlifeInputs,
+    cfg: &C1FastConfig,
+    runtime: &mut MidlifeRuntime,
+    schedule_ctx: &MidlifeScheduleContext,
+    safe_k: usize,
+    memory_loop: MidlifeMemoryLoop,
+    observation_day: i64,
+    is_maturity: bool,
+    is_autocall_day: bool,
+    step_days: i64,
+    days_from_now: i64,
+    coupon_idx: usize,
+) -> Result<bool, MidlifePricerError> {
+    let obs_rel = coupon_idx - runtime.first_coupon_index;
+    let workspace = midlife_build_live_observation_workspace(
+        inputs,
+        cfg,
+        runtime,
+        schedule_ctx,
+        step_days,
+        days_from_now,
+        coupon_idx,
+        is_maturity,
+    )?;
+    c1_filter_cu_diag(b"midlife_build_obs_done");
+    c1_filter_cu_diag(b"midlife_bucket_loop_start");
+    let complete = midlife_run_live_bucket_loop(
+        cfg,
+        runtime,
+        schedule_ctx,
+        &workspace,
+        safe_k,
+        memory_loop,
+        is_maturity,
+        is_autocall_day,
+        coupon_idx,
+        obs_rel,
+        inputs,
+    )?;
+    if !complete {
+        return Ok(false);
+    }
+    if !is_maturity {
+        runtime.safe_states[0] = runtime.frontier.next_safe_zero;
+        runtime.knocked_states[0] = runtime.frontier.next_knocked_zero;
+    }
+    runtime.previous_day = observation_day;
+    Ok(true)
+}
+
+#[inline(never)]
+fn midlife_process_coupon_observation(
+    inputs: &MidlifeInputs,
+    cfg: &C1FastConfig,
+    runtime: &mut MidlifeRuntime,
+    schedule_ctx: &MidlifeScheduleContext,
+    coupon_idx: usize,
+) -> Result<Option<usize>, MidlifePricerError> {
+    let obs_rel = coupon_idx - runtime.first_coupon_index;
+    let safe_k = midlife_safe_k_for_obs(obs_rel);
+    let memory_loop = midlife_effective_memory_loop(
+        midlife_memory_loop_limit(runtime.seed_bucket, obs_rel),
+        schedule_ctx,
+        obs_rel,
+        inputs.ki_latched,
+    );
+    let observation_day = inputs.monthly_coupon_schedule[coupon_idx];
+    if observation_day < runtime.previous_day || observation_day < i64::from(inputs.now_trading_day)
+    {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let days_from_now = observation_day - i64::from(inputs.now_trading_day);
+    let step_days = observation_day - runtime.previous_day;
+    let is_maturity_expected = coupon_idx + 1 == inputs.monthly_coupon_schedule.len();
+    let (is_maturity, is_autocall_day) = if let Some(progress) = runtime.in_progress {
+        if progress.coupon_index != coupon_idx
+            || progress.safe_k != safe_k
+            || progress.memory_limit != memory_loop.limit
+            || progress.saturate_tail != memory_loop.saturate_tail
+            || progress.is_maturity != is_maturity_expected
+            || step_days == 0
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        (progress.is_maturity, progress.is_autocall_day)
+    } else {
+        let state_eps_s6 = midlife_runtime_state_eps_s6(obs_rel, inputs, schedule_ctx);
+        midlife_prune_runtime_states(runtime, state_eps_s6);
+        let is_autocall_day = if runtime.autocall_cursor < inputs.quarterly_autocall_schedule.len()
+        {
+            let scheduled = inputs.quarterly_autocall_schedule[runtime.autocall_cursor];
+            if scheduled < runtime.previous_day {
+                return Err(MidlifePricerError::InvalidInput);
+            }
+            if scheduled == observation_day {
+                runtime.autocall_cursor += 1;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        (is_maturity_expected, is_autocall_day)
+    };
+
+    if step_days == 0 {
+        c1_filter_cu_diag(b"midlife_zero_step_enter");
+        midlife_process_zero_step_observation(
+            runtime,
+            schedule_ctx,
+            safe_k,
+            memory_loop,
+            is_maturity,
+            is_autocall_day,
+            observation_day,
+        )?;
+        c1_filter_cu_diag(b"midlife_zero_step_done");
+    } else {
+        c1_filter_cu_diag(b"midlife_build_obs_start");
+        let complete = midlife_process_live_observation(
+            inputs,
+            cfg,
+            runtime,
+            schedule_ctx,
+            safe_k,
+            memory_loop,
+            observation_day,
+            is_maturity,
+            is_autocall_day,
+            step_days,
+            days_from_now,
+            coupon_idx,
+        )?;
+        if !complete {
+            return Ok(None);
+        }
+        c1_filter_cu_diag(b"midlife_bucket_loop_done");
+    }
+
+    Ok(Some(obs_rel))
+}
+
+#[inline(always)]
+fn midlife_safe_triangle_region(
+    node: FilterNode,
+    ctx: &MidlifeObservationContext<'_>,
+    rhs_base: i64,
+) -> RawRegionMoment {
+    let rhs = rhs_base + node.c + ctx.drift_shift_total;
+    triangle_with_gradient_i64(
+        node.mean_u,
+        node.mean_v,
+        &[rhs; 3],
+        &ctx.obs.tri_pre,
+        ctx.phi2,
+        ctx.triple_pre,
+        &ctx.dz_du,
+        &ctx.dz_dv,
+        ctx.obs.cov_uu,
+        ctx.obs.cov_uv,
+        ctx.obs.cov_vv,
+    )
+}
+
+#[inline(always)]
+fn midlife_ki_margin_sq(cfg: &C1FastConfig, obs: &ObsGeometry) -> i64 {
+    let l_sum = cfg.loading_sum;
+    let spy_u = -cfg.loadings[1] * S6 / l_sum;
+    let spy_v = -cfg.loadings[2] * S6 / l_sum;
+    let var_of = |a: i64, b: i64| -> i64 {
+        let aa = m6r_fast(a, a);
+        let bb = m6r_fast(b, b);
+        let ab = m6r_fast(a, b);
+        m6r_fast(aa, obs.cov_uu) + m6r_fast(bb, obs.cov_vv) + 2 * m6r_fast(ab, obs.cov_uv)
+    };
+    let v_spy = var_of(spy_u, spy_v);
+    let v_qqq = var_of(S6 + spy_u, spy_v);
+    let v_iwm = var_of(spy_u, S6 + spy_v);
+    9 * v_spy.max(v_qqq).max(v_iwm).max(0)
+}
+
+#[inline(always)]
+fn midlife_safe_knock_in_region(
+    cfg: &C1FastConfig,
+    node: FilterNode,
+    ctx: &MidlifeObservationContext<'_>,
+) -> RawRegionMoment {
+    let (l11, l21, l22) = match ctx.ki_cholesky {
+        Some(values) => values,
+        None => return RawRegionMoment::default(),
+    };
+    let coords = ki_coords_from_cumulative(cfg, node.c, ctx.drift_shift_total);
+    let x_spy = coords[0].constant
+        + m6r_fast(coords[0].u_coeff, node.mean_u)
+        + m6r_fast(coords[0].v_coeff, node.mean_v);
+    let x_qqq = x_spy + node.mean_u;
+    let x_iwm = x_spy + node.mean_v;
+    let x_min = x_spy.min(x_qqq).min(x_iwm);
+    let x_max = x_spy.max(x_qqq).max(x_iwm);
+    let bull_margin = x_min - ctx.ki_barrier_log;
+    let bear_margin = ctx.ki_barrier_log - x_max;
+    if bull_margin > 0 && m6r_fast(bull_margin, bull_margin) > ctx.ki_margin_sq {
+        RawRegionMoment::default()
+    } else if bear_margin > 0 && m6r_fast(bear_margin, bear_margin) > ctx.ki_margin_sq {
+        RawRegionMoment {
+            probability: S6,
+            expectation_u: node.mean_u,
+            expectation_v: node.mean_v,
+        }
+    } else {
+        ki_region_uv_moment_gh3(
+            node.mean_u,
+            node.mean_v,
+            l11,
+            l21,
+            l22,
+            ctx.ki_barrier_log,
+            coords,
+        )
+    }
+}
+
+#[derive(Default)]
+struct MidlifeFrontierScratch {
+    next_safe_zero: MidlifeState,
+    next_knocked_zero: MidlifeState,
+    pending_safe: MidlifeState,
+    pending_knocked: MidlifeState,
+    source_state: FilterState,
+    predicted: FilterState,
+    coupon_continue: FilterState,
+    no_coupon_continue: FilterState,
+    new_knocked: FilterState,
+}
+
+impl MidlifeFrontierScratch {
+    fn reset(&mut self) {
+        self.next_safe_zero = MidlifeState::default();
+        self.next_knocked_zero = MidlifeState::default();
+        self.pending_safe = MidlifeState::default();
+        self.pending_knocked = MidlifeState::default();
+        self.source_state = FilterState::default();
+        self.predicted = FilterState::default();
+        self.coupon_continue = FilterState::default();
+        self.no_coupon_continue = FilterState::default();
+        self.new_knocked = FilterState::default();
+    }
+}
+
+#[inline(never)]
+fn midlife_zero_step_safe_bucket(
+    safe_source: &MidlifeState,
+    memory: usize,
+    coupon_due_rate_s6: i64,
+    safe_k: usize,
+    coupon_hits: bool,
+    autocalls: bool,
+    is_maturity: bool,
+    knocks_in: bool,
+    worst_ratio_s6_now: i64,
+    frontier: &mut MidlifeFrontierScratch,
+    totals: &mut MidlifeTotals,
+) -> Result<(), MidlifePricerError> {
+    if safe_source.n_active == 0 {
+        return Ok(());
+    }
+    let weight = safe_source.total_weight();
+    if coupon_hits {
+        totals.remaining_coupon_pv_s6 += m6r(coupon_due_rate_s6, weight);
+    }
+    if is_maturity {
+        if knocks_in {
+            totals.redemption_pv_s6 += m6r(worst_ratio_s6_now, weight);
+        } else {
+            totals.redemption_pv_s6 += weight;
+            totals.par_recovery_probability_s6 += weight;
+        }
+    } else if autocalls {
+        totals.redemption_pv_s6 += weight;
+        totals.par_recovery_probability_s6 += weight;
+    } else if knocks_in {
+        let _ = midlife_next_memory_bucket(memory)?;
+        midlife_merge_state_into(
+            &mut frontier.pending_knocked,
+            safe_source,
+            MIDLIFE_KNOCKED_K,
+        );
+    } else if coupon_hits {
+        midlife_merge_state_into(&mut frontier.next_safe_zero, safe_source, safe_k);
+    } else {
+        let _ = midlife_next_memory_bucket(memory)?;
+        midlife_merge_state_into(&mut frontier.pending_safe, safe_source, safe_k);
+    }
+    Ok(())
+}
+
+#[inline(never)]
+fn midlife_zero_step_knocked_bucket(
+    knocked_source: &MidlifeState,
+    memory: usize,
+    coupon_due_rate_s6: i64,
+    coupon_hits: bool,
+    autocalls: bool,
+    is_maturity: bool,
+    worst_ratio_s6_now: i64,
+    frontier: &mut MidlifeFrontierScratch,
+    totals: &mut MidlifeTotals,
+) -> Result<(), MidlifePricerError> {
+    if knocked_source.n_active == 0 {
+        return Ok(());
+    }
+    let weight = knocked_source.total_weight();
+    if coupon_hits {
+        totals.remaining_coupon_pv_s6 += m6r(coupon_due_rate_s6, weight);
+    }
+    if is_maturity {
+        if worst_ratio_s6_now >= S6 {
+            totals.redemption_pv_s6 += weight;
+            totals.par_recovery_probability_s6 += weight;
+        } else {
+            totals.redemption_pv_s6 += m6r(worst_ratio_s6_now, weight);
+        }
+    } else if autocalls {
+        totals.redemption_pv_s6 += weight;
+        totals.par_recovery_probability_s6 += weight;
+    } else if coupon_hits {
+        midlife_merge_state_into(
+            &mut frontier.next_knocked_zero,
+            knocked_source,
+            MIDLIFE_KNOCKED_K,
+        );
+    } else {
+        let _ = midlife_next_memory_bucket(memory)?;
+        midlife_merge_state_into(
+            &mut frontier.pending_knocked,
+            knocked_source,
+            MIDLIFE_KNOCKED_K,
+        );
+    }
+    Ok(())
+}
+
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn midlife_process_safe_bucket(
+    safe_source: &MidlifeState,
+    memory: usize,
+    coupon_due_rate_s6: i64,
+    safe_k: usize,
+    is_maturity: bool,
+    cfg: &C1FastConfig,
+    ctx: &MidlifeObservationContext<'_>,
+    frontier: &mut MidlifeFrontierScratch,
+    totals: &mut MidlifeTotals,
+) -> Result<(), MidlifePricerError> {
+    if safe_source.n_active == 0 {
+        return Ok(());
+    }
+    frontier.source_state = safe_source.to_filter_state();
+    frontier.predicted = if midlife_sbf_runtime() && safe_k == 1 {
+        midlife_predict_state_k1(&frontier.source_state, ctx)
+    } else {
+        predict_state(
+            &frontier.source_state,
+            &ctx.transition.factor_values,
+            &ctx.transition.factor_weights,
+            &ctx.transition.step_mean_u,
+            &ctx.transition.step_mean_v,
+            safe_k,
+        )
+    };
+    if is_maturity {
+        let (coupon_hit, redemption, par_probability) =
+            midlife_maturity_safe(&frontier.predicted, cfg, ctx);
+        totals.remaining_coupon_pv_s6 += m6r(coupon_due_rate_s6, coupon_hit);
+        totals.redemption_pv_s6 += redemption;
+        totals.par_recovery_probability_s6 += par_probability;
+    } else {
+        let (coupon_hit, autocall_hit, _) = midlife_safe_observation_out(
+            &frontier.predicted,
+            cfg,
+            ctx,
+            &mut frontier.coupon_continue,
+            &mut frontier.no_coupon_continue,
+            &mut frontier.new_knocked,
+        );
+        totals.remaining_coupon_pv_s6 += m6r(coupon_due_rate_s6, coupon_hit);
+        totals.redemption_pv_s6 += autocall_hit;
+        totals.par_recovery_probability_s6 += autocall_hit;
+        midlife_merge_into(
+            &mut frontier.next_safe_zero,
+            &frontier.coupon_continue,
+            safe_k,
+        );
+        let _ = midlife_next_memory_bucket(memory)?;
+        midlife_merge_into(
+            &mut frontier.pending_safe,
+            &frontier.no_coupon_continue,
+            safe_k,
+        );
+        midlife_merge_into(
+            &mut frontier.pending_knocked,
+            &frontier.new_knocked,
+            MIDLIFE_KNOCKED_K,
+        );
+    }
+    Ok(())
+}
+
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn midlife_process_knocked_bucket(
+    knocked_source: &MidlifeState,
+    memory: usize,
+    coupon_due_rate_s6: i64,
+    is_maturity: bool,
+    cfg: &C1FastConfig,
+    ctx: &MidlifeObservationContext<'_>,
+    frontier: &mut MidlifeFrontierScratch,
+    totals: &mut MidlifeTotals,
+) -> Result<(), MidlifePricerError> {
+    if knocked_source.n_active == 0 {
+        return Ok(());
+    }
+    frontier.source_state = knocked_source.to_filter_state();
+    frontier.predicted = predict_state(
+        &frontier.source_state,
+        &ctx.transition.factor_values,
+        &ctx.transition.factor_weights,
+        &ctx.transition.step_mean_u,
+        &ctx.transition.step_mean_v,
+        MIDLIFE_KNOCKED_K,
+    );
+    if is_maturity {
+        let (coupon_hit, redemption, par_probability) =
+            midlife_maturity_knocked(&frontier.predicted, cfg, ctx);
+        totals.remaining_coupon_pv_s6 += m6r(coupon_due_rate_s6, coupon_hit);
+        totals.redemption_pv_s6 += redemption;
+        totals.par_recovery_probability_s6 += par_probability;
+    } else {
+        let (coupon_hit, autocall_hit) = midlife_knocked_observation_out(
+            &frontier.predicted,
+            ctx,
+            &mut frontier.coupon_continue,
+            &mut frontier.no_coupon_continue,
+        );
+        totals.remaining_coupon_pv_s6 += m6r(coupon_due_rate_s6, coupon_hit);
+        totals.redemption_pv_s6 += autocall_hit;
+        totals.par_recovery_probability_s6 += autocall_hit;
+        midlife_merge_into(
+            &mut frontier.next_knocked_zero,
+            &frontier.coupon_continue,
+            MIDLIFE_KNOCKED_K,
+        );
+        let _ = midlife_next_memory_bucket(memory)?;
+        midlife_merge_into(
+            &mut frontier.pending_knocked,
+            &frontier.no_coupon_continue,
+            MIDLIFE_KNOCKED_K,
+        );
+    }
+    Ok(())
+}
+
+fn midlife_validate_inputs(inputs: &MidlifeInputs) -> Result<(), MidlifePricerError> {
+    if inputs.sigma_common_s6 <= 0
+        || inputs.current_spy_s6 <= 0
+        || inputs.current_qqq_s6 <= 0
+        || inputs.current_iwm_s6 <= 0
+        || inputs.entry_spy_s6 <= 0
+        || inputs.entry_qqq_s6 <= 0
+        || inputs.entry_iwm_s6 <= 0
+        || inputs.notional_usdc == 0
+        || inputs.offered_coupon_bps_s6 < 0
+        || inputs.next_coupon_index as usize >= inputs.monthly_coupon_schedule.len()
+        || inputs.next_autocall_index as usize > inputs.quarterly_autocall_schedule.len()
+        || inputs.missed_coupon_observations as usize >= MIDLIFE_MEMORY_BUCKETS
+        || inputs.autocall_barrier_bps < inputs.coupon_barrier_bps
+        || inputs.coupon_barrier_bps < inputs.ki_barrier_bps
+    {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    Ok(())
+}
+
+fn midlife_build_schedule_context(
+    inputs: &MidlifeInputs,
+) -> Result<(C1FastConfig, MidlifeScheduleContext, i64, i64), MidlifePricerError> {
+    let cfg = spy_qqq_iwm_c1_config();
+    let (schedule_ctx, mu_u_shift, mu_v_shift) =
+        midlife_build_schedule_context_for_config(inputs, &cfg)?;
+    Ok((cfg, schedule_ctx, mu_u_shift, mu_v_shift))
+}
+
+fn midlife_build_schedule_context_for_config(
+    inputs: &MidlifeInputs,
+    cfg: &C1FastConfig,
+) -> Result<(MidlifeScheduleContext, i64, i64), MidlifePricerError> {
+    let current_ratios_s6 = [
+        midlife_ratio_s6(inputs.current_spy_s6, inputs.entry_spy_s6)?,
+        midlife_ratio_s6(inputs.current_qqq_s6, inputs.entry_qqq_s6)?,
+        midlife_ratio_s6(inputs.current_iwm_s6, inputs.entry_iwm_s6)?,
+    ];
+    let (mu_u_shift, mu_v_shift, mu_c_shift) =
+        midlife_spot_shift_bundle_live_s6(cfg, current_ratios_s6)?;
+    let (coupon_ratio_s6, coupon_rhs_base) =
+        midlife_barrier_rhs_base(cfg, inputs.coupon_barrier_bps)?;
+    let (autocall_ratio_s6, autocall_rhs_base) =
+        midlife_barrier_rhs_base(cfg, inputs.autocall_barrier_bps)?;
+    let ki_ratio_s6 = midlife_barrier_ratio_s6(inputs.ki_barrier_bps)?;
+    let ki_barrier_log = midlife_barrier_log(inputs.ki_barrier_bps)?;
+    let schedule_ctx = MidlifeScheduleContext {
+        current_ratios_s6,
+        mu_c_shift,
+        coupon_ratio_s6,
+        autocall_ratio_s6,
+        ki_ratio_s6,
+        coupon_rhs_base,
+        autocall_rhs_base,
+        ki_barrier_log,
+        coupon_rate_s6: inputs.offered_coupon_bps_s6 / 10_000,
+    };
+    Ok((schedule_ctx, mu_u_shift, mu_v_shift))
+}
+
+fn midlife_run_coupon_range(
+    inputs: &MidlifeInputs,
+    cfg: &C1FastConfig,
+    schedule_ctx: &MidlifeScheduleContext,
+    runtime: &mut MidlifeRuntime,
+    start_coupon_index: usize,
+    end_coupon_index: usize,
+) -> Result<usize, MidlifePricerError> {
+    if start_coupon_index < runtime.first_coupon_index
+        || start_coupon_index > end_coupon_index
+        || end_coupon_index > inputs.monthly_coupon_schedule.len()
+    {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+
+    let mut coupon_idx = start_coupon_index;
+    while coupon_idx < end_coupon_index {
+        let resume_in_progress = runtime.in_progress.is_some();
+        let obs_rel = coupon_idx - runtime.first_coupon_index;
+        match obs_rel {
+            0 => c1_filter_cu_diag(b"midlife_obs1_start"),
+            1 => c1_filter_cu_diag(b"midlife_obs2_start"),
+            2 => c1_filter_cu_diag(b"midlife_obs3_start"),
+            3 => c1_filter_cu_diag(b"midlife_obs4_start"),
+            4 => c1_filter_cu_diag(b"midlife_obs5_start"),
+            5 => c1_filter_cu_diag(b"midlife_obs6_start"),
+            6 => c1_filter_cu_diag(b"midlife_obs7_start"),
+            7 => c1_filter_cu_diag(b"midlife_obs8_start"),
+            8 => c1_filter_cu_diag(b"midlife_obs9_start"),
+            _ => c1_filter_cu_diag(b"midlife_obs_other_start"),
+        }
+        let obs_rel = match midlife_process_coupon_observation(
+            inputs,
+            &cfg,
+            runtime,
+            &schedule_ctx,
+            coupon_idx,
+        )? {
+            Some(obs_rel) => obs_rel,
+            None => return Ok(coupon_idx),
+        };
+        match obs_rel {
+            0 => c1_filter_cu_diag(b"midlife_obs1_done"),
+            1 => c1_filter_cu_diag(b"midlife_obs2_done"),
+            2 => c1_filter_cu_diag(b"midlife_obs3_done"),
+            3 => c1_filter_cu_diag(b"midlife_obs4_done"),
+            4 => c1_filter_cu_diag(b"midlife_obs5_done"),
+            5 => c1_filter_cu_diag(b"midlife_obs6_done"),
+            6 => c1_filter_cu_diag(b"midlife_obs7_done"),
+            7 => c1_filter_cu_diag(b"midlife_obs8_done"),
+            8 => c1_filter_cu_diag(b"midlife_obs9_done"),
+            _ => c1_filter_cu_diag(b"midlife_obs_other_done"),
+        }
+        coupon_idx += 1;
+        if resume_in_progress {
+            return Ok(coupon_idx);
+        }
+    }
+    Ok(end_coupon_index)
+}
+
+fn midlife_nav_from_runtime(inputs: &MidlifeInputs, runtime: &MidlifeRuntime) -> MidlifeNav {
+    let raw_nav_s6 =
+        (runtime.totals.redemption_pv_s6 + runtime.totals.remaining_coupon_pv_s6).max(0);
+    MidlifeNav {
+        nav_s6: raw_nav_s6,
+        ki_level_usd_s6: i64::from(inputs.ki_barrier_bps) * 100,
+        remaining_coupon_pv_s6: runtime.totals.remaining_coupon_pv_s6.max(0),
+        par_recovery_probability_s6: runtime.totals.par_recovery_probability_s6.clamp(0, S6),
+    }
+}
+
+fn midlife_terminal_nav(
+    inputs: &MidlifeInputs,
+    schedule_ctx: &MidlifeScheduleContext,
+) -> MidlifeNav {
+    let worst_ratio_s6_now = midlife_worst_ratio_s6(schedule_ctx);
+    let par_recovery = if !inputs.ki_latched || worst_ratio_s6_now >= S6 {
+        S6
+    } else {
+        0
+    };
+    let redemption = if par_recovery == S6 {
+        S6
+    } else {
+        worst_ratio_s6_now.max(0)
+    };
+    MidlifeNav {
+        nav_s6: redemption,
+        ki_level_usd_s6: i64::from(inputs.ki_barrier_bps) * 100,
+        remaining_coupon_pv_s6: 0,
+        par_recovery_probability_s6: par_recovery,
+    }
+}
+
+#[inline(always)]
+fn midlife_coupon_observations_due_until(
+    inputs: &MidlifeInputs,
+    coupon_cursor: &mut usize,
+    observation_day: i64,
+) -> Result<u8, MidlifePricerError> {
+    let mut count = 0u8;
+    while *coupon_cursor < inputs.monthly_coupon_schedule.len() {
+        let coupon_day = inputs.monthly_coupon_schedule[*coupon_cursor];
+        if coupon_day < i64::from(inputs.now_trading_day) {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        if coupon_day > observation_day {
+            break;
+        }
+        count = count.checked_add(1).ok_or(MidlifePricerError::MathError)?;
+        *coupon_cursor += 1;
+    }
+    Ok(count)
+}
+
+const MIDLIFE_QUARTERLY_MEMORY_STATES: usize = 8;
+const QUARTERLY_SAFE_K: usize = 12;
+const MIDLIFE_QUARTERLY_CHECKPOINT_SLOT_BYTES: usize = 1 + 2 * MIDLIFE_CHECKPOINT_STATE_BYTES;
+
+#[derive(Clone, Copy, Default)]
+struct MidlifeQuarterlyMemoryState {
+    memory_count: u8,
+    safe_state: FilterState,
+    knocked_state: FilterState,
+}
+
+#[derive(Default)]
+struct MidlifeQuarterlyScratch {
+    safe_pred: FilterState,
+    knocked_pred: FilterState,
+    safe_coupon_continue: FilterState,
+    safe_no_coupon_continue: FilterState,
+    new_knocked: FilterState,
+    knocked_coupon_continue: FilterState,
+    knocked_no_coupon_continue: FilterState,
+}
+
+struct MidlifeQuarterlyRuntime {
+    states: Box<[MidlifeQuarterlyMemoryState; MIDLIFE_QUARTERLY_MEMORY_STATES]>,
+    next_states: Box<[MidlifeQuarterlyMemoryState; MIDLIFE_QUARTERLY_MEMORY_STATES]>,
+    scratch: Box<MidlifeQuarterlyScratch>,
+    totals: MidlifeTotals,
+    previous_day: i64,
+    cached_transition: Option<(u32, FactorTransition, (i64, i64, i64))>,
+}
+
+impl MidlifeQuarterlyRuntime {
+    fn new(inputs: &MidlifeInputs, mu_u_shift: i64, mu_v_shift: i64) -> Self {
+        let mut states =
+            Box::new([MidlifeQuarterlyMemoryState::default(); MIDLIFE_QUARTERLY_MEMORY_STATES]);
+        let mut shifted_origin = FilterState::singleton_origin();
+        shifted_origin.nodes[0].mean_u = mu_u_shift;
+        shifted_origin.nodes[0].mean_v = mu_v_shift;
+        states[0].memory_count = inputs.missed_coupon_observations;
+        if inputs.ki_latched {
+            states[0].knocked_state = shifted_origin;
+        } else {
+            states[0].safe_state = shifted_origin;
+        }
+        Self {
+            states,
+            next_states: Box::new(
+                [MidlifeQuarterlyMemoryState::default(); MIDLIFE_QUARTERLY_MEMORY_STATES],
+            ),
+            scratch: Box::new(MidlifeQuarterlyScratch::default()),
+            totals: MidlifeTotals::default(),
+            previous_day: i64::from(inputs.now_trading_day),
+            cached_transition: None,
+        }
+    }
+
+    fn clear_next_states(&mut self) {
+        let mut idx = 0usize;
+        while idx < self.next_states.len() {
+            self.next_states[idx] = MidlifeQuarterlyMemoryState::default();
+            idx += 1;
+        }
+    }
+
+    fn commit_next_states(&mut self) {
+        core::mem::swap(&mut self.states, &mut self.next_states);
+        self.clear_next_states();
+    }
+
+    fn is_empty(&self) -> bool {
+        self.states
+            .iter()
+            .all(|state| state.safe_state.n_active == 0 && state.knocked_state.n_active == 0)
+    }
+
+    fn from_checkpoint_bytes(
+        inputs: &MidlifeInputs,
+        checkpoint: &[u8],
+    ) -> Result<(Self, usize, usize), MidlifePricerError> {
+        midlife_checkpoint_require_len(checkpoint)?;
+        let version = midlife_checkpoint_read_u8(checkpoint, 0)?;
+        let next_coupon_index = midlife_checkpoint_read_u8(checkpoint, 1)? as usize;
+        let previous_day = midlife_checkpoint_read_i64(checkpoint, 2)?;
+        let autocall_cursor = midlife_checkpoint_read_u8(checkpoint, 10)? as usize;
+        let first_coupon_index = midlife_checkpoint_read_u8(checkpoint, 11)? as usize;
+        let seed_bucket = midlife_checkpoint_read_u8(checkpoint, 12)? as usize;
+        let redemption_pv_s6 = midlife_checkpoint_read_i64(checkpoint, 13)?;
+        let remaining_coupon_pv_s6 = midlife_checkpoint_read_i64(checkpoint, 21)?;
+        let par_recovery_probability_s6 = midlife_checkpoint_read_i64(checkpoint, 29)?;
+
+        if version != MIDLIFE_CHECKPOINT_VERSION
+            || first_coupon_index != inputs.next_coupon_index as usize
+            || seed_bucket != inputs.missed_coupon_observations as usize
+            || next_coupon_index > inputs.monthly_coupon_schedule.len()
+            || autocall_cursor > inputs.quarterly_autocall_schedule.len()
+            || seed_bucket >= MIDLIFE_MEMORY_BUCKETS
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+
+        let mut runtime = Self::new(inputs, 0, 0);
+        runtime.clear_next_states();
+        runtime.totals = MidlifeTotals {
+            redemption_pv_s6,
+            remaining_coupon_pv_s6,
+            par_recovery_probability_s6,
+        };
+        runtime.previous_day = previous_day;
+        let mut idx = 0usize;
+        while idx < MIDLIFE_QUARTERLY_MEMORY_STATES {
+            runtime.states[idx] = MidlifeQuarterlyMemoryState::default();
+            runtime.next_states[idx] = MidlifeQuarterlyMemoryState::default();
+            idx += 1;
+        }
+
+        idx = 0;
+        while idx < MIDLIFE_QUARTERLY_MEMORY_STATES {
+            let slot_offset = midlife_quarterly_checkpoint_slot_offset(idx)?;
+            let memory_count = midlife_checkpoint_read_u8(checkpoint, slot_offset)?;
+            if memory_count as usize >= MIDLIFE_MEMORY_BUCKETS {
+                return Err(MidlifePricerError::InvalidInput);
+            }
+            let safe_offset = slot_offset + 1;
+            let knocked_offset = safe_offset + MIDLIFE_CHECKPOINT_STATE_BYTES;
+            runtime.states[idx] = MidlifeQuarterlyMemoryState {
+                memory_count,
+                safe_state: midlife_read_filter_state_checkpoint_bytes(
+                    &checkpoint[safe_offset..safe_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+                )?,
+                knocked_state: midlife_read_filter_state_checkpoint_bytes(
+                    &checkpoint[knocked_offset..knocked_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+                )?,
+            };
+            idx += 1;
+        }
+
+        Ok((runtime, autocall_cursor, next_coupon_index))
+    }
+
+    fn write_checkpoint_bytes(
+        &self,
+        inputs: &MidlifeInputs,
+        next_coupon_index: usize,
+        autocall_cursor: usize,
+        out: &mut [u8],
+    ) -> Result<(), MidlifePricerError> {
+        midlife_checkpoint_require_len(out)?;
+        if next_coupon_index > u8::MAX as usize
+            || next_coupon_index > inputs.monthly_coupon_schedule.len()
+            || autocall_cursor > u8::MAX as usize
+            || autocall_cursor > inputs.quarterly_autocall_schedule.len()
+            || inputs.missed_coupon_observations as usize >= MIDLIFE_MEMORY_BUCKETS
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+
+        midlife_checkpoint_write_u8(out, 0, MIDLIFE_CHECKPOINT_VERSION);
+        midlife_checkpoint_write_u8(out, 1, next_coupon_index as u8);
+        midlife_checkpoint_write_i64(out, 2, self.previous_day);
+        midlife_checkpoint_write_u8(out, 10, autocall_cursor as u8);
+        midlife_checkpoint_write_u8(out, 11, inputs.next_coupon_index);
+        midlife_checkpoint_write_u8(out, 12, inputs.missed_coupon_observations);
+        midlife_checkpoint_write_i64(out, 13, self.totals.redemption_pv_s6);
+        midlife_checkpoint_write_i64(out, 21, self.totals.remaining_coupon_pv_s6);
+        midlife_checkpoint_write_i64(out, 29, self.totals.par_recovery_probability_s6);
+
+        let mut idx = 0usize;
+        while idx < MIDLIFE_QUARTERLY_MEMORY_STATES {
+            let slot_offset = midlife_quarterly_checkpoint_slot_offset(idx)?;
+            midlife_checkpoint_write_u8(out, slot_offset, self.states[idx].memory_count);
+            let safe_offset = slot_offset + 1;
+            let knocked_offset = safe_offset + MIDLIFE_CHECKPOINT_STATE_BYTES;
+            midlife_write_filter_state_checkpoint_bytes(
+                &self.states[idx].safe_state,
+                &mut out[safe_offset..safe_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            midlife_write_filter_state_checkpoint_bytes(
+                &self.states[idx].knocked_state,
+                &mut out[knocked_offset..knocked_offset + MIDLIFE_CHECKPOINT_STATE_BYTES],
+            )?;
+            idx += 1;
+        }
+        Ok(())
+    }
+}
+
+#[inline(always)]
+fn midlife_quarterly_checkpoint_slot_offset(
+    state_index: usize,
+) -> Result<usize, MidlifePricerError> {
+    if state_index >= MIDLIFE_QUARTERLY_MEMORY_STATES {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let offset = MIDLIFE_CHECKPOINT_HEADER_BYTES
+        .checked_add(
+            state_index
+                .checked_mul(MIDLIFE_QUARTERLY_CHECKPOINT_SLOT_BYTES)
+                .ok_or(MidlifePricerError::MathError)?,
+        )
+        .ok_or(MidlifePricerError::MathError)?;
+    let end = offset
+        .checked_add(MIDLIFE_QUARTERLY_CHECKPOINT_SLOT_BYTES)
+        .ok_or(MidlifePricerError::MathError)?;
+    if end > MIDLIFE_CHECKPOINT_BYTES {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    Ok(offset)
+}
+
+fn midlife_quarterly_find_or_insert_next_state(
+    next_states: &mut [MidlifeQuarterlyMemoryState; MIDLIFE_QUARTERLY_MEMORY_STATES],
+    memory_count: u8,
+) -> Result<&mut MidlifeQuarterlyMemoryState, MidlifePricerError> {
+    let mut empty_idx = None;
+    let mut idx = 0usize;
+    while idx < next_states.len() {
+        let state = &next_states[idx];
+        let occupied = state.safe_state.n_active > 0 || state.knocked_state.n_active > 0;
+        if occupied && state.memory_count == memory_count {
+            return Ok(&mut next_states[idx]);
+        }
+        if !occupied && empty_idx.is_none() {
+            empty_idx = Some(idx);
+        }
+        idx += 1;
+    }
+    let idx = empty_idx.ok_or(MidlifePricerError::InvalidInput)?;
+    next_states[idx].memory_count = memory_count;
+    Ok(&mut next_states[idx])
+}
+
+fn midlife_quarterly_merge_next_safe(
+    next_states: &mut [MidlifeQuarterlyMemoryState; MIDLIFE_QUARTERLY_MEMORY_STATES],
+    memory_count: u8,
+    source: &FilterState,
+) -> Result<(), MidlifePricerError> {
+    if source.n_active == 0 || source.total_weight() <= 0 {
+        return Ok(());
+    }
+    let target =
+        &mut midlife_quarterly_find_or_insert_next_state(next_states, memory_count)?.safe_state;
+    if target.n_active == 0 {
+        *target = *source;
+    } else {
+        *target = merge_states(target, source, QUARTERLY_SAFE_K);
+    }
+    Ok(())
+}
+
+fn midlife_quarterly_merge_next_knocked(
+    next_states: &mut [MidlifeQuarterlyMemoryState; MIDLIFE_QUARTERLY_MEMORY_STATES],
+    memory_count: u8,
+    source: &FilterState,
+) -> Result<(), MidlifePricerError> {
+    if source.n_active == 0 || source.total_weight() <= 0 {
+        return Ok(());
+    }
+    let target =
+        &mut midlife_quarterly_find_or_insert_next_state(next_states, memory_count)?.knocked_state;
+    if target.n_active == 0 {
+        *target = *source;
+    } else {
+        *target = merge_states(target, source, MIDLIFE_KNOCKED_K);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn midlife_build_quarterly_observation_workspace(
+    inputs: &MidlifeInputs,
+    cfg: &C1FastConfig,
+    runtime: &mut MidlifeQuarterlyRuntime,
+    schedule_ctx: &MidlifeScheduleContext,
+    step_days: i64,
+    days_from_now: i64,
+    is_maturity: bool,
+) -> Result<Box<MidlifeLiveObservationWorkspace>, MidlifePricerError> {
+    let obs_days_u32 =
+        u32::try_from(days_from_now).map_err(|_| MidlifePricerError::InvalidInput)?;
+    let step_days_u32 = u32::try_from(step_days).map_err(|_| MidlifePricerError::InvalidInput)?;
+    let obs = midlife_obs_geometry(cfg, obs_days_u32)?;
+    let ki_cholesky = {
+        #[cfg(feature = "m6r-recip")]
+        {
+            midlife_precomputed_ki_cholesky(obs_days_u32)
+                .or_else(|| cholesky6(obs.cov_uu, obs.cov_uv, obs.cov_vv).ok())
+        }
+        #[cfg(not(feature = "m6r-recip"))]
+        {
+            cholesky6(obs.cov_uu, obs.cov_uv, obs.cov_vv).ok()
+        }
+    };
+    let triple_pre = {
+        #[cfg(feature = "m6r-recip")]
+        {
+            midlife_precomputed_triple_pre(obs_days_u32).or_else(|| {
+                ki_cholesky.map(|(l11, l21, l22)| {
+                    build_triple_correction_pre(l11, l21, l22, &cfg.au, &cfg.av)
+                })
+            })
+        }
+        #[cfg(not(feature = "m6r-recip"))]
+        {
+            ki_cholesky
+                .map(|(l11, l21, l22)| build_triple_correction_pre(l11, l21, l22, &cfg.au, &cfg.av))
+        }
+    };
+    let (_, drift_shift_horizon) =
+        spy_qqq_iwm_step_drift_inputs_s6(cfg, inputs.sigma_common_s6, obs_days_u32)
+            .map_err(midlife_math_error)?;
+    let drift_shift_total = schedule_ctx.mu_c_shift + drift_shift_horizon;
+    let (transition, transition_means) = if let Some((cached_step_days, cached, means)) =
+        runtime.cached_transition
+    {
+        if cached_step_days == step_days_u32 {
+            (cached, means)
+        } else {
+            let built =
+                build_midlife_factor_transition(cfg, inputs.sigma_common_s6, step_days_u32)?;
+            let means = midlife_transition_weighted_means(&built);
+            runtime.cached_transition = Some((step_days_u32, built, means));
+            (built, means)
+        }
+    } else {
+        let built = build_midlife_factor_transition(cfg, inputs.sigma_common_s6, step_days_u32)?;
+        let means = midlife_transition_weighted_means(&built);
+        runtime.cached_transition = Some((step_days_u32, built, means));
+        (built, means)
+    };
+    let (avg_factor_c, avg_step_mean_u, avg_step_mean_v) = transition_means;
+    let (dz_du, dz_dv) = if is_maturity {
+        ([0i64; 3], [0i64; 3])
+    } else {
+        triangle_gradient_geometry(&obs.tri_pre)
+    };
+    Ok(Box::new(MidlifeLiveObservationWorkspace {
+        obs,
+        transition,
+        triple_pre,
+        ki_cholesky,
+        dz_du,
+        dz_dv,
+        drift_shift_total,
+        avg_factor_c,
+        avg_step_mean_u,
+        avg_step_mean_v,
+    }))
+}
+
+#[inline(never)]
+fn midlife_coupon_memory_after_due(memory: u8, due_count: u8) -> Result<u8, MidlifePricerError> {
+    let next = memory
+        .checked_add(due_count)
+        .ok_or(MidlifePricerError::MathError)?;
+    if next as usize >= MIDLIFE_MEMORY_BUCKETS {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    Ok(next)
+}
+
+#[inline(always)]
+fn midlife_coupon_due_rate_s6(
+    schedule_ctx: &MidlifeScheduleContext,
+    memory_count: u8,
+) -> Result<i64, MidlifePricerError> {
+    schedule_ctx
+        .coupon_rate_s6
+        .checked_mul(i64::from(memory_count))
+        .ok_or(MidlifePricerError::MathError)
+}
+
+#[inline(never)]
+fn midlife_quarterly_zero_step(
+    inputs: &MidlifeInputs,
+    runtime: &mut MidlifeQuarterlyRuntime,
+    schedule_ctx: &MidlifeScheduleContext,
+    observation_day: i64,
+    due_count: u8,
+    is_maturity: bool,
+) -> Result<(), MidlifePricerError> {
+    let worst_ratio_s6_now = midlife_worst_ratio_s6(schedule_ctx);
+    let coupon_hits = worst_ratio_s6_now >= schedule_ctx.coupon_ratio_s6;
+    let autocalls = !is_maturity && worst_ratio_s6_now >= schedule_ctx.autocall_ratio_s6;
+    let knocks_in = worst_ratio_s6_now <= schedule_ctx.ki_ratio_s6;
+
+    runtime.clear_next_states();
+    let mut idx = 0usize;
+    while idx < runtime.states.len() {
+        let memory_count = runtime.states[idx].memory_count;
+        let safe_weight = runtime.states[idx].safe_state.total_weight();
+        let knocked_weight = runtime.states[idx].knocked_state.total_weight();
+        if safe_weight <= 0 && knocked_weight <= 0 {
+            idx += 1;
+            continue;
+        }
+
+        let memory_after_due = midlife_coupon_memory_after_due(memory_count, due_count)?;
+        let coupon_due_rate_s6 = midlife_coupon_due_rate_s6(schedule_ctx, memory_after_due)?;
+        let continuation_memory = if coupon_hits { 0 } else { memory_after_due };
+
+        if coupon_hits {
+            runtime.totals.remaining_coupon_pv_s6 += m6r(coupon_due_rate_s6, safe_weight);
+            runtime.totals.remaining_coupon_pv_s6 += m6r(coupon_due_rate_s6, knocked_weight);
+        }
+        if is_maturity {
+            if !inputs.ki_latched || worst_ratio_s6_now >= S6 {
+                runtime.totals.redemption_pv_s6 += safe_weight;
+                runtime.totals.par_recovery_probability_s6 += safe_weight;
+            } else {
+                runtime.totals.redemption_pv_s6 += m6r(worst_ratio_s6_now.max(0), safe_weight);
+            }
+            if worst_ratio_s6_now >= S6 {
+                runtime.totals.redemption_pv_s6 += knocked_weight;
+                runtime.totals.par_recovery_probability_s6 += knocked_weight;
+            } else {
+                runtime.totals.redemption_pv_s6 += m6r(worst_ratio_s6_now.max(0), knocked_weight);
+            }
+        } else if autocalls {
+            let redeemed = safe_weight + knocked_weight;
+            runtime.totals.redemption_pv_s6 += redeemed;
+            runtime.totals.par_recovery_probability_s6 += redeemed;
+        } else {
+            if knocks_in {
+                midlife_quarterly_merge_next_knocked(
+                    &mut runtime.next_states,
+                    continuation_memory,
+                    &runtime.states[idx].safe_state,
+                )?;
+            } else {
+                midlife_quarterly_merge_next_safe(
+                    &mut runtime.next_states,
+                    continuation_memory,
+                    &runtime.states[idx].safe_state,
+                )?;
+            }
+            midlife_quarterly_merge_next_knocked(
+                &mut runtime.next_states,
+                continuation_memory,
+                &runtime.states[idx].knocked_state,
+            )?;
+        }
+
+        idx += 1;
+    }
+
+    if is_maturity || autocalls {
+        runtime.clear_next_states();
+        let mut idx = 0usize;
+        while idx < runtime.states.len() {
+            runtime.states[idx] = MidlifeQuarterlyMemoryState::default();
+            idx += 1;
+        }
+    } else {
+        runtime.commit_next_states();
+    }
+    runtime.previous_day = observation_day;
+    Ok(())
+}
+
+#[inline(never)]
+fn midlife_quarterly_live_step(
+    cfg: &C1FastConfig,
+    runtime: &mut MidlifeQuarterlyRuntime,
+    schedule_ctx: &MidlifeScheduleContext,
+    workspace: &MidlifeLiveObservationWorkspace,
+    due_count: u8,
+    is_maturity: bool,
+) -> Result<(), MidlifePricerError> {
+    let step_ctx = MidlifeObservationContext {
+        obs: &workspace.obs,
+        transition: &workspace.transition,
+        triple_pre: workspace.triple_pre.as_ref(),
+        phi2: phi2_tables(),
+        dz_du: workspace.dz_du,
+        dz_dv: workspace.dz_dv,
+        ki_cholesky: workspace.ki_cholesky,
+        coupon_rhs_base: schedule_ctx.coupon_rhs_base,
+        autocall_rhs_base: (!is_maturity).then_some(schedule_ctx.autocall_rhs_base),
+        ki_barrier_log: schedule_ctx.ki_barrier_log,
+        ki_margin_sq: if is_maturity {
+            0
+        } else {
+            midlife_ki_margin_sq(cfg, &workspace.obs)
+        },
+        drift_shift_total: workspace.drift_shift_total,
+        avg_factor_c: workspace.avg_factor_c,
+        avg_step_mean_u: workspace.avg_step_mean_u,
+        avg_step_mean_v: workspace.avg_step_mean_v,
+    };
+
+    runtime.clear_next_states();
+    let mut idx = 0usize;
+    while idx < runtime.states.len() {
+        if runtime.states[idx].safe_state.n_active == 0
+            && runtime.states[idx].knocked_state.n_active == 0
+        {
+            idx += 1;
+            continue;
+        }
+        let memory_after_due =
+            midlife_coupon_memory_after_due(runtime.states[idx].memory_count, due_count)?;
+        let coupon_due_rate_s6 = midlife_coupon_due_rate_s6(schedule_ctx, memory_after_due)?;
+
+        {
+            let bucket = &runtime.states[idx];
+            let scratch = &mut runtime.scratch;
+            scratch.safe_pred = predict_state(
+                &bucket.safe_state,
+                &workspace.transition.factor_values,
+                &workspace.transition.factor_weights,
+                &workspace.transition.step_mean_u,
+                &workspace.transition.step_mean_v,
+                QUARTERLY_SAFE_K,
+            );
+            scratch.knocked_pred = predict_state(
+                &bucket.knocked_state,
+                &workspace.transition.factor_values,
+                &workspace.transition.factor_weights,
+                &workspace.transition.step_mean_u,
+                &workspace.transition.step_mean_v,
+                MIDLIFE_KNOCKED_K,
+            );
+        }
+
+        if is_maturity {
+            let (coupon_safe, redemption_safe, par_safe) =
+                midlife_maturity_safe(&runtime.scratch.safe_pred, cfg, &step_ctx);
+            let (coupon_knocked, redemption_knocked, par_knocked) =
+                midlife_maturity_knocked(&runtime.scratch.knocked_pred, cfg, &step_ctx);
+            runtime.totals.remaining_coupon_pv_s6 +=
+                m6r(coupon_due_rate_s6, coupon_safe + coupon_knocked);
+            runtime.totals.redemption_pv_s6 += redemption_safe + redemption_knocked;
+            runtime.totals.par_recovery_probability_s6 += par_safe + par_knocked;
+            idx += 1;
+            continue;
+        }
+
+        let (safe_coupon_hit, safe_autocall_hit, knocked_coupon_hit, knocked_autocall_hit) = {
+            let scratch = &mut runtime.scratch;
+            let (safe_coupon_hit, safe_autocall_hit, _) = midlife_safe_observation_out(
+                &scratch.safe_pred,
+                cfg,
+                &step_ctx,
+                &mut scratch.safe_coupon_continue,
+                &mut scratch.safe_no_coupon_continue,
+                &mut scratch.new_knocked,
+            );
+            let (knocked_coupon_hit, knocked_autocall_hit) = midlife_knocked_observation_out(
+                &scratch.knocked_pred,
+                &step_ctx,
+                &mut scratch.knocked_coupon_continue,
+                &mut scratch.knocked_no_coupon_continue,
+            );
+            (
+                safe_coupon_hit,
+                safe_autocall_hit,
+                knocked_coupon_hit,
+                knocked_autocall_hit,
+            )
+        };
+
+        runtime.totals.remaining_coupon_pv_s6 +=
+            m6r(coupon_due_rate_s6, safe_coupon_hit + knocked_coupon_hit);
+        let redeemed = safe_autocall_hit + knocked_autocall_hit;
+        runtime.totals.redemption_pv_s6 += redeemed;
+        runtime.totals.par_recovery_probability_s6 += redeemed;
+
+        midlife_quarterly_merge_next_safe(
+            &mut runtime.next_states,
+            0,
+            &runtime.scratch.safe_coupon_continue,
+        )?;
+        midlife_quarterly_merge_next_knocked(
+            &mut runtime.next_states,
+            0,
+            &runtime.scratch.knocked_coupon_continue,
+        )?;
+        midlife_quarterly_merge_next_safe(
+            &mut runtime.next_states,
+            memory_after_due,
+            &runtime.scratch.safe_no_coupon_continue,
+        )?;
+        midlife_quarterly_merge_next_knocked(
+            &mut runtime.next_states,
+            memory_after_due,
+            &runtime.scratch.new_knocked,
+        )?;
+        midlife_quarterly_merge_next_knocked(
+            &mut runtime.next_states,
+            memory_after_due,
+            &runtime.scratch.knocked_no_coupon_continue,
+        )?;
+
+        idx += 1;
+    }
+
+    if is_maturity {
+        runtime.clear_next_states();
+        let mut idx = 0usize;
+        while idx < runtime.states.len() {
+            runtime.states[idx] = MidlifeQuarterlyMemoryState::default();
+            idx += 1;
+        }
+    } else {
+        runtime.commit_next_states();
+    }
+    Ok(())
+}
+
+fn midlife_run_quarterly_until_coupon_index(
+    inputs: &MidlifeInputs,
+    cfg: &C1FastConfig,
+    schedule_ctx: &MidlifeScheduleContext,
+    runtime: &mut MidlifeQuarterlyRuntime,
+    autocall_idx: &mut usize,
+    coupon_cursor: &mut usize,
+    stop_coupon_index: usize,
+) -> Result<(), MidlifePricerError> {
+    if stop_coupon_index > inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+
+    while *coupon_cursor < stop_coupon_index {
+        if *autocall_idx >= inputs.quarterly_autocall_schedule.len() {
+            if runtime.is_empty() {
+                break;
+            }
+            return Err(MidlifePricerError::InvalidInput);
+        }
+
+        let observation_day = inputs.quarterly_autocall_schedule[*autocall_idx];
+        if observation_day < runtime.previous_day
+            || observation_day < i64::from(inputs.now_trading_day)
+        {
+            return Err(MidlifePricerError::InvalidInput);
+        }
+        let days_from_now = observation_day - i64::from(inputs.now_trading_day);
+        let step_days = observation_day - runtime.previous_day;
+        let is_maturity = *autocall_idx + 1 == inputs.quarterly_autocall_schedule.len();
+        let due_count =
+            midlife_coupon_observations_due_until(inputs, coupon_cursor, observation_day)?;
+
+        if step_days == 0 {
+            midlife_quarterly_zero_step(
+                inputs,
+                runtime,
+                schedule_ctx,
+                observation_day,
+                due_count,
+                is_maturity,
+            )?;
+        } else {
+            let workspace = midlife_build_quarterly_observation_workspace(
+                inputs,
+                cfg,
+                runtime,
+                schedule_ctx,
+                step_days,
+                days_from_now,
+                is_maturity,
+            )?;
+            midlife_quarterly_live_step(
+                cfg,
+                runtime,
+                schedule_ctx,
+                &workspace,
+                due_count,
+                is_maturity,
+            )?;
+            runtime.previous_day = observation_day;
+        }
+
+        *autocall_idx += 1;
+        if runtime.is_empty() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub fn compute_midlife_nav_quarterly_c1_filter(
+    inputs: &MidlifeInputs,
+) -> Result<MidlifeNav, MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_quarterly_start");
+    midlife_validate_inputs(inputs)?;
+    let cfg = &SPY_QQQ_IWM_C1_CONFIG;
+    let (schedule_ctx, mu_u_shift, mu_v_shift) =
+        midlife_build_schedule_context_for_config(inputs, cfg)?;
+    let maturity_day = *inputs
+        .monthly_coupon_schedule
+        .last()
+        .ok_or(MidlifePricerError::InvalidInput)?;
+    if i64::from(inputs.now_trading_day) >= maturity_day {
+        return Ok(midlife_terminal_nav(inputs, &schedule_ctx));
+    }
+    if inputs.next_autocall_index as usize >= inputs.quarterly_autocall_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+
+    let mut runtime = MidlifeQuarterlyRuntime::new(inputs, mu_u_shift, mu_v_shift);
+    let mut autocall_idx = inputs.next_autocall_index as usize;
+    let mut coupon_cursor = inputs.next_coupon_index as usize;
+    midlife_run_quarterly_until_coupon_index(
+        inputs,
+        cfg,
+        &schedule_ctx,
+        &mut runtime,
+        &mut autocall_idx,
+        &mut coupon_cursor,
+        inputs.monthly_coupon_schedule.len(),
+    )?;
+
+    let raw_nav_s6 =
+        (runtime.totals.redemption_pv_s6 + runtime.totals.remaining_coupon_pv_s6).max(0);
+    Ok(MidlifeNav {
+        nav_s6: raw_nav_s6,
+        ki_level_usd_s6: i64::from(inputs.ki_barrier_bps) * 100,
+        remaining_coupon_pv_s6: runtime.totals.remaining_coupon_pv_s6.max(0),
+        par_recovery_probability_s6: runtime.totals.par_recovery_probability_s6.clamp(0, S6),
+    })
+}
+
+pub fn start_midlife_nav_quarterly_c1_filter_into(
+    inputs: &MidlifeInputs,
+    stop_coupon_index: u8,
+    checkpoint_out: &mut [u8],
+) -> Result<(), MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_quarterly_checkpoint_start");
+    midlife_validate_inputs(inputs)?;
+    let cfg = &SPY_QQQ_IWM_C1_CONFIG;
+    let (schedule_ctx, mu_u_shift, mu_v_shift) =
+        midlife_build_schedule_context_for_config(inputs, cfg)?;
+    let maturity_day = *inputs
+        .monthly_coupon_schedule
+        .last()
+        .ok_or(MidlifePricerError::InvalidInput)?;
+    if i64::from(inputs.now_trading_day) >= maturity_day {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    if inputs.next_autocall_index as usize >= inputs.quarterly_autocall_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+
+    let stop = stop_coupon_index as usize;
+    if stop < inputs.next_coupon_index as usize || stop > inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+
+    let mut runtime = MidlifeQuarterlyRuntime::new(inputs, mu_u_shift, mu_v_shift);
+    let mut autocall_idx = inputs.next_autocall_index as usize;
+    let mut coupon_cursor = inputs.next_coupon_index as usize;
+    midlife_run_quarterly_until_coupon_index(
+        inputs,
+        cfg,
+        &schedule_ctx,
+        &mut runtime,
+        &mut autocall_idx,
+        &mut coupon_cursor,
+        stop,
+    )?;
+    runtime.write_checkpoint_bytes(inputs, coupon_cursor, autocall_idx, checkpoint_out)
+}
+
+pub fn finish_midlife_nav_quarterly_c1_filter_from_bytes(
+    inputs: &MidlifeInputs,
+    checkpoint: &[u8],
+) -> Result<MidlifeNav, MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_quarterly_checkpoint_finish");
+    midlife_validate_inputs(inputs)?;
+    let cfg = &SPY_QQQ_IWM_C1_CONFIG;
+    let (schedule_ctx, _, _) = midlife_build_schedule_context_for_config(inputs, cfg)?;
+    let (mut runtime, mut autocall_idx, mut coupon_cursor) =
+        MidlifeQuarterlyRuntime::from_checkpoint_bytes(inputs, checkpoint)?;
+    midlife_run_quarterly_until_coupon_index(
+        inputs,
+        cfg,
+        &schedule_ctx,
+        &mut runtime,
+        &mut autocall_idx,
+        &mut coupon_cursor,
+        inputs.monthly_coupon_schedule.len(),
+    )?;
+    let raw_nav_s6 =
+        (runtime.totals.redemption_pv_s6 + runtime.totals.remaining_coupon_pv_s6).max(0);
+    Ok(MidlifeNav {
+        nav_s6: raw_nav_s6,
+        ki_level_usd_s6: i64::from(inputs.ki_barrier_bps) * 100,
+        remaining_coupon_pv_s6: runtime.totals.remaining_coupon_pv_s6.max(0),
+        par_recovery_probability_s6: runtime.totals.par_recovery_probability_s6.clamp(0, S6),
+    })
+}
+
+pub fn advance_midlife_nav_quarterly_c1_filter_in_place(
+    inputs: &MidlifeInputs,
+    checkpoint: &mut [u8],
+    stop_coupon_index: u8,
+) -> Result<(), MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_quarterly_checkpoint_advance");
+    midlife_validate_inputs(inputs)?;
+    let cfg = &SPY_QQQ_IWM_C1_CONFIG;
+    let (schedule_ctx, _, _) = midlife_build_schedule_context_for_config(inputs, cfg)?;
+    let (mut runtime, mut autocall_idx, mut coupon_cursor) =
+        MidlifeQuarterlyRuntime::from_checkpoint_bytes(inputs, checkpoint)?;
+    let stop = stop_coupon_index as usize;
+    if stop <= coupon_cursor || stop > inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    midlife_run_quarterly_until_coupon_index(
+        inputs,
+        cfg,
+        &schedule_ctx,
+        &mut runtime,
+        &mut autocall_idx,
+        &mut coupon_cursor,
+        stop,
+    )?;
+    runtime.write_checkpoint_bytes(inputs, coupon_cursor, autocall_idx, checkpoint)
+}
+
+pub fn start_midlife_nav_c1_filter_into(
+    inputs: &MidlifeInputs,
+    stop_coupon_index: u8,
+    checkpoint_out: &mut [u8],
+) -> Result<(), MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_start");
+    midlife_validate_inputs(inputs)?;
+    let (cfg, schedule_ctx, mu_u_shift, mu_v_shift) = midlife_build_schedule_context(inputs)?;
+    let mut runtime = Box::new(MidlifeRuntime::new(inputs, mu_u_shift, mu_v_shift));
+    c1_filter_cu_diag(b"midlife_after_setup");
+
+    let stop = stop_coupon_index as usize;
+    if stop < runtime.first_coupon_index || stop > inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let first_coupon_index = runtime.first_coupon_index;
+    let cursor = midlife_run_coupon_range(
+        inputs,
+        &cfg,
+        &schedule_ctx,
+        &mut runtime,
+        first_coupon_index,
+        stop,
+    )?;
+    runtime.write_checkpoint_bytes(cursor, checkpoint_out)
+}
+
+pub fn finish_midlife_nav_c1_filter_from_bytes(
+    inputs: &MidlifeInputs,
+    checkpoint: &[u8],
+) -> Result<MidlifeNav, MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_start");
+    midlife_validate_inputs(inputs)?;
+    let (cfg, schedule_ctx, _, _) = midlife_build_schedule_context(inputs)?;
+    let mut runtime = Box::new(MidlifeRuntime::from_checkpoint_bytes(inputs, checkpoint)?);
+    c1_filter_cu_diag(b"midlife_after_setup");
+    let start = midlife_checkpoint_next_coupon_index(checkpoint)? as usize;
+    let cursor = midlife_run_coupon_range(
+        inputs,
+        &cfg,
+        &schedule_ctx,
+        &mut runtime,
+        start,
+        inputs.monthly_coupon_schedule.len(),
+    )?;
+    if cursor != inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    c1_filter_cu_diag(b"midlife_done");
+    Ok(midlife_nav_from_runtime(inputs, &runtime))
+}
+
+pub fn advance_midlife_nav_c1_filter_in_place(
+    inputs: &MidlifeInputs,
+    checkpoint: &mut [u8],
+    stop_coupon_index: u8,
+) -> Result<(), MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_start");
+    midlife_validate_inputs(inputs)?;
+    let (cfg, schedule_ctx, _, _) = midlife_build_schedule_context(inputs)?;
+    let start = midlife_checkpoint_next_coupon_index(checkpoint)? as usize;
+    let mut runtime = Box::new(MidlifeRuntime::from_checkpoint_bytes(inputs, checkpoint)?);
+    c1_filter_cu_diag(b"midlife_after_setup");
+
+    let stop = stop_coupon_index as usize;
+    if stop <= start || stop > inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let cursor = midlife_run_coupon_range(inputs, &cfg, &schedule_ctx, &mut runtime, start, stop)?;
+    runtime.write_checkpoint_bytes(cursor, checkpoint)
+}
+
+#[cfg(not(target_os = "solana"))]
+pub fn start_midlife_nav_c1_filter(
+    inputs: &MidlifeInputs,
+    stop_coupon_index: u8,
+) -> Result<MidlifeNavCheckpoint, MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_start");
+    midlife_validate_inputs(inputs)?;
+    let (cfg, schedule_ctx, mu_u_shift, mu_v_shift) = midlife_build_schedule_context(inputs)?;
+    let mut runtime = Box::new(MidlifeRuntime::new(inputs, mu_u_shift, mu_v_shift));
+    c1_filter_cu_diag(b"midlife_after_setup");
+
+    let stop = stop_coupon_index as usize;
+    if stop < runtime.first_coupon_index || stop > inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let first_coupon_index = runtime.first_coupon_index;
+    let cursor = midlife_run_coupon_range(
+        inputs,
+        &cfg,
+        &schedule_ctx,
+        &mut runtime,
+        first_coupon_index,
+        stop,
+    )?;
+    if cursor != stop {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    runtime.to_checkpoint(stop)
+}
+
+#[cfg(not(target_os = "solana"))]
+pub fn finish_midlife_nav_c1_filter(
+    inputs: &MidlifeInputs,
+    checkpoint: &MidlifeNavCheckpoint,
+) -> Result<MidlifeNav, MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_start");
+    midlife_validate_inputs(inputs)?;
+    let (cfg, schedule_ctx, _, _) = midlife_build_schedule_context(inputs)?;
+    let mut runtime = Box::new(MidlifeRuntime::from_checkpoint(inputs, checkpoint)?);
+    c1_filter_cu_diag(b"midlife_after_setup");
+    let cursor = midlife_run_coupon_range(
+        inputs,
+        &cfg,
+        &schedule_ctx,
+        &mut runtime,
+        checkpoint.next_coupon_index as usize,
+        inputs.monthly_coupon_schedule.len(),
+    )?;
+    if cursor != inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    c1_filter_cu_diag(b"midlife_done");
+    Ok(midlife_nav_from_runtime(inputs, &runtime))
+}
+
+#[cfg(not(target_os = "solana"))]
+pub fn advance_midlife_nav_c1_filter(
+    inputs: &MidlifeInputs,
+    checkpoint: &MidlifeNavCheckpoint,
+    stop_coupon_index: u8,
+) -> Result<MidlifeNavCheckpoint, MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_start");
+    midlife_validate_inputs(inputs)?;
+    let (cfg, schedule_ctx, _, _) = midlife_build_schedule_context(inputs)?;
+    let mut runtime = Box::new(MidlifeRuntime::from_checkpoint(inputs, checkpoint)?);
+    c1_filter_cu_diag(b"midlife_after_setup");
+
+    let start = checkpoint.next_coupon_index as usize;
+    let stop = stop_coupon_index as usize;
+    if stop <= start || stop > inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    let cursor = midlife_run_coupon_range(inputs, &cfg, &schedule_ctx, &mut runtime, start, stop)?;
+    if cursor != stop {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+    runtime.to_checkpoint(stop)
+}
+
+pub fn compute_midlife_nav_c1_filter(
+    inputs: &MidlifeInputs,
+) -> Result<MidlifeNav, MidlifePricerError> {
+    compute_midlife_nav_monthly_c1_filter(inputs)
+}
+
+pub fn compute_midlife_nav_monthly_c1_filter(
+    inputs: &MidlifeInputs,
+) -> Result<MidlifeNav, MidlifePricerError> {
+    c1_filter_cu_diag(b"midlife_start");
+    midlife_validate_inputs(inputs)?;
+    let (cfg, schedule_ctx, mu_u_shift, mu_v_shift) = midlife_build_schedule_context(inputs)?;
+    let mut runtime = Box::new(MidlifeRuntime::new(inputs, mu_u_shift, mu_v_shift));
+    c1_filter_cu_diag(b"midlife_after_setup");
+
+    let first_coupon_index = runtime.first_coupon_index;
+    let cursor = midlife_run_coupon_range(
+        inputs,
+        &cfg,
+        &schedule_ctx,
+        &mut runtime,
+        first_coupon_index,
+        inputs.monthly_coupon_schedule.len(),
+    )?;
+    if cursor != inputs.monthly_coupon_schedule.len() {
+        return Err(MidlifePricerError::InvalidInput);
+    }
+
+    c1_filter_cu_diag(b"midlife_done");
+    Ok(midlife_nav_from_runtime(inputs, &runtime))
+}
+
 #[cfg(not(target_os = "solana"))]
 fn bessel_k1_f64(z: f64) -> f64 {
     if !z.is_finite() || z <= 0.0 {
@@ -5183,7 +9528,6 @@ fn build_triple_pre_by_obs(cfg: &C1FastConfig) -> [Option<TripleCorrectionPre>; 
     })
 }
 
-#[inline(never)]
 /// Out-parameter variant of the observation step. Computes the fresh
 /// `next_safe` / `next_knocked` states directly into the caller's slots,
 /// returning only `(first_hit, first_knock_in)`.
@@ -5556,7 +9900,7 @@ pub fn quote_c1_filter_rect_live(
         triple_pre[0].as_ref(),
     );
     redemption_pv += m6r(cfg.notional, obs1_fh);
-    coupon_annuity += 1 * obs1_fh;
+    coupon_annuity += quote_coupon_count_for_obs(0) * obs1_fh;
     total_ac += obs1_fh;
     total_ki += obs1_fki;
 
@@ -5564,7 +9908,7 @@ pub fn quote_c1_filter_rect_live(
     for step in 0..4 {
         let next_obs_idx = step + 1;
         let k_child = k_child_for(step);
-        let coupon_count = (next_obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(next_obs_idx);
         let obs = &cfg.obs[next_obs_idx];
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
         let tp =
@@ -5673,14 +10017,14 @@ pub fn quote_c1_filter_rect_u12_live(
         triple_pre[0].as_ref(),
     );
     redemption_pv += m6r(cfg.notional, obs1_fh);
-    coupon_annuity += 1 * obs1_fh;
+    coupon_annuity += quote_coupon_count_for_obs(0) * obs1_fh;
     total_ac += obs1_fh;
     total_ki += obs1_fki;
 
     let k_uniform = 12usize;
     for step in 0..4 {
         let next_obs_idx = step + 1;
-        let coupon_count = (next_obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(next_obs_idx);
         let obs = &cfg.obs[next_obs_idx];
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
         let tp =
@@ -6073,7 +10417,7 @@ pub fn quote_c1_filter(
     for obs_idx in 0..N_OBS {
         let obs = &cfg.obs[obs_idx];
         let is_maturity = obs_idx + 1 == N_OBS;
-        let coupon_count = (obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(obs_idx);
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
 
         if obs_idx == 0 {
@@ -6218,7 +10562,7 @@ pub fn quote_c1_filter_with_delta(
     for obs_idx in 0..N_OBS {
         let obs = &cfg.obs[obs_idx];
         let is_maturity = obs_idx + 1 == N_OBS;
-        let coupon_count = (obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(obs_idx);
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
 
         if obs_idx == 0 {
@@ -6431,7 +10775,7 @@ pub fn quote_c1_filter_with_delta_live(
 
     for obs_idx in 0..remaining_observations {
         let is_maturity = obs_idx + 1 == remaining_observations;
-        let coupon_count = (obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(obs_idx);
         let drift_shift_total = (obs_idx as i64 + 1) * drift_shift_63 + mu_c_shift;
         let tp = observation_probability_triple_pre(obs_idx, triple_pre_by_obs[obs_idx].as_ref());
         let frozen_grid = if obs_idx == 0 {
@@ -6688,7 +11032,7 @@ pub fn quote_c1_filter_tapered(
     for obs_idx in 0..N_OBS {
         let obs = &cfg.obs[obs_idx];
         let is_maturity = obs_idx + 1 == N_OBS;
-        let coupon_count = (obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(obs_idx);
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
 
         if obs_idx == 0 {
@@ -6798,7 +11142,7 @@ pub fn quote_c1_filter_live(
     for obs_idx in 0..N_OBS {
         let obs = &cfg.obs[obs_idx];
         let is_maturity = obs_idx + 1 == N_OBS;
-        let coupon_count = (obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(obs_idx);
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
         let tp = observation_probability_triple_pre(obs_idx, triple_pre[obs_idx].as_ref());
 
@@ -6921,7 +11265,7 @@ pub fn quote_c1_filter_trace(
     for obs_idx in 0..N_OBS {
         let obs = &cfg.obs[obs_idx];
         let is_maturity = obs_idx + 1 == N_OBS;
-        let coupon_count = (obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(obs_idx);
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
         let tp = observation_probability_triple_pre(obs_idx, triple_pre[obs_idx].as_ref());
 
@@ -7070,7 +11414,7 @@ pub fn quote_c1_filter_trace_live(
     for obs_idx in 0..N_OBS {
         let obs = &cfg.obs[obs_idx];
         let is_maturity = obs_idx + 1 == N_OBS;
-        let coupon_count = (obs_idx + 1) as i64;
+        let coupon_count = quote_coupon_count_for_obs(obs_idx);
         let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
         let tp = observation_probability_triple_pre(obs_idx, triple_pre[obs_idx].as_ref());
 
@@ -9556,7 +13900,7 @@ mod tests {
         for obs_idx in 0..N_OBS {
             let obs = &cfg.obs[obs_idx];
             let is_maturity = obs_idx + 1 == N_OBS;
-            let coupon_count = (obs_idx + 1) as i64;
+            let coupon_count = quote_coupon_count_for_obs(obs_idx);
             let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63 + mu_c_shift;
             let triple_pre =
                 cholesky6(obs.cov_uu, obs.cov_uv, obs.cov_vv)
@@ -11356,7 +15700,7 @@ mod tests {
         for obs_idx in 0..N_OBS {
             let obs = &cfg.obs[obs_idx];
             let is_maturity = obs_idx + 1 == N_OBS;
-            let coupon_count = (obs_idx + 1) as i64;
+            let coupon_count = quote_coupon_count_for_obs(obs_idx);
             let drift_shift_total = obs.obs_day as i64 / 63 * drift_shift_63;
             if obs_idx == 0 {
                 let (obs1_safe, obs1_knocked, obs1_fh, obs1_fki) =

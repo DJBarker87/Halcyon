@@ -10,15 +10,15 @@ use crate::client::CliContext;
 pub struct Args {
     #[arg(long)]
     pub amount: u64,
-    #[arg(long)]
-    pub usdc_mint: String,
+    #[arg(long, value_name = "PUBKEY")]
+    pub usdc_mint: Option<String>,
     #[arg(long)]
     pub destination: String,
 }
 
 pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     let admin = ctx.signer()?;
-    let usdc_mint = CliContext::parse_pubkey("usdc_mint", &args.usdc_mint)?;
+    let usdc_mint = ctx.resolve_usdc_mint(args.usdc_mint.as_deref())?;
     let destination = CliContext::parse_pubkey("destination", &args.destination)?;
     let ix = kernel::sweep_fees_ix(&admin.pubkey(), &usdc_mint, &destination, args.amount);
     let signature = tx::send_instructions(ctx.rpc.as_ref(), admin, vec![ix]).await?;

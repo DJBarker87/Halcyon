@@ -251,7 +251,7 @@ No frontend. Operator == user for L2.
 
 - Verify Pyth SOL/USD feed presence and publish cadence on devnet. If unavailable or flaky, fall back to `research/devnet_mocks/pyth-mock/` (see §4.10 of the build-order for the mock-Pyth contingency).
 - Deploy all five programs (kernel, stub_product, flagship_autocall, il_protection, sol_autocall). Stub is deployed but not used — consider gating issuance in the registry if the stub is still at the original program ID. Better: **relocate the stub** to `research/` at L2 start so it's not part of the deploy.
-- Airdrop USDC-Dev via the usdc-dev faucet or create a devnet USDC mint the CLI manages.
+- Create the Halcyon mock-USDC devnet mint, run `init-payment-mint`, and expose `/faucet` so judges can self-fund.
 - Keeper instances run from a VPS or a dev machine; logs ship to wherever your monitoring lands (L2 is pre-Grafana; structured stdout is fine).
 
 ### 3.8 End-to-end devnet test
@@ -259,9 +259,9 @@ No frontend. Operator == user for L2.
 Per §4.4.1. Scripted, unattended, over a real 16-day window.
 
 1. Operator (CLI): `init-protocol` + `register-sol-autocall`.
-2. Operator: `senior-deposit 10000` (10k USDC-Dev).
-3. Operator: `seed-junior 1000` (1k USDC-Dev).
-4. Operator: `buy 500` (500 USDC-Dev notional, 16-day tenor).
+2. Operator: `senior-deposit 10000` (10k mock-USDC).
+3. Operator: `seed-junior 1000` (1k mock-USDC).
+4. Operator: `buy 500` (500 mock-USDC notional, 16-day tenor).
 5. Every 2 days the observation keeper fires (on its own cadence).
 6. Some SOL price movement triggers either autocall or runs to maturity.
 7. Hedge keeper fires at least twice across the 16-day window.

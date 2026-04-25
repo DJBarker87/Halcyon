@@ -9,8 +9,8 @@ use crate::client::CliContext;
 #[derive(Debug, ClapArgs)]
 pub struct Args {
     pub policy: String,
-    #[arg(long)]
-    pub usdc_mint: String,
+    #[arg(long, value_name = "PUBKEY")]
+    pub usdc_mint: Option<String>,
     #[arg(long)]
     pub pyth_sol: String,
 }
@@ -18,7 +18,7 @@ pub struct Args {
 pub async fn run(ctx: &CliContext, args: Args) -> Result<()> {
     let caller = ctx.signer()?;
     let policy = CliContext::parse_pubkey("policy", &args.policy)?;
-    let usdc_mint = CliContext::parse_pubkey("usdc_mint", &args.usdc_mint)?;
+    let usdc_mint = ctx.resolve_usdc_mint(args.usdc_mint.as_deref())?;
     let pyth_sol = CliContext::parse_pubkey("pyth_sol", &args.pyth_sol)?;
     let header =
         fetch_anchor_account::<halcyon_kernel::state::PolicyHeader>(ctx.rpc.as_ref(), &policy)

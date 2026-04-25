@@ -51,7 +51,8 @@ pub fn handler(ctx: Context<WriteSigmaValue>, args: WriteSigmaValueArgs) -> Resu
 
     let cfg = &ctx.accounts.protocol_config;
     require!(cfg.sigma_bounds_valid(), crate::KernelError::BadConfig);
-    let sigma_floor_s6 = cfg.sigma_floor_for_product_s6(&ctx.accounts.vault_sigma.product_program_id);
+    let sigma_floor_s6 =
+        cfg.sigma_floor_for_product_s6(&ctx.accounts.vault_sigma.product_program_id);
     require!(
         args.sigma_annualised_s6 >= sigma_floor_s6
             && args.sigma_annualised_s6 <= cfg.sigma_ceiling_annualised_s6,

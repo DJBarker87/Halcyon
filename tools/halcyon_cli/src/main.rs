@@ -36,6 +36,9 @@ enum Command {
     /// authority PDAs. Idempotent — skips if `ProtocolConfig` already exists.
     InitProtocol(commands::init_protocol::Args),
 
+    /// Initialize kernel vault/treasury token accounts for an additional payment mint.
+    InitPaymentMint(commands::init_payment_mint::Args),
+
     /// Register the SOL Autocall product with the kernel. Admin-only.
     RegisterSolAutocall(commands::register::Args),
 
@@ -88,11 +91,38 @@ enum Command {
     /// Simulate Flagship Autocall `preview_quote` and decode the Anchor return data.
     PreviewFlagship(commands::preview_flagship::Args),
 
+    /// Simulate the Flagship mid-life lending value for an active policy.
+    PreviewLendingValue(commands::preview_lending_value::Args),
+
     /// Issue a SOL Autocall policy.
     Buy(commands::buy::Args),
 
     /// Issue an IL Protection policy.
     BuyIl(commands::buy_il::Args),
+
+    /// Redeem a Flagship note through the deterministic buyback path.
+    BuybackFlagship(commands::buyback_flagship::Args),
+
+    /// Wrap an active policy into a transferable 1-supply SPL receipt token.
+    WrapPolicyReceipt(commands::wrap_policy_receipt::Args),
+
+    /// Burn a policy receipt token and recover direct policy ownership.
+    UnwrapPolicyReceipt(commands::unwrap_policy_receipt::Args),
+
+    /// Request the 48-hour retail redemption path for a Flagship note.
+    RequestRetailRedemption(commands::request_retail_redemption::Args),
+
+    /// Cancel a pending retail redemption request.
+    CancelRetailRedemption(commands::cancel_retail_redemption::Args),
+
+    /// Execute a matured 48-hour retail redemption request.
+    ExecuteRetailRedemption(commands::execute_retail_redemption::Args),
+
+    /// Burn a wrapped receipt and call the instant Flagship buyback path.
+    LiquidateWrappedFlagship(commands::liquidate_wrapped_flagship::Args),
+
+    /// Transfer an active policy to another wallet or escrow PDA.
+    TransferPolicyOwner(commands::transfer_policy_owner::Args),
 
     /// Trigger settlement on a matured or auto-called policy.
     Settle(commands::settle::Args),
@@ -120,6 +150,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::InitProtocol(a) => commands::init_protocol::run(&ctx, a).await,
+        Command::InitPaymentMint(a) => commands::init_payment_mint::run(&ctx, a).await,
         Command::RegisterSolAutocall(a) => commands::register::run(&ctx, a).await,
         Command::RegisterIlProtection(a) => commands::register_il_protection::run(&ctx, a).await,
         Command::RegisterFlagshipAutocall(a) => {
@@ -138,8 +169,25 @@ async fn main() -> Result<()> {
         Command::Preview(a) => commands::preview::run(&ctx, a).await,
         Command::PreviewIl(a) => commands::preview_il::run(&ctx, a).await,
         Command::PreviewFlagship(a) => commands::preview_flagship::run(&ctx, a).await,
+        Command::PreviewLendingValue(a) => commands::preview_lending_value::run(&ctx, a).await,
         Command::Buy(a) => commands::buy::run(&ctx, a).await,
         Command::BuyIl(a) => commands::buy_il::run(&ctx, a).await,
+        Command::BuybackFlagship(a) => commands::buyback_flagship::run(&ctx, a).await,
+        Command::WrapPolicyReceipt(a) => commands::wrap_policy_receipt::run(&ctx, a).await,
+        Command::UnwrapPolicyReceipt(a) => commands::unwrap_policy_receipt::run(&ctx, a).await,
+        Command::RequestRetailRedemption(a) => {
+            commands::request_retail_redemption::run(&ctx, a).await
+        }
+        Command::CancelRetailRedemption(a) => {
+            commands::cancel_retail_redemption::run(&ctx, a).await
+        }
+        Command::ExecuteRetailRedemption(a) => {
+            commands::execute_retail_redemption::run(&ctx, a).await
+        }
+        Command::LiquidateWrappedFlagship(a) => {
+            commands::liquidate_wrapped_flagship::run(&ctx, a).await
+        }
+        Command::TransferPolicyOwner(a) => commands::transfer_policy_owner::run(&ctx, a).await,
         Command::Settle(a) => commands::settle::run(&ctx, a).await,
         Command::SettleIl(a) => commands::settle_il::run(&ctx, a).await,
         Command::RegimeStatus => commands::regime_status::run(&ctx).await,

@@ -492,6 +492,10 @@ const MAX_KERNEL_HALF: usize = 30;
 const COS_M: usize = 17;
 /// Reduced COS terms for later backward steps (smoother value function).
 const COS_M_REDUCED: usize = 12;
+/// Compact SOL midlife grid term count. Keeps the on-chain Markov preview below
+/// the SBF CU ceiling while retaining host parity against the full-term
+/// 21-state reference grid.
+pub(crate) const COS_M_MIDLIFE_COMPACT: usize = 13;
 /// Backward step index at which to switch to reduced COS terms.
 /// Steps 0-3 (near maturity) use full, steps 4-6 use reduced.
 const COS_REDUCE_AFTER_STEP: usize = 3;
@@ -684,13 +688,25 @@ pub struct NigParams6 {
 
 impl NigParams6 {
     pub fn new(alpha: i64, beta: i64, delta_1d: i64, step_days: i64) -> Result<Self, SolMathError> {
+        Self::new_with_step_days_s6(alpha, beta, delta_1d, step_days * SCALE_6)
+    }
+
+    pub fn new_with_step_days_s6(
+        alpha: i64,
+        beta: i64,
+        delta_1d: i64,
+        step_days_s6: i64,
+    ) -> Result<Self, SolMathError> {
+        if step_days_s6 <= 0 {
+            return Err(SolMathError::DomainError);
+        }
         let asq = mul6(alpha, alpha)?;
         let bsq = mul6(beta, beta)?;
         if asq <= bsq {
             return Err(SolMathError::DomainError);
         }
         let gamma = sqrt6(asq - bsq)?;
-        let dt = mul6(delta_1d, step_days * SCALE_6)?;
+        let dt = mul6(delta_1d, step_days_s6)?;
 
         // Convexity correction: ω = δ(γ − √(α²−(β+1)²))
         let bp1 = beta + SCALE_6;
@@ -731,6 +747,16 @@ impl NigParams6 {
         beta: i64,
         step_days: i64,
     ) -> Result<Self, SolMathError> {
+        Self::from_vol_with_step_days_s6(sigma_ann_6, alpha, beta, step_days * SCALE_6)
+    }
+
+    /// Build NIG params from annualized vol for an arbitrary fixed-point step size.
+    pub fn from_vol_with_step_days_s6(
+        sigma_ann_6: i64,
+        alpha: i64,
+        beta: i64,
+        step_days_s6: i64,
+    ) -> Result<Self, SolMathError> {
         let asq = mul6(alpha, alpha)?;
         let bsq = mul6(beta, beta)?;
         if asq <= bsq {
@@ -748,7 +774,7 @@ impl NigParams6 {
         if delta_1d == 0 {
             return Err(SolMathError::DomainError);
         }
-        Self::new(alpha, beta, delta_1d, step_days)
+        Self::new_with_step_days_s6(alpha, beta, delta_1d, step_days_s6)
     }
 }
 
@@ -1666,6 +1692,12 @@ struct MarkovGrid {
     ki_state_max: usize, // states 0..=ki_state_max are below KI
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MarkovGridAllocation {
+    Standard,
+    MidlifeCompact,
+}
+
 impl MarkovGrid {
     /// Build a Zhang & Li grid with `n` total states.
     /// Requires n >= 7.
@@ -1677,6 +1709,33 @@ impl MarkovGrid {
         n: usize,
         params: &NigParams6,
         contract: &AutocallParams,
+    ) -> Result<Self, SolMathError> {
+        Self::build_with_contract_and_allocation(
+            n,
+            params,
+            contract,
+            MarkovGridAllocation::Standard,
+        )
+    }
+
+    fn build_midlife_compact(
+        n: usize,
+        params: &NigParams6,
+        contract: &AutocallParams,
+    ) -> Result<Self, SolMathError> {
+        Self::build_with_contract_and_allocation(
+            n,
+            params,
+            contract,
+            MarkovGridAllocation::MidlifeCompact,
+        )
+    }
+
+    fn build_with_contract_and_allocation(
+        n: usize,
+        params: &NigParams6,
+        contract: &AutocallParams,
+        allocation: MarkovGridAllocation,
     ) -> Result<Self, SolMathError> {
         if n < 7 {
             return Err(SolMathError::DomainError);
@@ -1700,7 +1759,15 @@ impl MarkovGrid {
 
         // Region allocation
         let n_a = (n * 15 / 100).max(2); // 15% below KI
-        let n_d = (n * 10 / 100).max(2); // 10% above autocall
+        let n_d = match allocation {
+            MarkovGridAllocation::Standard => (n * 10 / 100).max(2),
+            // The on-chain midlife pricer has to stay under the SBF CU cap.
+            // With ten states, spending one state above the autocall boundary
+            // leaves enough resolution between KI and coupon to track the
+            // 21-state reference around live liquidation paths.
+            MarkovGridAllocation::MidlifeCompact if n <= 10 => 1,
+            MarkovGridAllocation::MidlifeCompact => (n * 10 / 100).max(2),
+        };
         let n_c: usize = 1; // coupon-to-autocall zone
         let n_b = n - n_a - n_c - n_d; // KI to coupon
         if n_b < 2 {
@@ -3777,6 +3844,15 @@ pub(crate) struct MarkovScheduleStep {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct MarkovScheduleStepS6 {
+    pub step_days_s6: i64,
+    pub observation: bool,
+    /// 1-indexed observation number from inception (obs 1 = first observation).
+    /// 0 if this step is not an observation.
+    pub obs_index_from_inception: usize,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct MarkovSurface6 {
     pub reps_6: Vec<i64>,
     pub spot_ratios_6: Vec<i64>,
@@ -3787,11 +3863,46 @@ pub(crate) struct MarkovSurface6 {
     pub atm_state: usize,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct MarkovValueSurface6 {
+    pub spot_ratios_6: Vec<i64>,
+    pub untouched_values_6: Vec<i64>,
+    pub touched_values_6: Vec<i64>,
+    pub atm_state: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MarkovSurfacePair6 {
+    pub nav: MarkovValueSurface6,
+    pub redemption: MarkovValueSurface6,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct MarkovTransitionMatrixRef<'a> {
+    pub step_days_s6: i64,
+    pub values_s6: &'a [i64],
+}
+
+#[derive(Clone, Copy)]
+enum MarkovPairMatrixSource<'a> {
+    Build,
+    Precomputed(&'a [MarkovTransitionMatrixRef<'a>]),
+}
+
 fn build_transition_matrix_on_grid(
     grid: &MarkovGrid,
     params: &NigParams6,
 ) -> Result<Vec<Vec<i64>>, SolMathError> {
+    build_transition_matrix_on_grid_with_cos_terms(grid, params, COS_M)
+}
+
+fn build_transition_matrix_on_grid_with_cos_terms(
+    grid: &MarkovGrid,
+    params: &NigParams6,
+    cos_terms: usize,
+) -> Result<Vec<Vec<i64>>, SolMathError> {
     let s = grid.n_states;
+    let cos_terms = cos_terms.clamp(2, COS_M);
 
     let gamma_cu = mul6(mul6(params.gamma, params.gamma)?, params.gamma)?;
     if gamma_cu == 0 {
@@ -3817,7 +3928,7 @@ fn build_transition_matrix_on_grid(
     let mut rot = C6::new(SCALE_6, 0);
 
     let mut coeffs: Vec<(i64, i64)> = Vec::new();
-    for k in 1..COS_M {
+    for k in 1..cos_terms {
         let omega_k = (k as i64) * omega_1;
         let new_re = mul6(rot.re, rot_base.re)? - mul6(rot.im, rot_base.im)?;
         let new_im = mul6(rot.re, rot_base.im)? + mul6(rot.im, rot_base.re)?;
@@ -3863,6 +3974,115 @@ fn build_transition_matrix_on_grid(
     Ok(mat)
 }
 
+fn build_transition_matrix_on_grid_flat_with_cos_terms(
+    grid: &MarkovGrid,
+    params: &NigParams6,
+    cos_terms: usize,
+) -> Result<Vec<i64>, SolMathError> {
+    cu_trace(b"cu_trace:midlife_matrix:start");
+    let s = grid.n_states;
+    let cos_terms = cos_terms.clamp(2, COS_M);
+
+    let gamma_cu = mul6(mul6(params.gamma, params.gamma)?, params.gamma)?;
+    if gamma_cu == 0 {
+        return Err(SolMathError::DomainError);
+    }
+    let variance = div6(mul6(params.dt, params.asq)?, gamma_cu)?;
+    let std_z = sqrt6(variance)?;
+    let nig_mean = div6(mul6(params.dt, params.beta)?, params.gamma)?;
+    let total_mean = params.drift + nig_mean;
+    let l_std = 8 * std_z;
+    let cos_a = total_mean - l_std;
+    let cos_b = total_mean + l_std;
+    let ba = cos_b - cos_a;
+    if ba <= 0 {
+        return Err(SolMathError::DomainError);
+    }
+
+    let bsq = mul6(params.beta, params.beta)?;
+    let omega_1 = div6(PI_6, ba)?;
+    let wa1 = mul6(omega_1, cos_a)?;
+    let (sin_r1, cos_r1) = sincos_6(wa1)?;
+    let rot_base = C6::new(cos_r1, -sin_r1);
+    let mut rot = C6::new(SCALE_6, 0);
+
+    let mut coeffs = [(0i64, 0i64); COS_M - 1];
+    let mut coeffs_len = 0usize;
+    for k in 1..cos_terms {
+        let omega_k = (k as i64) * omega_1;
+        let new_re = mul6(rot.re, rot_base.re)? - mul6(rot.im, rot_base.im)?;
+        let new_im = mul6(rot.re, rot_base.im)? + mul6(rot.im, rot_base.re)?;
+        rot = C6::new(new_re, new_im);
+
+        let usq = mul6(omega_k, omega_k)?;
+        let inner = csqrt6(C6::new(
+            params.asq - bsq + usq,
+            -2 * mul6(params.beta, omega_k)?,
+        ))?;
+        let exp_re = mul6(params.dt, params.gamma - inner.re)?;
+        if exp_re < -8 * SCALE_6 {
+            break;
+        }
+        let exp_im = mul6(omega_k, params.drift)? - mul6(params.dt, inner.im)?;
+        let phi = cexp6(C6::new(exp_re, exp_im))?;
+
+        let a_re = mul6(phi.re, rot.re)? - mul6(phi.im, rot.im)?;
+        let a_im = mul6(phi.re, rot.im)? + mul6(phi.im, rot.re)?;
+        coeffs[coeffs_len] = (a_re, a_im);
+        coeffs_len += 1;
+    }
+
+    let coeffs = &coeffs[..coeffs_len];
+    cu_trace(b"cu_trace:midlife_matrix:after_coeffs");
+    let mut cdf_cache_z = [0i64; 128];
+    let mut cdf_cache_v = [0i64; 128];
+    let mut cdf_cache_len = 0usize;
+    let mut mat = vec![0i64; s * s];
+    for i in 0..s {
+        let row_base = i * s;
+        let x = grid.reps[i];
+        let mut prev_cdf: i64 = 0;
+        let mut row_sum: i64 = 0;
+        for j in 0..s {
+            let upper = if j == s - 1 {
+                SCALE_6
+            } else {
+                let z = grid.bounds[j] - x;
+                let mut cached = None;
+                for idx in 0..cdf_cache_len {
+                    if cdf_cache_z[idx] == z {
+                        cached = Some(cdf_cache_v[idx]);
+                        break;
+                    }
+                }
+                if let Some(value) = cached {
+                    value
+                } else {
+                    let value = nig_cdf_cos_direct(z, cos_a, ba, coeffs)?;
+                    if cdf_cache_len < cdf_cache_z.len() {
+                        cdf_cache_z[cdf_cache_len] = z;
+                        cdf_cache_v[cdf_cache_len] = value;
+                        cdf_cache_len += 1;
+                    }
+                    value
+                }
+            };
+            let weight = (upper - prev_cdf).max(0);
+            mat[row_base + j] = weight;
+            row_sum += weight;
+            prev_cdf = upper;
+        }
+        if row_sum > 0 && row_sum != SCALE_6 {
+            for j in 0..s {
+                let idx = row_base + j;
+                mat[idx] = div6(mul6(mat[idx], SCALE_6)?, row_sum)?;
+            }
+        }
+    }
+    cu_trace(b"cu_trace:midlife_matrix:end");
+    Ok(mat)
+}
+
 fn finite_difference_deltas_6(
     spot_ratios_6: &[i64],
     values_6: &[i64],
@@ -3889,6 +4109,11 @@ fn finite_difference_deltas_6(
     Ok(deltas)
 }
 
+#[inline(always)]
+fn mul6_weighted_value(weight_s6: i64, value_s6: i64) -> i64 {
+    (weight_s6 * value_s6) / SCALE_6
+}
+
 pub(crate) fn solve_markov_surface_with_schedule(
     sigma_ann_6: i64,
     alpha_6: i64,
@@ -3899,9 +4124,94 @@ pub(crate) fn solve_markov_surface_with_schedule(
     schedule: &[MarkovScheduleStep],
     coupon_6: i64,
 ) -> Result<MarkovSurface6, AutocallV2Error> {
+    let schedule_s6 = schedule
+        .iter()
+        .map(|step| MarkovScheduleStepS6 {
+            step_days_s6: step.step_days * SCALE_6,
+            observation: step.observation,
+            obs_index_from_inception: step.obs_index_from_inception,
+        })
+        .collect::<Vec<_>>();
+    solve_markov_surface_with_schedule_s6(
+        sigma_ann_6,
+        alpha_6,
+        beta_6,
+        reference_step_days,
+        n_states,
+        contract,
+        &schedule_s6,
+        coupon_6,
+    )
+}
+
+pub(crate) fn solve_markov_surface_with_schedule_s6(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    n_states: usize,
+    contract: &AutocallParams,
+    schedule: &[MarkovScheduleStepS6],
+    coupon_6: i64,
+) -> Result<MarkovSurface6, AutocallV2Error> {
+    solve_markov_surface_with_schedule_s6_and_allocation(
+        sigma_ann_6,
+        alpha_6,
+        beta_6,
+        reference_step_days,
+        n_states,
+        contract,
+        schedule,
+        coupon_6,
+        MarkovGridAllocation::Standard,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn solve_markov_surface_with_midlife_schedule_s6(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    n_states: usize,
+    contract: &AutocallParams,
+    schedule: &[MarkovScheduleStepS6],
+    coupon_6: i64,
+) -> Result<MarkovSurface6, AutocallV2Error> {
+    solve_markov_surface_with_schedule_s6_and_allocation(
+        sigma_ann_6,
+        alpha_6,
+        beta_6,
+        reference_step_days,
+        n_states,
+        contract,
+        schedule,
+        coupon_6,
+        MarkovGridAllocation::MidlifeCompact,
+    )
+}
+
+fn solve_markov_surface_with_schedule_s6_and_allocation(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    n_states: usize,
+    contract: &AutocallParams,
+    schedule: &[MarkovScheduleStepS6],
+    coupon_6: i64,
+    allocation: MarkovGridAllocation,
+) -> Result<MarkovSurface6, AutocallV2Error> {
     let reference_nig =
         NigParams6::from_vol_with_step_days(sigma_ann_6, alpha_6, beta_6, reference_step_days)?;
-    let grid = MarkovGrid::build_with_contract(n_states.max(7), &reference_nig, contract)?;
+    let grid = match allocation {
+        MarkovGridAllocation::Standard => {
+            MarkovGrid::build_with_contract(n_states.max(7), &reference_nig, contract)?
+        }
+        MarkovGridAllocation::MidlifeCompact => {
+            MarkovGrid::build_midlife_compact(n_states.max(7), &reference_nig, contract)?
+        }
+    };
     let s = grid.n_states;
 
     let mut spot_ratios_6 = Vec::with_capacity(s);
@@ -3928,14 +4238,18 @@ pub(crate) fn solve_markov_surface_with_schedule(
     for step in schedule.iter().rev() {
         let matrix_idx = matrix_cache
             .iter()
-            .position(|(days, _)| *days == step.step_days);
+            .position(|(days_s6, _)| *days_s6 == step.step_days_s6);
         let mat = if let Some(idx) = matrix_idx {
             &matrix_cache[idx].1
         } else {
-            let nig =
-                NigParams6::from_vol_with_step_days(sigma_ann_6, alpha_6, beta_6, step.step_days)?;
+            let nig = NigParams6::from_vol_with_step_days_s6(
+                sigma_ann_6,
+                alpha_6,
+                beta_6,
+                step.step_days_s6,
+            )?;
             let matrix = build_transition_matrix_on_grid(&grid, &nig)?;
-            matrix_cache.push((step.step_days, matrix));
+            matrix_cache.push((step.step_days_s6, matrix));
             &matrix_cache.last().expect("matrix inserted").1
         };
 
@@ -3997,6 +4311,243 @@ pub(crate) fn solve_markov_surface_with_schedule(
         untouched_deltas_6,
         touched_deltas_6,
         atm_state: grid.atm_state,
+    })
+}
+
+pub(crate) fn solve_markov_surface_pair_with_schedule_s6(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    n_states: usize,
+    contract: &AutocallParams,
+    schedule: &[MarkovScheduleStepS6],
+    coupon_6: i64,
+) -> Result<MarkovSurfacePair6, AutocallV2Error> {
+    solve_markov_surface_pair_with_schedule_s6_inner(
+        sigma_ann_6,
+        alpha_6,
+        beta_6,
+        reference_step_days,
+        n_states,
+        contract,
+        schedule,
+        coupon_6,
+        MarkovPairMatrixSource::Build,
+    )
+}
+
+pub(crate) fn solve_markov_surface_pair_with_precomputed_matrices_s6<'a>(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    n_states: usize,
+    contract: &AutocallParams,
+    schedule: &[MarkovScheduleStepS6],
+    coupon_6: i64,
+    matrices: &'a [MarkovTransitionMatrixRef<'a>],
+) -> Result<MarkovSurfacePair6, AutocallV2Error> {
+    solve_markov_surface_pair_with_schedule_s6_inner(
+        sigma_ann_6,
+        alpha_6,
+        beta_6,
+        reference_step_days,
+        n_states,
+        contract,
+        schedule,
+        coupon_6,
+        MarkovPairMatrixSource::Precomputed(matrices),
+    )
+}
+
+pub(crate) fn build_midlife_transition_matrix_flat_s6(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    n_states: usize,
+    contract: &AutocallParams,
+    step_days_s6: i64,
+) -> Result<Vec<i64>, AutocallV2Error> {
+    let reference_nig =
+        NigParams6::from_vol_with_step_days(sigma_ann_6, alpha_6, beta_6, reference_step_days)?;
+    let grid = MarkovGrid::build_midlife_compact(n_states.max(7), &reference_nig, contract)?;
+    let nig = NigParams6::from_vol_with_step_days_s6(sigma_ann_6, alpha_6, beta_6, step_days_s6)?;
+    let cos_terms = if n_states <= 9 {
+        COS_M_MIDLIFE_COMPACT
+    } else {
+        COS_M
+    };
+    build_transition_matrix_on_grid_flat_with_cos_terms(&grid, &nig, cos_terms)
+        .map_err(AutocallV2Error::from)
+}
+
+fn solve_markov_surface_pair_with_schedule_s6_inner(
+    sigma_ann_6: i64,
+    alpha_6: i64,
+    beta_6: i64,
+    reference_step_days: i64,
+    n_states: usize,
+    contract: &AutocallParams,
+    schedule: &[MarkovScheduleStepS6],
+    coupon_6: i64,
+    matrix_source: MarkovPairMatrixSource,
+) -> Result<MarkovSurfacePair6, AutocallV2Error> {
+    cu_trace(b"cu_trace:midlife_pair:start");
+    let reference_nig =
+        NigParams6::from_vol_with_step_days(sigma_ann_6, alpha_6, beta_6, reference_step_days)?;
+    let grid = MarkovGrid::build_midlife_compact(n_states.max(7), &reference_nig, contract)?;
+    let s = grid.n_states;
+    cu_trace(b"cu_trace:midlife_pair:after_grid");
+
+    let mut spot_ratios_6 = Vec::with_capacity(s);
+    for rep in &grid.reps {
+        spot_ratios_6.push(exp6(*rep)?);
+    }
+
+    let principal_6 = SCALE_6;
+    let mut nav_untouched = vec![0i64; s];
+    let mut nav_touched = vec![0i64; s];
+    let mut redemption_untouched = vec![0i64; s];
+    let mut redemption_touched = vec![0i64; s];
+    let mut next_nav_untouched = vec![0i64; s];
+    let mut next_nav_touched = vec![0i64; s];
+    let mut next_redemption_untouched = vec![0i64; s];
+    let mut next_redemption_touched = vec![0i64; s];
+    for j in 0..s {
+        let rep = grid.reps[j];
+        let coupon = if rep >= 0 { coupon_6 } else { 0 };
+        let redemption = if rep < 0 {
+            mul6(principal_6, spot_ratios_6[j])?
+        } else {
+            principal_6
+        };
+        nav_untouched[j] = principal_6 + coupon;
+        nav_touched[j] = redemption + coupon;
+        redemption_untouched[j] = principal_6;
+        redemption_touched[j] = redemption;
+    }
+
+    let mut matrix_cache: Vec<(i64, Vec<i64>)> = Vec::new();
+    for step in schedule.iter().rev() {
+        let mat: &[i64] = match matrix_source {
+            MarkovPairMatrixSource::Precomputed(matrices) => {
+                let matrix = matrices
+                    .iter()
+                    .find(|matrix| matrix.step_days_s6 == step.step_days_s6)
+                    .ok_or(AutocallV2Error::InvalidKernel)?;
+                if matrix.values_s6.len() != s * s {
+                    return Err(AutocallV2Error::InvalidKernel);
+                }
+                matrix.values_s6
+            }
+            MarkovPairMatrixSource::Build => {
+                let matrix_idx = matrix_cache
+                    .iter()
+                    .position(|(days_s6, _)| *days_s6 == step.step_days_s6);
+                let idx = if let Some(idx) = matrix_idx {
+                    idx
+                } else {
+                    let nig = NigParams6::from_vol_with_step_days_s6(
+                        sigma_ann_6,
+                        alpha_6,
+                        beta_6,
+                        step.step_days_s6,
+                    )?;
+                    let cos_terms = if n_states <= 9 {
+                        COS_M_MIDLIFE_COMPACT
+                    } else {
+                        COS_M
+                    };
+                    let matrix = build_transition_matrix_on_grid_flat_with_cos_terms(
+                        &grid, &nig, cos_terms,
+                    )?;
+                    cu_trace(b"cu_trace:midlife_pair:after_matrix_build");
+                    matrix_cache.push((step.step_days_s6, matrix));
+                    matrix_cache.len() - 1
+                };
+                &matrix_cache[idx].1
+            }
+        };
+
+        let autocall_suppressed = step.observation
+            && contract.no_autocall_first_n_obs > 0
+            && step.obs_index_from_inception <= contract.no_autocall_first_n_obs;
+        for i in 0..s {
+            let rep_i = grid.reps[i];
+            if step.observation && !autocall_suppressed && rep_i >= contract.autocall_log_6 {
+                let coupon = if rep_i >= 0 { coupon_6 } else { 0 };
+                next_nav_untouched[i] = principal_6 + coupon;
+                next_nav_touched[i] = principal_6 + coupon;
+                next_redemption_untouched[i] = principal_6;
+                next_redemption_touched[i] = principal_6;
+                continue;
+            }
+
+            let mut e_nav_untouched = 0i64;
+            let mut e_nav_touched = 0i64;
+            let mut e_redemption_untouched = 0i64;
+            let mut e_redemption_touched = 0i64;
+            for j in 0..s {
+                let p = mat[i * s + j];
+                if p == 0 {
+                    continue;
+                }
+                let nav_untouched_branch = if j <= grid.ki_state_max {
+                    nav_touched[j]
+                } else {
+                    nav_untouched[j]
+                };
+                let redemption_untouched_branch = if j <= grid.ki_state_max {
+                    redemption_touched[j]
+                } else {
+                    redemption_untouched[j]
+                };
+                e_nav_untouched += mul6_weighted_value(p, nav_untouched_branch);
+                e_nav_touched += mul6_weighted_value(p, nav_touched[j]);
+                e_redemption_untouched += mul6_weighted_value(p, redemption_untouched_branch);
+                e_redemption_touched += mul6_weighted_value(p, redemption_touched[j]);
+            }
+
+            if step.observation {
+                let coupon = if rep_i >= 0 { coupon_6 } else { 0 };
+                if i <= grid.ki_state_max {
+                    next_nav_untouched[i] = e_nav_touched + coupon;
+                    next_redemption_untouched[i] = e_redemption_touched;
+                } else {
+                    next_nav_untouched[i] = e_nav_untouched + coupon;
+                    next_redemption_untouched[i] = e_redemption_untouched;
+                }
+                next_nav_touched[i] = e_nav_touched + coupon;
+                next_redemption_touched[i] = e_redemption_touched;
+            } else {
+                next_nav_untouched[i] = e_nav_untouched;
+                next_nav_touched[i] = e_nav_touched;
+                next_redemption_untouched[i] = e_redemption_untouched;
+                next_redemption_touched[i] = e_redemption_touched;
+            }
+        }
+        core::mem::swap(&mut nav_untouched, &mut next_nav_untouched);
+        core::mem::swap(&mut nav_touched, &mut next_nav_touched);
+        core::mem::swap(&mut redemption_untouched, &mut next_redemption_untouched);
+        core::mem::swap(&mut redemption_touched, &mut next_redemption_touched);
+        cu_trace(b"cu_trace:midlife_pair:after_step");
+    }
+
+    Ok(MarkovSurfacePair6 {
+        nav: MarkovValueSurface6 {
+            spot_ratios_6: spot_ratios_6.clone(),
+            untouched_values_6: nav_untouched,
+            touched_values_6: nav_touched,
+            atm_state: grid.atm_state,
+        },
+        redemption: MarkovValueSurface6 {
+            spot_ratios_6,
+            untouched_values_6: redemption_untouched,
+            touched_values_6: redemption_touched,
+            atm_state: grid.atm_state,
+        },
     })
 }
 
@@ -4142,6 +4693,74 @@ mod tests {
             phi.re
         );
         assert!(phi.im.abs() < 100, "φ(0) imag ≈ 0, got {}", phi.im);
+    }
+
+    #[test]
+    fn paired_schedule_surfaces_match_individual_solves() {
+        let contract = AutocallParams::default();
+        let schedule = [
+            MarkovScheduleStepS6 {
+                step_days_s6: 2 * SCALE_6,
+                observation: false,
+                obs_index_from_inception: 0,
+            },
+            MarkovScheduleStepS6 {
+                step_days_s6: 2 * SCALE_6,
+                observation: true,
+                obs_index_from_inception: 1,
+            },
+            MarkovScheduleStepS6 {
+                step_days_s6: 2 * SCALE_6,
+                observation: true,
+                obs_index_from_inception: 2,
+            },
+        ];
+        let paired = solve_markov_surface_pair_with_schedule_s6(
+            800_000,
+            generated::TRAINING_ALPHA_S6,
+            generated::TRAINING_BETA_S6,
+            generated::TRAINING_REFERENCE_STEP_DAYS,
+            15,
+            &contract,
+            &schedule,
+            8_000,
+        )
+        .expect("paired surfaces");
+        let nav = solve_markov_surface_with_midlife_schedule_s6(
+            800_000,
+            generated::TRAINING_ALPHA_S6,
+            generated::TRAINING_BETA_S6,
+            generated::TRAINING_REFERENCE_STEP_DAYS,
+            15,
+            &contract,
+            &schedule,
+            8_000,
+        )
+        .expect("nav surface");
+        let redemption = solve_markov_surface_with_midlife_schedule_s6(
+            800_000,
+            generated::TRAINING_ALPHA_S6,
+            generated::TRAINING_BETA_S6,
+            generated::TRAINING_REFERENCE_STEP_DAYS,
+            15,
+            &contract,
+            &schedule,
+            0,
+        )
+        .expect("redemption surface");
+
+        assert_eq!(paired.nav.spot_ratios_6, nav.spot_ratios_6);
+        assert_eq!(paired.nav.untouched_values_6, nav.untouched_values_6);
+        assert_eq!(paired.nav.touched_values_6, nav.touched_values_6);
+        assert_eq!(paired.redemption.spot_ratios_6, redemption.spot_ratios_6);
+        assert_eq!(
+            paired.redemption.untouched_values_6,
+            redemption.untouched_values_6
+        );
+        assert_eq!(
+            paired.redemption.touched_values_6,
+            redemption.touched_values_6
+        );
     }
 
     #[test]

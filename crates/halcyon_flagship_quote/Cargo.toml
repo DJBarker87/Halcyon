@@ -17,6 +17,7 @@ c1-filter-cu-diag = []
 c1-filter-cu-diag-inner = []
 ki-skip-count = []
 lookup-bench-sbf = []
+midlife-sbf-approx = []
 m6r-recip = []
 
 [dependencies]

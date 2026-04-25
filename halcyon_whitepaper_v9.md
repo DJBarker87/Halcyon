@@ -202,12 +202,15 @@ Each product has an on-chain issuance gate that refuses to write new policies wh
 
 Pricing and settlement run on-chain. Calibration runs off-chain. That boundary is deliberate.
 
-Everything that determines what a user pays or receives happens inside the Solana program that issues the quote. Off-chain components produce static parameters, and those parameters are published to on-chain accounts where anyone can inspect them. The flagship's daily-KI correction table is computed deterministically, committed on-chain as a SHA-256 hash, and published alongside the generator code. Anyone can regenerate the table and verify.
+Everything that determines what a user pays or receives happens inside the Solana program that issues the quote. Off-chain components produce static parameters, and those parameters are published to on-chain accounts where anyone can inspect them.
+
+All three current product lines — flagship worst-of-3 autocall, SOL Autocall, and IL Protection — expose mid-life NAV as a deterministic function of on-chain state. The flagship runs the full C1-filter monthly dynamic program on-chain with transaction-level checkpointing. IL Protection runs a 5-point Gauss-Legendre shifted-NIG integration inside a single preview instruction. SOL Autocall uses a keeper-uploaded COS transition matrix with on-chain SHA-256 commitments over both the construction inputs and the matrix values; `preview_lending_value` refuses to execute against a matrix whose hashes do not recompute canonically, so the keeper is a performance optimisation rather than a trust anchor. Third-party verification of the SOL Autocall matrix is a deterministic replay of the documented builder against the on-chain construction inputs.
 
 | On-chain (verifiable, replayable) | Off-chain (parameters published to on-chain accounts) |
 |---|---|
 | NIG premium computation (all three products) | NIG α/β calibration (monthly MLE fit) |
 | POD-DEIM online solve (SOL Autocall, keeper-fed `P_red`) | POD-DEIM training (SVD, DEIM cell selection) |
+| SOL Autocall mid-life matrix hash verification | COS transition matrix construction |
 | Richardson CTMC fallback | One-factor NIG factor model calibration |
 | IL Gauss-Legendre quadrature | Regime classification (fvol signal) |
 | Daily-KI correction (hash-committed) | KI correction table (regenerable from calibration) |

@@ -20,6 +20,8 @@ pub enum SettlementReason {
     Autocall = 1,
     KnockIn = 2,
     AdminForce = 3,
+    Buyback = 4,
+    RetailRedemption = 5,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]

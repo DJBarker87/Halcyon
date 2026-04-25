@@ -18,8 +18,9 @@ use halcyon_sol_autocall_quote::{
     autocall_v2::AutocallParams,
     autocall_v2_e11::precompute_reduced_operators_from_const,
     generated::pod_deim_table::{
-        TRAINING_ALPHA_S6, TRAINING_AUTOCALL_LOG_6, TRAINING_BETA_S6, TRAINING_KNOCK_IN_LOG_6,
-        TRAINING_NO_AUTOCALL_FIRST_N_OBS, TRAINING_N_OBS, TRAINING_REFERENCE_STEP_DAYS,
+        POD_DEIM_TABLE_SHA256, TRAINING_ALPHA_S6, TRAINING_AUTOCALL_LOG_6, TRAINING_BETA_S6,
+        TRAINING_KNOCK_IN_LOG_6, TRAINING_NO_AUTOCALL_FIRST_N_OBS, TRAINING_N_OBS,
+        TRAINING_REFERENCE_STEP_DAYS,
     },
 };
 use solana_sdk::pubkey::Pubkey;
@@ -95,8 +96,8 @@ pub enum KeeperCmd {
 #[derive(Debug, ClapArgs)]
 pub struct FireObservationArgs {
     pub policy: String,
-    #[arg(long)]
-    pub usdc_mint: String,
+    #[arg(long, value_name = "PUBKEY")]
+    pub usdc_mint: Option<String>,
     #[arg(long)]
     pub pyth_sol: String,
 }
@@ -195,7 +196,7 @@ pub async fn run(ctx: &CliContext, cmd: KeeperCmd) -> Result<()> {
 async fn fire_observation(ctx: &CliContext, args: FireObservationArgs) -> Result<()> {
     let keeper = ctx.signer()?;
     let policy = CliContext::parse_pubkey("policy", &args.policy)?;
-    let usdc_mint = CliContext::parse_pubkey("usdc_mint", &args.usdc_mint)?;
+    let usdc_mint = ctx.resolve_usdc_mint(args.usdc_mint.as_deref())?;
     let pyth_sol = CliContext::parse_pubkey("pyth_sol", &args.pyth_sol)?;
     let header =
         fetch_anchor_account::<halcyon_kernel::state::PolicyHeader>(ctx.rpc.as_ref(), &policy)
@@ -306,17 +307,39 @@ async fn fire_reduced_ops(ctx: &CliContext, _args: FireReducedOpsArgs) -> Result
 
     let p_red_v = reduced.p_red_v;
     let p_red_u = reduced.p_red_u;
-    for (side, values) in [
+    let (reduced_operators, _) = pda::sol_autocall_reduced_operators();
+    let existing_reduced = fetch_anchor_account_opt::<
+        halcyon_sol_autocall::state::SolAutocallReducedOperators,
+    >(ctx.rpc.as_ref(), &reduced_operators)
+    .await?;
+    let (resume_v, resume_u) = existing_reduced
+        .as_ref()
+        .filter(|existing| {
+            existing.version
+                == halcyon_sol_autocall::state::SolAutocallReducedOperators::CURRENT_VERSION
+                && existing.sigma_ann_s6 == sigma_ann_s6
+                && existing.source_vault_sigma_slot == sigma.last_update_slot
+                && existing.source_regime_signal_slot == regime.last_update_slot
+                && existing.pod_deim_table_sha256 == POD_DEIM_TABLE_SHA256
+                && existing.p_red_v.len() <= p_red_v.len()
+                && existing.p_red_u.len() <= p_red_u.len()
+        })
+        .map(|existing| (existing.p_red_v.len(), existing.p_red_u.len()))
+        .unwrap_or((0, 0));
+
+    for (side, values, resume_from) in [
         (
             halcyon_sol_autocall::ReducedOperatorSide::V,
             p_red_v.as_slice(),
+            resume_v,
         ),
         (
             halcyon_sol_autocall::ReducedOperatorSide::U,
             p_red_u.as_slice(),
+            resume_u,
         ),
     ] {
-        for start in (0..values.len()).step_by(REDUCED_OPERATOR_CHUNK_LEN) {
+        for start in (resume_from..values.len()).step_by(REDUCED_OPERATOR_CHUNK_LEN) {
             let end = (start + REDUCED_OPERATOR_CHUNK_LEN).min(values.len());
             let ix = sol_autocall::write_reduced_operators_ix(
                 &keeper.pubkey(),

@@ -1,9 +1,14 @@
 import { test, expect } from "@playwright/test";
 
+const RUNTIME_CONFIG_STORAGE_KEY_V2 = "halcyon-layer5-runtime-config-v2";
+
 test("localnet burner wallet can connect and disconnect", async ({ page }) => {
   await page.goto("/");
-  await page.evaluate(() => window.localStorage.clear());
+  await page.evaluate((key) => {
+    window.localStorage.setItem(key, JSON.stringify({ cluster: "localnet" }));
+  }, RUNTIME_CONFIG_STORAGE_KEY_V2);
   await page.goto("/flagship");
+  await expect(page.getByRole("banner")).toContainText("localnet");
 
   const walletTrigger = page.getByRole("button", { name: /connect wallet|select wallet/i });
   await walletTrigger.click();

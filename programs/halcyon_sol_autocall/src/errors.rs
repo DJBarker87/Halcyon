@@ -44,4 +44,20 @@ pub enum SolAutocallError {
     ReducedOperatorsUploadStateInvalid,
     #[msg("pricing sigma is outside the supported keeper-fed POD-DEIM band")]
     PricingSigmaOutOfBand,
+    #[msg("keeper-fed midlife matrix payload has the wrong shape")]
+    MidlifeMatricesShapeInvalid,
+    #[msg("keeper-fed midlife matrix payload contains an invalid probability weight")]
+    MidlifeMatricesRangeInvalid,
+    #[msg("keeper-fed midlife matrix chunk start does not match the current upload offset")]
+    MidlifeMatricesOffsetInvalid,
+    #[msg(
+        "keeper-fed midlife matrix upload state does not match the current sigma or source slots"
+    )]
+    MidlifeMatricesUploadStateInvalid,
+    #[msg("keeper-fed midlife matrices are stale or unavailable for the current sigma")]
+    MidlifeMatricesStale,
+    #[msg("keeper-fed midlife matrix SHA-256 commitment does not match account contents")]
+    MidlifeMatricesCommitmentMismatch,
+    #[msg("midlife lending-value computation failed")]
+    MidlifePricingFailed,
 }

@@ -3,8 +3,6 @@ use halcyon_common::HalcyonError;
 #[cfg(not(target_os = "solana"))]
 use halcyon_flagship_quote::worst_of_factored::FactoredWorstOfModel;
 use halcyon_flagship_quote::{
-    daily_ki_correction::daily_ki_correction_lookup,
-    k12_correction::k12_correction_lookup,
     worst_of_c1_fast::{spy_qqq_iwm_c1_config, spy_qqq_iwm_step_drift_inputs_s6},
     worst_of_c1_filter::quote_c1_filter,
 };
@@ -147,10 +145,7 @@ pub fn compose_pricing_sigma(
             .ok_or(HalcyonError::Overflow)?,
     )
     .map_err(|_| error!(HalcyonError::Overflow))?;
-    Ok(sigma_s6.clamp(
-        sigma_floor_annualised_s6,
-        sigma_ceiling_annualised_s6,
-    ))
+    Ok(sigma_s6.clamp(sigma_floor_annualised_s6, sigma_ceiling_annualised_s6))
 }
 
 pub fn protocol_sigma_floor_annualised_s6(config: &ProtocolConfig) -> i64 {
@@ -167,8 +162,8 @@ pub fn solve_quote(
         FlagshipAutocallError::SigmaOutOfRange
     );
 
-    let coupon_bps_s6 = corrected_coupon_bps_s6(sigma_pricing_s6)?;
-    cu_trace("flagship after corrected_coupon_bps_s6");
+    let coupon_bps_s6 = deterministic_coupon_bps_s6(sigma_pricing_s6)?;
+    cu_trace("flagship after deterministic_coupon_bps_s6");
     let quarterly_schedule = quarterly_autocall_schedule_from_account(autocall_schedule)?;
     cu_trace("flagship after build_quarterly_autocall_schedule");
     let expiry_ts = quarterly_schedule
@@ -214,7 +209,7 @@ pub fn compute_live_delta_s6(
     );
     if terms.status != crate::state::ProductStatus::Active {
         return Ok(LiveDeltaOutputs {
-            coupon_bps_s6: corrected_coupon_bps_s6(sigma_pricing_s6)?,
+            coupon_bps_s6: deterministic_coupon_bps_s6(sigma_pricing_s6)?,
             delta_spy_s6: 0,
             delta_qqq_s6: 0,
             delta_iwm_s6: 0,
@@ -255,7 +250,7 @@ pub fn compute_live_delta_s6(
     let notional_scale = notional_usdc as f64 / 1_000_000.0;
 
     Ok(LiveDeltaOutputs {
-        coupon_bps_s6: corrected_coupon_bps_s6(sigma_pricing_s6)?,
+        coupon_bps_s6: deterministic_coupon_bps_s6(sigma_pricing_s6)?,
         delta_spy_s6: (quote.delta_spy * notional_scale * 1_000_000.0).round() as i64,
         delta_qqq_s6: (quote.delta_qqq * notional_scale * 1_000_000.0).round() as i64,
         delta_iwm_s6: (quote.delta_iwm * notional_scale * 1_000_000.0).round() as i64,
@@ -457,7 +452,7 @@ pub fn hash_product_terms(terms: &FlagshipAutocallTerms) -> Result<[u8; 32]> {
     Ok(hash(&buf).to_bytes())
 }
 
-fn corrected_coupon_bps_s6(sigma_pricing_s6: i64) -> Result<i64> {
+fn deterministic_coupon_bps_s6(sigma_pricing_s6: i64) -> Result<i64> {
     let cfg = spy_qqq_iwm_c1_config();
     let (drift_diffs, drift_shift_63) =
         spy_qqq_iwm_step_drift_inputs_s6(&cfg, sigma_pricing_s6, 63)
@@ -471,21 +466,12 @@ fn corrected_coupon_bps_s6(sigma_pricing_s6: i64) -> Result<i64> {
         K_RETAINED,
     );
     cu_trace("flagship after quote_c1_filter");
-    let k12_correction = k12_correction_lookup(sigma_pricing_s6);
-    cu_trace("flagship after k12_correction_lookup");
-    let daily_ki_correction = daily_ki_correction_lookup(sigma_pricing_s6);
-    cu_trace("flagship after daily_ki_correction_lookup");
-    let corrected = quote
-        .fair_coupon_bps_s6
-        .checked_add(k12_correction)
-        .and_then(|value| value.checked_add(daily_ki_correction))
-        .ok_or_else(|| error!(HalcyonError::Overflow))?;
-    cu_trace("flagship after correction combine");
-    if corrected <= 0 {
+    let coupon_bps_s6 = quote.fair_coupon_bps_s6;
+    if coupon_bps_s6 <= 0 {
         return err!(FlagshipAutocallError::QuoteRecomputeMismatch);
     }
-    cu_trace("flagship corrected_coupon_bps_s6 return");
-    Ok(corrected)
+    cu_trace("flagship deterministic_coupon_bps_s6 return");
+    Ok(coupon_bps_s6)
 }
 
 fn ratio_s6(numerator_s6: i64, denominator_s6: i64) -> Result<i64> {

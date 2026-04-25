@@ -3,6 +3,7 @@
 //! Synthetic 30-day SOL/USDC IL cover:
 //! - `preview_quote` — read-only premium / liability quote
 //! - `accept_quote`  — bounded issuance path through the shared kernel
+//! - `preview_lending_value` — read-only midlife intrinsic collateral mark
 //! - `settle`        — expiry-only settlement against Pyth SOL/USD and USDC/USD
 
 use anchor_lang::prelude::*;
@@ -15,6 +16,8 @@ pub mod state;
 pub use errors::IlProtectionError;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::accept_quote::*;
+#[allow(ambiguous_glob_reexports)]
+pub use instructions::preview_lending_value::*;
 #[allow(ambiguous_glob_reexports)]
 pub use instructions::preview_quote::*;
 #[allow(ambiguous_glob_reexports)]
@@ -36,6 +39,10 @@ pub mod halcyon_il_protection {
 
     pub fn accept_quote(ctx: Context<AcceptQuote>, args: AcceptQuoteArgs) -> Result<()> {
         instructions::accept_quote::handler(ctx, args)
+    }
+
+    pub fn preview_lending_value(ctx: Context<PreviewLendingValue>) -> Result<LendingValuePreview> {
+        instructions::preview_lending_value::handler(ctx)
     }
 
     pub fn settle(ctx: Context<Settle>) -> Result<()> {

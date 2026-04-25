@@ -17,7 +17,6 @@ import { test, expect } from "@playwright/test";
  */
 
 const RUNTIME_CONFIG_STORAGE_KEY_V2 = "halcyon-layer5-runtime-config-v2";
-const SOLANA_DEVNET_GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const SOLANA_MAINNET_GENESIS = "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d";
 
 // Stub genesis-hash responses so tests don't hit live Solana RPCs.
@@ -39,15 +38,35 @@ async function stubGenesisHash(page: import("@playwright/test").Page, hash: stri
   });
 }
 
-test("unknown cluster id in localStorage falls back to the default cluster", async ({ page }) => {
+async function openNetworkSettings(page: import("@playwright/test").Page) {
+  const button = page.getByRole("banner").getByRole("button", { name: "Network settings" });
+  const panel = page.getByRole("dialog", { name: "Runtime configuration" });
+  await expect(button).toBeVisible();
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await button.click();
+    if (await panel.isVisible({ timeout: 1_000 }).catch(() => false)) return panel;
+  }
+
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
+async function seedClusterAndReload(page: import("@playwright/test").Page, cluster: string) {
   await page.goto("/");
-  await page.evaluate((key) => {
-    window.localStorage.setItem(key, JSON.stringify({ cluster: "pluto" }));
-  }, RUNTIME_CONFIG_STORAGE_KEY_V2);
+  await page.evaluate(
+    ([key, value]) => window.localStorage.setItem(key, JSON.stringify({ cluster: value })),
+    [RUNTIME_CONFIG_STORAGE_KEY_V2, cluster],
+  );
   await page.reload();
+}
+
+test("unknown cluster id in localStorage falls back to the default cluster", async ({ page }) => {
+  await seedClusterAndReload(page, "pluto");
+  await expect(page.getByRole("banner")).not.toContainText("pluto");
 
   // Open settings panel and confirm we landed on an allowlisted cluster.
-  await page.getByRole("banner").getByRole("button", { name: "Network settings" }).click();
+  await openNetworkSettings(page);
   // The cluster radio for the fallback cluster is aria-checked=true. We
   // accept any of the three because the exact default depends on NODE_ENV
   // in the test build.
@@ -56,7 +75,7 @@ test("unknown cluster id in localStorage falls back to the default cluster", asy
 });
 
 test("arbitrary localStorage fields are ignored; only cluster id is honoured", async ({ page }) => {
-  await page.goto("/");
+  await seedClusterAndReload(page, "localnet");
   await page.evaluate((key) => {
     window.localStorage.setItem(
       key,
@@ -75,10 +94,9 @@ test("arbitrary localStorage fields are ignored; only cluster id is honoured", a
     );
   }, RUNTIME_CONFIG_STORAGE_KEY_V2);
   await page.reload();
+  await expect(page.getByRole("banner")).toContainText("localnet");
 
-  const runtimeConfigButton = page.getByRole("banner").getByRole("button", { name: "Network settings" });
-  await expect(runtimeConfigButton).toBeVisible();
-  await runtimeConfigButton.click();
+  await openNetworkSettings(page);
   // The pinned-wiring section renders the live config; no evil RPC here.
   const pinnedRpc = page.getByText("https://evil.example.com");
   await expect(pinnedRpc).toHaveCount(0);
@@ -86,11 +104,10 @@ test("arbitrary localStorage fields are ignored; only cluster id is honoured", a
 
 test("changing cluster requires explicit confirmation via modal", async ({ page }) => {
   await stubGenesisHash(page, SOLANA_MAINNET_GENESIS);
-  await page.goto("/");
-  await page.evaluate((key) => window.localStorage.setItem(key, JSON.stringify({ cluster: "localnet" })), RUNTIME_CONFIG_STORAGE_KEY_V2);
-  await page.reload();
+  await seedClusterAndReload(page, "localnet");
+  await expect(page.getByRole("banner")).toContainText("localnet");
 
-  await page.getByRole("banner").getByRole("button", { name: "Network settings" }).click();
+  await openNetworkSettings(page);
   await page.getByRole("radio", { name: /Mainnet/ }).click();
 
   // Modal shown; cluster not yet switched.
@@ -117,12 +134,14 @@ test("changing cluster requires explicit confirmation via modal", async ({ page 
 
 test("genesis-hash mismatch blocks the app before wallet providers mount", async ({ page }) => {
   await stubGenesisHash(page, "NotTheRealGenesisHashHere1111111111111111111");
-  await page.goto("/");
-  await page.getByRole("banner").getByRole("button", { name: "Network settings" }).click();
-  await page.getByRole("radio", { name: /Devnet/ }).click();
+  await seedClusterAndReload(page, "localnet");
+  await expect(page.getByRole("banner")).toContainText("localnet");
+
+  await openNetworkSettings(page);
+  await page.getByRole("radio", { name: /Mainnet/ }).click();
   const modal = page.getByRole("dialog", { name: "Confirm cluster change" });
   await expect(modal).toBeVisible();
-  await modal.getByRole("button", { name: /Switch to Devnet/ }).click();
+  await modal.getByRole("button", { name: /Switch to Mainnet/ }).click();
   await expect(modal).toHaveCount(0);
 
   await expect(page.getByTestId("genesis-check-blocked")).toBeVisible({ timeout: 15_000 });

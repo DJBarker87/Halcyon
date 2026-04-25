@@ -9,7 +9,7 @@ BASELINE_OUT ?= research/precision_baseline_$(BASELINE_DATE).json
 PRECISION_BASELINE ?= research/precision_baseline_2026-04-19.json
 L2_CARGO_EXCLUDES = --exclude halcyon-wasm --exclude halcyon_flagship_quote --exclude halcyon_flagship_autocall
 L2_ANCHOR_PROGRAMS = halcyon_kernel halcyon_stub_product halcyon_sol_autocall halcyon_il_protection
-.PHONY: bootstrap test check l2-cargo-check l2-cargo-test l4-cargo-check l4-cargo-test audit-check l2-gate l4-gate l5-gate il-hedge sol-autocall fmt-check app app-wasm anchor-build anchor-build-l2 localnet clean layouts-check anchor-test anchor-test-l2 precision-baseline precision-baseline-check mainnet-guards-check frontend-build frontend-e2e
+.PHONY: bootstrap test check l2-cargo-check l2-cargo-test l4-cargo-check l4-cargo-test audit-check l2-gate l4-gate l5-gate il-hedge sol-autocall fmt-check app app-wasm anchor-build anchor-build-l2 localnet clean layouts-check anchor-test anchor-test-l2 precision-baseline precision-baseline-check mainnet-guards-check frontend-build frontend-e2e midlife-parity-check
 
 # L0 entry point: fresh clone → `make bootstrap` should leave the repo at the
 # L0 exit criterion (every crate compiles, backtest replay passes).
@@ -140,3 +140,9 @@ precision-baseline-check:
 	HALCYON_BASELINE_DATE=$(BASELINE_DATE) HALCYON_GIT_HEAD=$$(git rev-parse HEAD) cargo run -p solmath-core --features full --example precision_baseline -- $$tmp; \
 	python3 scripts/check_precision_baseline.py $(PRECISION_BASELINE) $$tmp; \
 	rm -f $$tmp
+
+midlife-parity-check:
+	cargo test -p halcyon_flagship_quote --test midlife_parity_fixtures generated_midlife_snapshot_is_large_enough
+	cargo test -p halcyon_flagship_quote --test midlife_parity
+	cargo test -p halcyon_flagship_autocall --lib
+	cargo check -p halcyon_client_sdk

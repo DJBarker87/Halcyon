@@ -1,0 +1,45 @@
+name: midlife-parity
+
+on:
+  push:
+    paths:
+      - "crates/halcyon_flagship_quote/src/midlife_*"
+      - "crates/halcyon_flagship_quote/src/worst_of_c1_filter.rs"
+      - "crates/halcyon_flagship_quote/src/worst_of_factored.rs"
+      - "crates/halcyon_flagship_quote/tests/**"
+      - "programs/halcyon_flagship_autocall/src/calendar.rs"
+      - "programs/halcyon_flagship_autocall/src/errors.rs"
+      - "programs/halcyon_flagship_autocall/src/instructions/preview_lending_value.rs"
+      - "programs/halcyon_flagship_autocall/src/lib.rs"
+      - "programs/halcyon_flagship_autocall/src/midlife_pricing.rs"
+      - "crates/halcyon_client_sdk/src/flagship_autocall.rs"
+      - ".github/workflows/midlife-parity.yml"
+      - "Makefile"
+  pull_request:
+    paths:
+      - "crates/halcyon_flagship_quote/src/midlife_*"
+      - "crates/halcyon_flagship_quote/src/worst_of_c1_filter.rs"
+      - "crates/halcyon_flagship_quote/src/worst_of_factored.rs"
+      - "crates/halcyon_flagship_quote/tests/**"
+      - "programs/halcyon_flagship_autocall/src/calendar.rs"
+      - "programs/halcyon_flagship_autocall/src/errors.rs"
+      - "programs/halcyon_flagship_autocall/src/instructions/preview_lending_value.rs"
+      - "programs/halcyon_flagship_autocall/src/lib.rs"
+      - "programs/halcyon_flagship_autocall/src/midlife_pricing.rs"
+      - "crates/halcyon_client_sdk/src/flagship_autocall.rs"
+      - ".github/workflows/midlife-parity.yml"
+      - "Makefile"
+
+permissions:
+  contents: read
+
+jobs:
+  midlife:
+    name: Midlife quote/program parity checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+      - uses: Swatinem/rust-cache@bc2d2e71bd35c5549942babaa51a89c586b981d1
+      - name: Midlife parity slice
+        run: make midlife-parity-check
